@@ -15,6 +15,7 @@ package com.facebook.presto.common.predicate;
 
 import com.facebook.presto.common.function.SqlFunctionProperties;
 import com.facebook.presto.common.type.Type;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 
@@ -102,6 +103,7 @@ public interface ValueSet
 
     boolean isSingleValue();
 
+    @JsonIgnore
     Object getSingleValue();
 
     boolean containsValue(Object value);
@@ -109,6 +111,7 @@ public interface ValueSet
     /**
      * @return value predicates for equatable Types (but not orderable)
      */
+    @JsonIgnore
     default DiscreteValues getDiscreteValues()
     {
         throw new UnsupportedOperationException();
@@ -122,6 +125,7 @@ public interface ValueSet
         throw new UnsupportedOperationException();
     }
 
+    @JsonIgnore
     ValuesProcessor getValuesProcessor();
 
     ValueSet intersect(ValueSet other);
@@ -155,4 +159,17 @@ public interface ValueSet
     }
 
     String toString(SqlFunctionProperties properties);
+
+    /**
+     * @return A canonicalized ValueSet with a consistent representation.
+     *
+     * When removeSafeConstants is true, we return a ValueSet with all point constants removed,
+     * and range constants are kept.
+     * Example:
+     * `x = 1` is equivalent to `x = 1000`
+     * `x >= 1` is NOT equivalent to `x >= 1000`
+     *
+     * All types and bounds information is preserved.
+     */
+    ValueSet canonicalize(boolean removeSafeConstants);
 }

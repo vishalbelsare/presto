@@ -13,6 +13,7 @@ Synopsis
     [ WHERE condition ]
     [ GROUP BY [ ALL | DISTINCT ] grouping_element [, ...] ]
     [ HAVING condition]
+    [ WINDOW window_definition [, ...] ]
     [ { UNION | INTERSECT | EXCEPT } [ ALL | DISTINCT ] select ]
     [ ORDER BY expression [ ASC | DESC ] [, ...] ]
     [ OFFSET count [ { ROW | ROWS } ] ]
@@ -212,7 +213,7 @@ source is not deterministic.
 
 **CUBE**
 
-The ``CUBE`` operator generates all possible grouping sets (i.e. a power set)
+The ``CUBE`` operator generates all possible grouping sets (that is, a power set)
 for a given set of columns. For example, the query::
 
     SELECT origin_state, destination_state, sum(package_weight)
@@ -228,6 +229,11 @@ is equivalent to::
         (origin_state),
         (destination_state),
         ());
+
+.. note::
+
+    ``CUBE`` supports at most 30 columns. This is because CUBE generates 2^n
+    grouping sets, and 2^30 (approximately 1 billion) is the practical limit.
 
 .. code-block:: none
 
@@ -444,6 +450,88 @@ with an account balance greater than the specified value::
       1247 | FURNITURE  |         8 |  5701952
     (7 rows)
 
+.. _window_clause:
+
+Named WINDOW Clause
+-------------------
+
+Presto supports the SQL:2003 ``WINDOW`` clause. It appears after ``HAVING`` and
+before the query's ``ORDER BY``, and allows multiple window functions to reuse a
+window specification::
+
+    WINDOW name AS (
+      [existing_window_name]
+      [PARTITION BY expression, ...]
+      [ORDER BY sort_item, ...]
+      [frame]
+    ) [, ...]
+
+A function can use the name directly with ``OVER name``, or refine it with
+``OVER (name ...)``::
+
+    WITH t(a, b) AS (
+      VALUES (1, 10), (1, 20), (2, 5)
+    )
+    SELECT
+      a,
+      b,
+      sum(b) OVER by_a AS partition_sum,
+      sum(b) OVER (ordered ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS rolling_sum
+    FROM t
+    WINDOW by_a AS (PARTITION BY a),
+           ordered AS (by_a ORDER BY b)
+    ORDER BY a, b
+
+The result is:
+
+.. code-block:: none
+
+     a | b  | partition_sum | rolling_sum
+    ---+----+---------------+-------------
+     1 | 10 |            30 |          10
+     1 | 20 |            30 |          30
+     2 |  5 |             5 |           5
+
+Named windows follow these rules:
+
+* Names are scoped to one query specification and compared case-insensitively.
+* A definition can reference only a definition that appears earlier in the
+  same ``WINDOW`` clause.
+* A derived specification cannot add ``PARTITION BY``.
+* A derived specification cannot add ``ORDER BY`` when the referenced window
+  already has one.
+* A derived specification cannot reference a window that has a frame.
+* A direct ``OVER name`` reference uses the complete named specification,
+  including its frame.
+* Expressions declared in the ``WINDOW`` clause resolve against query inputs.
+  Parts added inline in the query's ``ORDER BY`` can resolve ``SELECT`` aliases.
+
+Unreferenced Definitions
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+Every definition is analyzed, including one that no ``OVER`` clause references.
+Window functions run after grouping and aggregation, so their specifications
+can use grouping keys and aggregates. An aggregate in a definition therefore
+belongs to the surrounding query block.
+
+For example, this query aggregates two input rows and then applies ``rank()`` to
+the single result row::
+
+    SELECT 1, rank() OVER w
+    FROM (VALUES 10, 20) AS t(x)
+    WINDOW w AS (ORDER BY sum(x))
+
+It returns ``(1, 1)``. Removing the window function leaves the aggregate in the
+query specification::
+
+    SELECT 1
+    FROM (VALUES 10, 20) AS t(x)
+    WINDOW w AS (ORDER BY sum(x))
+
+This query still returns one row. Selecting ``x`` instead fails grouping
+validation because ``x`` is neither grouped nor aggregated. The unreferenced
+definition itself produces no window operator.
+
 UNION | INTERSECT | EXCEPT Clause
 ---------------------------------
 
@@ -471,7 +559,7 @@ argument is not supported for ``INTERSECT`` or ``EXCEPT``.
 
 
 Multiple set operations are processed left to right, unless the order is explicitly
-specified via parentheses. Additionally, ``INTERSECT`` binds more tightly
+specified with parentheses. Additionally, ``INTERSECT`` binds more tightly
 than ``EXCEPT`` and ``UNION``. That means ``A UNION B INTERSECT C EXCEPT D``
 is the same as ``A UNION (B INTERSECT C) EXCEPT D``.
 
@@ -655,6 +743,7 @@ after the ``OFFSET`` clause::
      4
     (2 rows)
 
+.. _sql-tablesample:
 
 TABLESAMPLE
 -----------
@@ -797,7 +886,7 @@ CROSS JOIN
 ^^^^^^^^^^
 
 A cross join returns the Cartesian product (all combinations) of two
-relations. Cross joins can either be specified using the explit
+relations. Cross joins can either be specified using the explicit
 ``CROSS JOIN`` syntax or by specifying multiple relations in the
 ``FROM`` clause.
 
@@ -831,6 +920,20 @@ so a cross join between the two tables produces 125 rows::
      ARGENTINA      | AMERICA
     ...
     (125 rows)
+
+Lateral
+^^^^^^^
+
+Subqueries appearing in the FROM clause can be preceded by the keyword ``LATERAL``. This allows them to reference columns provided by preceding ``FROM`` items.
+
+INNER and LEFT OUTER lateral joins are supported in Presto.
+
+.. code-block:: none
+
+    SELECT name, x, y
+    FROM nation
+    CROSS JOIN LATERAL (SELECT name || ' :-' AS x)
+    CROSS JOIN LATERAL (SELECT x || ')' AS y);
 
 Qualifying Column Names
 ^^^^^^^^^^^^^^^^^^^^^^^

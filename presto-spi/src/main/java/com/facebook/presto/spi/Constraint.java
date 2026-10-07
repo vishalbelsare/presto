@@ -16,7 +16,9 @@ package com.facebook.presto.spi;
 import com.facebook.presto.common.predicate.NullableValue;
 import com.facebook.presto.common.predicate.TupleDomain;
 
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Predicate;
 
@@ -26,6 +28,8 @@ public class Constraint<T>
 {
     private final TupleDomain<T> summary;
     private final Optional<Predicate<Map<T, NullableValue>>> predicate;
+    // Optional.empty() when not set
+    private final Optional<List<T>> predicateInputs;
 
     public static <V> Constraint<V> alwaysTrue()
     {
@@ -49,11 +53,18 @@ public class Constraint<T>
 
     public Constraint(TupleDomain<T> summary, Optional<Predicate<Map<T, NullableValue>>> predicate)
     {
+        this(summary, predicate, Optional.empty());
+    }
+
+    public Constraint(TupleDomain<T> summary, Optional<Predicate<Map<T, NullableValue>>> predicate, Optional<List<T>> predicateInputs)
+    {
         requireNonNull(summary, "summary is null");
         requireNonNull(predicate, "predicate is null");
+        requireNonNull(predicateInputs, "predicateInputs is null");
 
         this.summary = summary;
         this.predicate = predicate;
+        this.predicateInputs = predicateInputs;
     }
 
     public TupleDomain<T> getSummary()
@@ -64,5 +75,30 @@ public class Constraint<T>
     public Optional<Predicate<Map<T, NullableValue>>> predicate()
     {
         return predicate;
+    }
+
+    public Optional<List<T>> getPredicateInputs()
+    {
+        return predicateInputs;
+    }
+
+    @Override
+    public boolean equals(Object obj)
+    {
+        if (this == obj) {
+            return true;
+        }
+        if (!(obj instanceof Constraint)) {
+            return false;
+        }
+
+        Constraint other = (Constraint) obj;
+        return this.summary.equals(other.summary) && this.predicate.equals(other.predicate);
+    }
+
+    @Override
+    public int hashCode()
+    {
+        return Objects.hash(summary, predicate);
     }
 }

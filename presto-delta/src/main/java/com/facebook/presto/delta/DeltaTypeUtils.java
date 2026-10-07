@@ -13,7 +13,9 @@
  */
 package com.facebook.presto.delta;
 
+import com.facebook.presto.common.type.DateTimeEncoding;
 import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.common.type.JsonType;
 import com.facebook.presto.common.type.NamedTypeSignature;
 import com.facebook.presto.common.type.RowFieldName;
 import com.facebook.presto.common.type.StandardTypes;
@@ -26,31 +28,33 @@ import com.facebook.presto.spi.SchemaTableName;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceUtf8;
-import io.delta.standalone.types.ArrayType;
-import io.delta.standalone.types.BinaryType;
-import io.delta.standalone.types.BooleanType;
-import io.delta.standalone.types.ByteType;
-import io.delta.standalone.types.DataType;
-import io.delta.standalone.types.DateType;
-import io.delta.standalone.types.DecimalType;
-import io.delta.standalone.types.DoubleType;
-import io.delta.standalone.types.FloatType;
-import io.delta.standalone.types.IntegerType;
-import io.delta.standalone.types.LongType;
-import io.delta.standalone.types.MapType;
-import io.delta.standalone.types.ShortType;
-import io.delta.standalone.types.StringType;
-import io.delta.standalone.types.StructType;
-import io.delta.standalone.types.TimestampType;
+import io.delta.kernel.types.ArrayType;
+import io.delta.kernel.types.BinaryType;
+import io.delta.kernel.types.BooleanType;
+import io.delta.kernel.types.ByteType;
+import io.delta.kernel.types.DataType;
+import io.delta.kernel.types.DateType;
+import io.delta.kernel.types.DecimalType;
+import io.delta.kernel.types.DoubleType;
+import io.delta.kernel.types.FloatType;
+import io.delta.kernel.types.IntegerType;
+import io.delta.kernel.types.LongType;
+import io.delta.kernel.types.MapType;
+import io.delta.kernel.types.ShortType;
+import io.delta.kernel.types.StringType;
+import io.delta.kernel.types.StructType;
+import io.delta.kernel.types.TimestampNTZType;
+import io.delta.kernel.types.TimestampType;
+import io.delta.kernel.types.VariantType;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.sql.Timestamp;
 import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
-import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 
@@ -66,7 +70,9 @@ import static com.facebook.presto.common.type.RealType.REAL;
 import static com.facebook.presto.common.type.SmallintType.SMALLINT;
 import static com.facebook.presto.common.type.StandardTypes.ARRAY;
 import static com.facebook.presto.common.type.StandardTypes.MAP;
+import static com.facebook.presto.common.type.TimeZoneKey.UTC_KEY;
 import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
 import static com.facebook.presto.common.type.TinyintType.TINYINT;
 import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
@@ -79,6 +85,7 @@ import static java.lang.Float.floatToRawIntBits;
 import static java.lang.Float.parseFloat;
 import static java.lang.Long.parseLong;
 import static java.lang.String.format;
+import static java.time.ZoneOffset.UTC;
 
 /**
  * Contains utility methods to convert Delta data types (and data values) to Presto data types (and data values)
@@ -95,7 +102,7 @@ public class DeltaTypeUtils
      * @param tableName  Used in error messages when an unsupported data type is encountered.
      * @param columnName Used in error messages when an unsupported data type is encountered.
      * @param deltaType  Data type to convert
-     * @return
+     * @return a {@link TypeSignature} containing the equivalent Presto type
      */
     public static TypeSignature convertDeltaDataTypePrestoDataType(SchemaTableName tableName, String columnName, DataType deltaType)
     {
@@ -104,7 +111,7 @@ public class DeltaTypeUtils
         if (deltaType instanceof StructType) {
             StructType deltaStructType = (StructType) deltaType;
             ImmutableList.Builder<TypeSignatureParameter> typeSignatureBuilder = ImmutableList.builder();
-            Arrays.stream(deltaStructType.getFields())
+            deltaStructType.fields()
                     .forEach(field -> {
                         String rowFieldName = field.getName().toLowerCase(Locale.US);
                         TypeSignature rowFieldType = convertDeltaDataTypePrestoDataType(
@@ -120,16 +127,15 @@ public class DeltaTypeUtils
         else if (deltaType instanceof ArrayType) {
             ArrayType deltaArrayType = (ArrayType) deltaType;
             TypeSignature elementType = convertDeltaDataTypePrestoDataType(tableName, columnName, deltaArrayType.getElementType());
-            return new TypeSignature(ARRAY, ImmutableList.of(TypeSignatureParameter.of(elementType)));
+            return new TypeSignature(ARRAY, List.of(TypeSignatureParameter.of(elementType)));
         }
         else if (deltaType instanceof MapType) {
             MapType deltaMapType = (MapType) deltaType;
             TypeSignature keyType = convertDeltaDataTypePrestoDataType(tableName, columnName, deltaMapType.getKeyType());
             TypeSignature valueType = convertDeltaDataTypePrestoDataType(tableName, columnName, deltaMapType.getValueType());
             return new TypeSignature(MAP,
-                    ImmutableList.of(TypeSignatureParameter.of(keyType), TypeSignatureParameter.of(valueType)));
+                    List.of(TypeSignatureParameter.of(keyType), TypeSignatureParameter.of(valueType)));
         }
-
         return convertDeltaPrimitiveTypeToPrestoPrimitiveType(tableName, columnName, deltaType).getTypeSignature();
     }
 
@@ -170,7 +176,7 @@ public class DeltaTypeUtils
             if (isShortDecimal(type) || isLongDecimal(type)) {
                 com.facebook.presto.common.type.DecimalType decimalType = (com.facebook.presto.common.type.DecimalType) type;
                 BigDecimal decimal = new BigDecimal(valueString);
-                decimal = decimal.setScale(decimalType.getScale(), BigDecimal.ROUND_UNNECESSARY);
+                decimal = decimal.setScale(decimalType.getScale(), RoundingMode.UNNECESSARY);
                 if (decimal.precision() > decimalType.getPrecision()) {
                     throw new IllegalArgumentException();
                 }
@@ -182,7 +188,10 @@ public class DeltaTypeUtils
             }
             if (type.equals(TIMESTAMP)) {
                 // Delta partition serialized value contains up to the second precision
-                return Timestamp.valueOf(valueString).toLocalDateTime().toEpochSecond(ZoneOffset.UTC) * 1_000;
+                return Timestamp.valueOf(valueString).toLocalDateTime().toEpochSecond(UTC) * 1_000;
+            }
+            if (type.equals(TIMESTAMP_WITH_TIME_ZONE)) {
+                return DateTimeEncoding.packDateTimeWithZone((Timestamp.valueOf(valueString).toLocalDateTime().toEpochSecond(UTC) * 1_000), UTC_KEY);
             }
             throw new PrestoException(DELTA_UNSUPPORTED_COLUMN_TYPE,
                     format("Unsupported data type '%s' for partition column %s", type, columnName));
@@ -232,10 +241,16 @@ public class DeltaTypeUtils
             return createUnboundedVarcharType();
         }
         else if (deltaType instanceof TimestampType) {
+            return TIMESTAMP_WITH_TIME_ZONE;
+        }
+        else if (deltaType instanceof TimestampNTZType) {
             return TIMESTAMP;
+        }
+        else if (deltaType instanceof VariantType) {
+            return JsonType.JSON;
         }
 
         throw new PrestoException(DELTA_UNSUPPORTED_COLUMN_TYPE,
-                format("Column '%s' in Delta table %s contains unsupported data type: %s", columnName, tableName, deltaType.getCatalogString()));
+                format("Column '%s' in Delta table %s contains unsupported data type: %s", columnName, tableName, deltaType.toString()));
     }
 }

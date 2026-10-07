@@ -27,7 +27,7 @@ import static java.lang.Long.rotateLeft;
 import static java.lang.String.format;
 
 public final class TinyintType
-        extends AbstractType
+        extends AbstractPrimitiveType
         implements FixedWidthType
 {
     public static final TinyintType TINYINT = new TinyintType();
@@ -131,6 +131,12 @@ public final class TinyintType
     public long getLong(Block block, int position)
     {
         return (long) block.getByte(position);
+    }
+
+    @Override
+    public byte getByte(Block block, int position)
+    {
+        return block.getByte(position);
     }
 
     @Override

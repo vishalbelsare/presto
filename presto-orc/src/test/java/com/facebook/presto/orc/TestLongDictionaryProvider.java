@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.orc;
 
+import com.facebook.airlift.units.DataSize;
+import com.facebook.presto.orc.StreamDescriptorFactory.AllStreams;
+import com.facebook.presto.orc.StreamDescriptorFactory.StreamProperty;
 import com.facebook.presto.orc.checkpoint.StreamCheckpoint;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
 import com.facebook.presto.orc.metadata.OrcType;
@@ -31,7 +34,6 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.Slice;
-import io.airlift.units.DataSize;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
@@ -42,13 +44,14 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
+import static com.facebook.airlift.units.DataSize.Unit.KILOBYTE;
 import static com.facebook.presto.orc.OrcDecompressor.createOrcDecompressor;
 import static com.facebook.presto.orc.checkpoint.Checkpoints.getDictionaryStreamCheckpoint;
+import static com.facebook.presto.orc.metadata.ColumnEncoding.DEFAULT_SEQUENCE_ID;
 import static com.facebook.presto.orc.metadata.CompressionKind.SNAPPY;
 import static com.facebook.presto.orc.metadata.OrcType.OrcTypeKind.LONG;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.DICTIONARY_DATA;
 import static com.facebook.presto.orc.stream.CheckpointInputStreamSource.createCheckpointStreamSource;
-import static io.airlift.units.DataSize.Unit.KILOBYTE;
 import static java.lang.Math.toIntExact;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertThrows;
@@ -225,7 +228,7 @@ public class TestLongDictionaryProvider
             throws IOException
     {
         NodeId nodeId = new NodeId(1, 0);
-        long[] data = new long[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+        long[] data = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
         TestingHiveOrcAggregatedMemoryContext aggregatedMemoryContext = new TestingHiveOrcAggregatedMemoryContext();
         LongDictionaryProvider dictionaryProvider = new LongDictionaryProvider(createLongDictionaryStreamSources(ImmutableMap.of(nodeId, data), aggregatedMemoryContext));
         StreamId streamId = nodeId.toDictionaryDataStreamId();
@@ -286,8 +289,12 @@ public class TestLongDictionaryProvider
 
     private StreamDescriptor createFlatStreamDescriptor(StreamId streamId)
     {
-        return new StreamDescriptor("test_dictionary_stream", streamId.getColumn(),
-                String.format("field_%d", streamId.getColumn()), LONG_TYPE, DUMMY_ORC_DATA_SOURCE, ImmutableList.of(), streamId.getSequence());
+        Map<Integer, StreamProperty> streamProperties = ImmutableMap.of(
+                streamId.getColumn(),
+                new StreamProperty("test_dictionary_stream", LONG_TYPE, "field_" + streamId.getColumn(), ImmutableList.of()));
+        AllStreams allStreams = new AllStreams(DUMMY_ORC_DATA_SOURCE, streamProperties);
+
+        return new StreamDescriptor(streamId.getColumn(), streamId.getSequence(), allStreams);
     }
 
     private InputStreamSources createLongDictionaryStreamSources(Map<NodeId, long[]> streams, OrcAggregatedMemoryContext aggregatedMemoryContext)
@@ -317,7 +324,7 @@ public class TestLongDictionaryProvider
         outputStream.close();
 
         DynamicSliceOutput sliceOutput = new DynamicSliceOutput(1000);
-        StreamDataOutput streamDataOutput = outputStream.getStreamDataOutput(streamId.getColumn());
+        StreamDataOutput streamDataOutput = outputStream.getStreamDataOutput(streamId.getColumn(), DEFAULT_SEQUENCE_ID);
         streamDataOutput.writeData(sliceOutput);
         return sliceOutput;
     }

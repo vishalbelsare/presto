@@ -14,19 +14,33 @@
 package com.facebook.presto.spi.connector;
 
 import com.facebook.presto.spi.SystemTable;
+import com.facebook.presto.spi.function.table.ConnectorTableFunction;
+import com.facebook.presto.spi.function.table.ConnectorTableFunctionHandle;
+import com.facebook.presto.spi.function.table.TableFunctionProcessorProvider;
+import com.facebook.presto.spi.procedure.DistributedProcedure;
 import com.facebook.presto.spi.procedure.Procedure;
 import com.facebook.presto.spi.session.PropertyMetadata;
 import com.facebook.presto.spi.transaction.IsolationLevel;
 
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
 
+import static com.facebook.presto.spi.connector.EmptyConnectorCommitHandle.INSTANCE;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.emptySet;
 
 public interface Connector
 {
-    ConnectorTransactionHandle beginTransaction(IsolationLevel isolationLevel, boolean readOnly);
+    default ConnectorTransactionHandle beginTransaction(IsolationLevel isolationLevel, boolean readOnly)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    default ConnectorTransactionHandle beginTransaction(IsolationLevel isolationLevel, boolean autoCommitContext, boolean readOnly)
+    {
+        return beginTransaction(isolationLevel, readOnly);
+    }
 
     /**
      * Guaranteed to be called at most once per transaction. The returned metadata will only be accessed
@@ -85,9 +99,9 @@ public interface Connector
     }
 
     /**
-     * @throws UnsupportedOperationException if this connector does not support metadata updates
+     * @throws UnsupportedOperationException if this connector does not support connector specific codec
      */
-    default ConnectorMetadataUpdaterProvider getConnectorMetadataUpdaterProvider()
+    default ConnectorCodecProvider getConnectorCodecProvider()
     {
         throw new UnsupportedOperationException();
     }
@@ -104,6 +118,40 @@ public interface Connector
      * @return the set of procedures provided by this connector
      */
     default Set<Procedure> getProcedures()
+    {
+        return emptySet();
+    }
+
+    /**
+     * @return the set of distributed procedures provided by this connector
+     */
+    default Set<DistributedProcedure> getDistributedProcedures()
+    {
+        return emptySet();
+    }
+
+    /**
+     * @return the set of table functions provided by this connector
+     */
+    default Set<ConnectorTableFunction> getTableFunctions()
+    {
+        return emptySet();
+    }
+
+    /**
+     * @return the table function processor provider for the connector
+     */
+    default Function<ConnectorTableFunctionHandle, TableFunctionProcessorProvider> getTableFunctionProcessorProvider()
+    {
+        return handle -> {
+            throw new UnsupportedOperationException();
+        };
+    }
+
+    /**
+     * @return the set of functions provided by this connector
+     */
+    default Set<Class<?>> getSystemFunctions()
     {
         return emptySet();
     }
@@ -149,6 +197,14 @@ public interface Connector
     }
 
     /**
+     * @return the materialized view properties for this connector
+     */
+    default List<PropertyMetadata<?>> getMaterializedViewProperties()
+    {
+        return emptyList();
+    }
+
+    /**
      * @throws UnsupportedOperationException if this connector does not have an access control
      */
     default ConnectorAccessControl getAccessControl()
@@ -160,8 +216,9 @@ public interface Connector
      * Commit the transaction. Will be called at most once and will not be called if
      * {@link #rollback(ConnectorTransactionHandle)} is called.
      */
-    default void commit(ConnectorTransactionHandle transactionHandle)
+    default ConnectorCommitHandle commit(ConnectorTransactionHandle transactionHandle)
     {
+        return INSTANCE;
     }
 
     /**

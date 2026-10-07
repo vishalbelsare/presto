@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.orc;
 
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.block.BlockBuilder;
@@ -29,21 +30,26 @@ import com.facebook.presto.orc.writer.StreamLayoutFactory.StreamSizeLayoutFactor
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
-import io.airlift.units.DataSize;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import static com.facebook.airlift.testing.Assertions.assertGreaterThanOrEqual;
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.orc.DwrfEncryptionProvider.NO_ENCRYPTION;
+import static com.facebook.presto.orc.NoOpOrcWriterStats.NOOP_WRITER_STATS;
 import static com.facebook.presto.orc.OrcEncoding.DWRF;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.orc.OrcTester.HIVE_STORAGE_TIME_ZONE;
@@ -53,7 +59,7 @@ import static com.facebook.presto.orc.TestingOrcPredicate.ORC_STRIPE_SIZE;
 import static com.facebook.presto.orc.metadata.CompressionKind.NONE;
 import static com.facebook.presto.orc.metadata.CompressionKind.ZLIB;
 import static com.facebook.presto.orc.metadata.CompressionKind.ZSTD;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
+import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 
 public class TestOrcWriter
@@ -93,38 +99,29 @@ public class TestOrcWriter
     public void testOutputStreamsByColumnSize(OrcEncoding encoding, CompressionKind kind, OptionalInt level)
             throws IOException
     {
-        testStreamOrder(encoding, kind, level, new ColumnSizeLayoutFactory(), () -> new Consumer<Stream>()
-        {
-            int previousColumnSize;
-            int currentColumnSize;
-            int currentColumnId = -1;
-
-            @Override
-            public void accept(Stream stream)
-            {
-                if (!isIndexStream(stream)) {
-                    if (stream.getColumn() == currentColumnId) {
-                        currentColumnSize += stream.getLength();
-                    }
-                    else {
-                        assertGreaterThanOrEqual(currentColumnSize, previousColumnSize, stream.toString());
-                        previousColumnSize = currentColumnSize;
-
-                        currentColumnSize = stream.getLength();
-                        currentColumnId = stream.getColumn();
-                    }
-                }
+        Map<Integer, Integer> nodeSizes = new LinkedHashMap<>();
+        testStreamOrder(encoding, kind, level, new ColumnSizeLayoutFactory(), () -> stream -> {
+            if (!isIndexStream(stream)) {
+                int node = stream.getColumn();
+                int oldSize = nodeSizes.computeIfAbsent(node, (c) -> 0);
+                nodeSizes.put(node, oldSize + stream.getLength());
             }
         });
+
+        List<Integer> actual = ImmutableList.copyOf(nodeSizes.values());
+        List<Integer> expected = actual.stream().sorted(Comparator.reverseOrder()).collect(Collectors.toList());
+        assertEquals(actual, expected);
     }
 
     private void testStreamOrder(OrcEncoding encoding, CompressionKind kind, OptionalInt level, StreamLayoutFactory streamLayoutFactory, Supplier<Consumer<Stream>> streamConsumerFactory)
             throws IOException
     {
         OrcWriterOptions orcWriterOptions = OrcWriterOptions.builder()
-                .withStripeMinSize(new DataSize(0, MEGABYTE))
-                .withStripeMaxSize(new DataSize(32, MEGABYTE))
-                .withStripeMaxRowCount(ORC_STRIPE_SIZE)
+                .withFlushPolicy(DefaultOrcWriterFlushPolicy.builder()
+                        .withStripeMinSize(new DataSize(0, MEGABYTE))
+                        .withStripeMaxSize(new DataSize(32, MEGABYTE))
+                        .withStripeMaxRowCount(ORC_STRIPE_SIZE)
+                        .build())
                 .withRowGroupMaxRowCount(ORC_ROW_GROUP_SIZE)
                 .withDictionaryMaxMemory(new DataSize(32, MEGABYTE))
                 .withCompressionLevel(level)
@@ -145,7 +142,7 @@ public class TestOrcWriter
                     HIVE_STORAGE_TIME_ZONE,
                     true,
                     validationMode,
-                    new OrcWriterStats());
+                    NOOP_WRITER_STATS);
 
             // write down some data with unsorted streams
             String[] data = new String[] {"a", "bbbbb", "ccc", "dd", "eeee"};
@@ -195,9 +192,11 @@ public class TestOrcWriter
                 Optional.empty(),
                 NO_ENCRYPTION,
                 OrcWriterOptions.builder()
-                        .withStripeMinSize(new DataSize(0, MEGABYTE))
-                        .withStripeMaxSize(new DataSize(32, MEGABYTE))
-                        .withStripeMaxRowCount(10)
+                        .withFlushPolicy(DefaultOrcWriterFlushPolicy.builder()
+                                .withStripeMinSize(new DataSize(0, MEGABYTE))
+                                .withStripeMaxSize(new DataSize(32, MEGABYTE))
+                                .withStripeMaxRowCount(10)
+                                .build())
                         .withRowGroupMaxRowCount(ORC_ROW_GROUP_SIZE)
                         .withDictionaryMaxMemory(new DataSize(32, MEGABYTE))
                         .build(),
@@ -205,7 +204,7 @@ public class TestOrcWriter
                 HIVE_STORAGE_TIME_ZONE,
                 false,
                 null,
-                new OrcWriterStats());
+                NOOP_WRITER_STATS);
 
         int entries = 65536;
         BlockBuilder blockBuilder = VARCHAR.createBlockBuilder(null, entries);

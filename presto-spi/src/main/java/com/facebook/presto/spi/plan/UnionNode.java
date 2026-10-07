@@ -17,8 +17,7 @@ import com.facebook.presto.spi.SourceLocation;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import javax.annotation.concurrent.Immutable;
+import com.google.errorprone.annotations.Immutable;
 
 import java.util.List;
 import java.util.Map;
@@ -36,7 +35,18 @@ public final class UnionNode
             @JsonProperty("outputVariables") List<VariableReferenceExpression> outputVariables,
             @JsonProperty("outputToInputs") Map<VariableReferenceExpression, List<VariableReferenceExpression>> outputToInputs)
     {
-        super(sourceLocation, id, sources, outputVariables, outputToInputs);
+        this(sourceLocation, id, Optional.empty(), sources, outputVariables, outputToInputs);
+    }
+
+    public UnionNode(
+            Optional<SourceLocation> sourceLocation,
+            PlanNodeId id,
+            Optional<PlanNode> statsEquivalentPlanNode,
+            List<PlanNode> sources,
+            List<VariableReferenceExpression> outputVariables,
+            Map<VariableReferenceExpression, List<VariableReferenceExpression>> outputToInputs)
+    {
+        super(sourceLocation, id, statsEquivalentPlanNode, sources, outputVariables, outputToInputs);
     }
 
     @Override
@@ -46,8 +56,14 @@ public final class UnionNode
     }
 
     @Override
+    public PlanNode assignStatsEquivalentPlanNode(Optional<PlanNode> statsEquivalentPlanNode)
+    {
+        return new UnionNode(getSourceLocation(), getId(), statsEquivalentPlanNode, getSources(), getOutputVariables(), getVariableMapping());
+    }
+
+    @Override
     public PlanNode replaceChildren(List<PlanNode> newChildren)
     {
-        return new UnionNode(getSourceLocation(), getId(), newChildren, getOutputVariables(), getVariableMapping());
+        return new UnionNode(getSourceLocation(), getId(), getStatsEquivalentPlanNode(), newChildren, getOutputVariables(), getVariableMapping());
     }
 }

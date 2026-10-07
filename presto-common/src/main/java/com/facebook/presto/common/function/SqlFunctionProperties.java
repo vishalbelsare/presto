@@ -18,46 +18,64 @@ import com.facebook.presto.common.type.TimeZoneKey;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 import static java.util.Collections.emptyMap;
+import static java.util.Collections.emptySet;
 import static java.util.Collections.unmodifiableMap;
+import static java.util.Collections.unmodifiableSet;
 import static java.util.Objects.requireNonNull;
 
 public class SqlFunctionProperties
 {
     private final boolean parseDecimalLiteralAsDouble;
     private final boolean legacyRowFieldOrdinalAccessEnabled;
-    private final boolean legacyTypeCoercionWarningEnabled;
     private final TimeZoneKey timeZoneKey;
     private final boolean legacyTimestamp;
+    private final boolean legacyTimestampWithTimezone;
     private final boolean legacyMapSubscript;
     private final long sessionStartTime;
     private final Locale sessionLocale;
     private final String sessionUser;
+    private final boolean fieldNamesInJsonCastEnabled;
+    private final boolean legacyJsonCast;
     private final Map<String, String> extraCredentials;
+    private final boolean canonicalizedJsonExtract;
+    private final Set<String> tryCatchableErrorCodes;
+    private final boolean legacyStEquals;
 
     private SqlFunctionProperties(
             boolean parseDecimalLiteralAsDouble,
             boolean legacyRowFieldOrdinalAccessEnabled,
-            boolean legacyTypeCoercionWarningEnabled,
             TimeZoneKey timeZoneKey,
             boolean legacyTimestamp,
+            boolean legacyTimestampWithTimezone,
             boolean legacyMapSubscript,
             long sessionStartTime,
             Locale sessionLocale,
             String sessionUser,
-            Map<String, String> extraCredentials)
+            boolean fieldNamesInJsonCastEnabled,
+            boolean legacyJsonCast,
+            Map<String, String> extraCredentials,
+            boolean canonicalizedJsonExtract,
+            Set<String> tryCatchableErrorCodes,
+            boolean legacyStEquals)
     {
         this.parseDecimalLiteralAsDouble = parseDecimalLiteralAsDouble;
         this.legacyRowFieldOrdinalAccessEnabled = legacyRowFieldOrdinalAccessEnabled;
-        this.legacyTypeCoercionWarningEnabled = legacyTypeCoercionWarningEnabled;
         this.timeZoneKey = requireNonNull(timeZoneKey, "timeZoneKey is null");
         this.legacyTimestamp = legacyTimestamp;
+        this.legacyTimestampWithTimezone = legacyTimestampWithTimezone;
         this.legacyMapSubscript = legacyMapSubscript;
         this.sessionStartTime = sessionStartTime;
         this.sessionLocale = requireNonNull(sessionLocale, "sessionLocale is null");
         this.sessionUser = requireNonNull(sessionUser, "sessionUser is null");
+        this.fieldNamesInJsonCastEnabled = fieldNamesInJsonCastEnabled;
+        this.legacyJsonCast = legacyJsonCast;
         this.extraCredentials = requireNonNull(extraCredentials, "extraCredentials is null");
+        this.canonicalizedJsonExtract = canonicalizedJsonExtract;
+        this.tryCatchableErrorCodes = requireNonNull(tryCatchableErrorCodes, "tryCatchableErrorCodes is null");
+        this.legacyStEquals = legacyStEquals;
     }
 
     public boolean isParseDecimalLiteralAsDouble()
@@ -70,11 +88,6 @@ public class SqlFunctionProperties
         return legacyRowFieldOrdinalAccessEnabled;
     }
 
-    public boolean isLegacyTypeCoercionWarningEnabled()
-    {
-        return legacyTypeCoercionWarningEnabled;
-    }
-
     public TimeZoneKey getTimeZoneKey()
     {
         return timeZoneKey;
@@ -84,6 +97,11 @@ public class SqlFunctionProperties
     public boolean isLegacyTimestamp()
     {
         return legacyTimestamp;
+    }
+
+    public boolean isLegacyTimestampWithTimezone()
+    {
+        return legacyTimestampWithTimezone;
     }
 
     public boolean isLegacyMapSubscript()
@@ -111,6 +129,24 @@ public class SqlFunctionProperties
         return extraCredentials;
     }
 
+    public boolean isFieldNamesInJsonCastEnabled()
+    {
+        return fieldNamesInJsonCastEnabled;
+    }
+
+    public boolean isLegacyJsonCast()
+    {
+        return legacyJsonCast;
+    }
+
+    public boolean isCanonicalizedJsonExtract()
+    { return canonicalizedJsonExtract; }
+
+    public Set<String> getTryCatchableErrorCodes()
+    {
+        return tryCatchableErrorCodes;
+    }
+
     @Override
     public boolean equals(Object o)
     {
@@ -125,17 +161,24 @@ public class SqlFunctionProperties
                 Objects.equals(legacyRowFieldOrdinalAccessEnabled, that.legacyRowFieldOrdinalAccessEnabled) &&
                 Objects.equals(timeZoneKey, that.timeZoneKey) &&
                 Objects.equals(legacyTimestamp, that.legacyTimestamp) &&
+                Objects.equals(legacyTimestampWithTimezone, that.legacyTimestampWithTimezone) &&
                 Objects.equals(legacyMapSubscript, that.legacyMapSubscript) &&
                 Objects.equals(sessionStartTime, that.sessionStartTime) &&
                 Objects.equals(sessionLocale, that.sessionLocale) &&
                 Objects.equals(sessionUser, that.sessionUser) &&
-                Objects.equals(extraCredentials, that.extraCredentials);
+                Objects.equals(extraCredentials, that.extraCredentials) &&
+                Objects.equals(legacyJsonCast, that.legacyJsonCast) &&
+                Objects.equals(canonicalizedJsonExtract, that.canonicalizedJsonExtract) &&
+                Objects.equals(tryCatchableErrorCodes, that.tryCatchableErrorCodes) &&
+                Objects.equals(legacyStEquals, that.legacyStEquals);
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(parseDecimalLiteralAsDouble, legacyRowFieldOrdinalAccessEnabled, timeZoneKey, legacyTimestamp, legacyMapSubscript, sessionStartTime, sessionLocale, sessionUser, extraCredentials);
+        return Objects.hash(parseDecimalLiteralAsDouble, legacyRowFieldOrdinalAccessEnabled, timeZoneKey,
+                legacyTimestamp, legacyTimestampWithTimezone, legacyMapSubscript, sessionStartTime, sessionLocale, sessionUser,
+                extraCredentials, legacyJsonCast, canonicalizedJsonExtract, tryCatchableErrorCodes, legacyStEquals);
     }
 
     public static Builder builder()
@@ -147,14 +190,20 @@ public class SqlFunctionProperties
     {
         private boolean parseDecimalLiteralAsDouble;
         private boolean legacyRowFieldOrdinalAccessEnabled;
-        private boolean legacyTypeCoercionWarningEnabled;
         private TimeZoneKey timeZoneKey;
         private boolean legacyTimestamp;
+        // Unset means legacy behavior, matching the legacy_timestamp_with_timezone session property default.
+        private boolean legacyTimestampWithTimezone = true;
         private boolean legacyMapSubscript;
         private long sessionStartTime;
         private Locale sessionLocale;
         private String sessionUser;
+        private boolean fieldNamesInJsonCastEnabled;
+        private boolean legacyJsonCast;
         private Map<String, String> extraCredentials = emptyMap();
+        private boolean canonicalizedJsonExtract;
+        private Set<String> tryCatchableErrorCodes = emptySet();
+        private boolean legacyStEquals;
 
         private Builder() {}
 
@@ -170,12 +219,6 @@ public class SqlFunctionProperties
             return this;
         }
 
-        public Builder setLegacyTypeCoercionWarningEnabled(boolean legacyTypeCoercionWarningEnabled)
-        {
-            this.legacyTypeCoercionWarningEnabled = legacyTypeCoercionWarningEnabled;
-            return this;
-        }
-
         public Builder setTimeZoneKey(TimeZoneKey timeZoneKey)
         {
             this.timeZoneKey = requireNonNull(timeZoneKey, "timeZoneKey is null");
@@ -185,6 +228,12 @@ public class SqlFunctionProperties
         public Builder setLegacyTimestamp(boolean legacyTimestamp)
         {
             this.legacyTimestamp = legacyTimestamp;
+            return this;
+        }
+
+        public Builder setLegacyTimestampWithTimezone(boolean legacyTimestampWithTimezone)
+        {
+            this.legacyTimestampWithTimezone = legacyTimestampWithTimezone;
             return this;
         }
 
@@ -218,9 +267,54 @@ public class SqlFunctionProperties
             return this;
         }
 
+        public Builder setFieldNamesInJsonCastEnabled(boolean fieldNamesInJsonCastEnabled)
+        {
+            this.fieldNamesInJsonCastEnabled = fieldNamesInJsonCastEnabled;
+            return this;
+        }
+
+        public Builder setLegacyJsonCast(boolean legacyJsonCast)
+        {
+            this.legacyJsonCast = legacyJsonCast;
+            return this;
+        }
+
+        public Builder setCanonicalizedJsonExtract(boolean canonicalizedJsonExtract)
+        {
+            this.canonicalizedJsonExtract = canonicalizedJsonExtract;
+            return this;
+        }
+
+        public Builder setTryCatchableErrorCodes(Set<String> tryCatchableErrorCodes)
+        {
+            this.tryCatchableErrorCodes = unmodifiableSet(tryCatchableErrorCodes);
+            return this;
+        }
+
+        public Builder setLegacyStEquals(boolean legacyStEquals)
+        {
+            this.legacyStEquals = legacyStEquals;
+            return this;
+        }
+
         public SqlFunctionProperties build()
         {
-            return new SqlFunctionProperties(parseDecimalLiteralAsDouble, legacyRowFieldOrdinalAccessEnabled, legacyTypeCoercionWarningEnabled, timeZoneKey, legacyTimestamp, legacyMapSubscript, sessionStartTime, sessionLocale, sessionUser, extraCredentials);
+            return new SqlFunctionProperties(
+                    parseDecimalLiteralAsDouble,
+                    legacyRowFieldOrdinalAccessEnabled,
+                    timeZoneKey,
+                    legacyTimestamp,
+                    legacyTimestampWithTimezone,
+                    legacyMapSubscript,
+                    sessionStartTime,
+                    sessionLocale,
+                    sessionUser,
+                    fieldNamesInJsonCastEnabled,
+                    legacyJsonCast,
+                    extraCredentials,
+                    canonicalizedJsonExtract,
+                    tryCatchableErrorCodes,
+                    legacyStEquals);
         }
     }
 }

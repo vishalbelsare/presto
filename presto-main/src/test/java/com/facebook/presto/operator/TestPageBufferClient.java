@@ -19,15 +19,15 @@ import com.facebook.airlift.http.client.Response;
 import com.facebook.airlift.http.client.testing.TestingHttpClient;
 import com.facebook.airlift.http.client.testing.TestingResponse;
 import com.facebook.airlift.testing.TestingTicker;
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.DataSize.Unit;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.operator.PageBufferClient.ClientCallback;
 import com.facebook.presto.spi.HostAddress;
 import com.facebook.presto.spi.page.PagesSerde;
 import com.facebook.presto.spi.page.SerializedPage;
 import com.google.common.collect.ImmutableListMultimap;
-import io.airlift.units.DataSize;
-import io.airlift.units.DataSize.Unit;
-import io.airlift.units.Duration;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
@@ -36,7 +36,6 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
@@ -107,7 +106,6 @@ public class TestPageBufferClient
                 new Duration(1, TimeUnit.MINUTES),
                 true,
                 location,
-                Optional.empty(),
                 callback,
                 scheduler,
                 pageBufferClientCallbackExecutor);
@@ -194,7 +192,6 @@ public class TestPageBufferClient
                 new Duration(1, TimeUnit.MINUTES),
                 true,
                 location,
-                Optional.empty(),
                 callback,
                 scheduler,
                 pageBufferClientCallbackExecutor);
@@ -236,7 +233,6 @@ public class TestPageBufferClient
                 new Duration(1, TimeUnit.MINUTES),
                 true,
                 location,
-                Optional.empty(),
                 callback,
                 scheduler,
                 pageBufferClientCallbackExecutor);
@@ -252,7 +248,7 @@ public class TestPageBufferClient
         assertEquals(callback.getFinishedBuffers(), 0);
         assertEquals(callback.getFailedBuffers(), 1);
         assertInstanceOf(callback.getFailure(), PageTransportErrorException.class);
-        assertContains(callback.getFailure().getCause().getMessage(), "Expected response code to be 200, but was 404 Not Found");
+        assertContains(callback.getFailure().getCause().getMessage(), "Expected response code to be 200, but was 404");
         assertStatus(client, location, "queued", 0, 1, 1, 1, "not scheduled");
 
         // send invalid content type response and verify response was ignored
@@ -306,7 +302,6 @@ public class TestPageBufferClient
                 new Duration(1, TimeUnit.MINUTES),
                 true,
                 location,
-                Optional.empty(),
                 callback,
                 scheduler,
                 pageBufferClientCallbackExecutor);
@@ -362,7 +357,6 @@ public class TestPageBufferClient
                 new Duration(30, TimeUnit.SECONDS),
                 true,
                 location,
-                Optional.empty(),
                 callback,
                 scheduler,
                 ticker,

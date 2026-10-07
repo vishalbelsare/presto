@@ -19,8 +19,7 @@ import com.facebook.presto.spi.SourceLocation;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import javax.annotation.concurrent.Immutable;
+import com.google.errorprone.annotations.Immutable;
 
 import java.util.List;
 import java.util.Optional;
@@ -58,7 +57,18 @@ public final class LimitNode
             @JsonProperty("count") long count,
             @JsonProperty("step") Step step)
     {
-        super(sourceLocation, id);
+        this(sourceLocation, id, Optional.empty(), source, count, step);
+    }
+
+    public LimitNode(
+            Optional<SourceLocation> sourceLocation,
+            PlanNodeId id,
+            Optional<PlanNode> statsEquivalentPlanNode,
+            PlanNode source,
+            long count,
+            Step step)
+    {
+        super(sourceLocation, id, statsEquivalentPlanNode);
         checkCondition(count >= 0, INVALID_FUNCTION_ARGUMENT, "count must be greater than or equal to zero");
 
         this.source = requireNonNull(source, "source is null");
@@ -102,6 +112,13 @@ public final class LimitNode
     }
 
     @Override
+    public LogicalProperties computeLogicalProperties(LogicalPropertiesProvider logicalPropertiesProvider)
+    {
+        requireNonNull(logicalPropertiesProvider, "logicalPropertiesProvider cannot be null.");
+        return logicalPropertiesProvider.getLimitProperties(this);
+    }
+
+    @Override
     public List<VariableReferenceExpression> getOutputVariables()
     {
         return source.getOutputVariables();
@@ -114,10 +131,16 @@ public final class LimitNode
     }
 
     @Override
+    public PlanNode assignStatsEquivalentPlanNode(Optional<PlanNode> statsEquivalentPlanNode)
+    {
+        return new LimitNode(getSourceLocation(), getId(), statsEquivalentPlanNode, source, count, getStep());
+    }
+
+    @Override
     public PlanNode replaceChildren(List<PlanNode> newChildren)
     {
         checkCondition(newChildren != null && newChildren.size() == 1, GENERIC_INTERNAL_ERROR, "Expect exactly 1 child PlanNode");
-        return new LimitNode(getSourceLocation(), getId(), newChildren.get(0), count, getStep());
+        return new LimitNode(getSourceLocation(), getId(), getStatsEquivalentPlanNode(), newChildren.get(0), count, getStep());
     }
 
     private static void checkCondition(boolean condition, ErrorCodeSupplier errorCode, String message)

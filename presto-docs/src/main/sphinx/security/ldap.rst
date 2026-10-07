@@ -41,7 +41,7 @@ the following example `keytool` command to import the certificate
 
     $ keytool -import -keystore <JAVA_HOME>/jre/lib/security/cacerts -trustcacerts -alias ldap_server -file ldap_server.crt
 
-In addition to this, access to the Presto coordinator should be
+In addition to this, access to the Presto coordinator from any Presto client should be
 through HTTPS. You can do it by creating a :ref:`server_java_keystore` on
 the coordinator.
 
@@ -51,8 +51,8 @@ Presto Coordinator Node Configuration
 You must make the following changes to the environment prior to configuring the
 Presto coordinator to use LDAP authentication and HTTPS.
 
- * :ref:`ldap_server`
- * :ref:`server_java_keystore`
+* :ref:`ldap_server`
+* :ref:`server_java_keystore`
 
 You also need to make changes to the Presto configuration files.
 LDAP authentication is configured on the coordinator in two parts.
@@ -63,7 +63,7 @@ to configure LDAP as the password authenticator plugin.
 Server Config Properties
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-The following is an example of the required properties that need to be added
+The following is an example of the properties that must be added
 to the coordinator's ``config.properties`` file:
 
 .. code-block:: none
@@ -85,10 +85,14 @@ Property                                                Description
                                                         Should be set to ``true``. Default value is
                                                         ``false``.
 ``http-server.https.port``                              HTTPS server port.
+``http-server.http2.enabled``                           Enables HTTP2 server on the worker.
 ``http-server.https.keystore.path``                     The location of the Java Keystore file that will be
                                                         used to secure TLS.
 ``http-server.https.keystore.key``                      The password for the keystore. This must match the
                                                         password you specified when creating the keystore.
+``http-server.authentication.allow-forwarded-https``    Enable treating forwarded HTTPS requests over HTTP as secure.
+                                                        Requires the ``X-Forwarded-Proto`` header to be set to ``https`` on forwarded requests.
+                                                        Default value is ``false``.
 ======================================================= ======================================================
 
 Password Authenticator Configuration
@@ -113,13 +117,16 @@ Property                                                Description
                                                         must contain the pattern ``${USER}`` which will be
                                                         replaced by the actual username during the password
                                                         authentication. Example: ``${USER}@corp.example.com``.
+``ldap.cache-ttl``                                      The duration for which password authentication results
+                                                        are cached. It reduces the number of subsequent requests
+                                                        to the LDAP server for the same user. Set this property
+                                                        to ``0s`` to disable caching. The default value is ``1h``.
 ======================================================= ======================================================
 
 Based on the LDAP server implementation type, the property
 ``ldap.user-bind-pattern`` can be used as described below.
 
-Active Directory
-****************
+.. rubric:: Active Directory
 
 .. code-block:: none
 
@@ -131,8 +138,7 @@ Example:
 
     ldap.user-bind-pattern=${USER}@corp.example.com
 
-OpenLDAP
-********
+.. rubric:: OpenLDAP
 
 .. code-block:: none
 
@@ -171,8 +177,7 @@ Property                                                Description
 Based on the LDAP server implementation type, the property
 ``ldap.group-auth-pattern`` can be used as described below.
 
-Active Directory
-****************
+.. rubric:: Active Directory
 
 .. code-block:: none
 
@@ -184,8 +189,7 @@ Example:
 
     ldap.group-auth-pattern=(&(objectClass=person)(sAMAccountName=${USER})(memberof=CN=AuthorizedGroup,OU=Asia,DC=corp,DC=example,DC=com))
 
-OpenLDAP
-********
+.. rubric:: OpenLDAP
 
 .. code-block:: none
 
@@ -214,8 +218,10 @@ property may be set as follows:
 Presto CLI
 ----------
 
-Environment Configuration
-^^^^^^^^^^^^^^^^^^^^^^^^^
+See :doc:`/clients/presto-cli` for instructions to set up Presto CLI.
+
+Presto CLI Environment Configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 TLS Configuration
 ~~~~~~~~~~~~~~~~~
@@ -225,9 +231,9 @@ authentication. The Presto CLI can use either a :ref:`Java Keystore
 <server_java_keystore>` file or :ref:`Java Truststore <cli_java_truststore>`
 for its TLS configuration.
 
-If you are using keystore file, it can be copied to the client machine and used
+If you are using a keystore file, it can be copied to the client machine and used
 for its TLS configuration. If you are using truststore, you can either use
-default java truststores or create a custom truststore on the CLI. We do not
+the default Java truststore, or create a custom truststore on the client machine. We do not
 recommend using self-signed certificates in production.
 
 Presto CLI Execution
@@ -240,6 +246,8 @@ options. You can either use ``--keystore-*`` or ``--truststore-*`` properties
 to secure TLS connection. The simplest way to invoke the CLI is with a
 wrapper script.
 
+Invoke CLI with ``--keystore-*`` properties:
+
 .. code-block:: none
 
     #!/bin/bash
@@ -248,6 +256,20 @@ wrapper script.
     --server https://presto-coordinator.example.com:8443 \
     --keystore-path /tmp/presto.jks \
     --keystore-password password \
+    --catalog <catalog> \
+    --schema <schema> \
+    --user <LDAP user> \
+    --password
+
+
+Invoke CLI with ``--truststore-*`` properties:
+
+.. code-block:: none
+
+    #!/bin/bash
+
+    ./presto \
+    --server https://presto-coordinator.example.com:8443 \
     --truststore-path /tmp/presto_truststore.jks \
     --truststore-password password \
     --catalog <catalog> \
@@ -287,6 +309,8 @@ Java Keystore File Verification
 Verify the password for a keystore file and view its contents using
 :ref:`troubleshooting_keystore`.
 
+.. _ssl_debugging_for_cli:
+
 SSL Debugging for Presto CLI
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -309,8 +333,42 @@ java.security.cert.CertificateException: No subject alternative names present
 
 This error is seen when the Presto coordinator’s certificate is invalid and does not have the IP you provide
 in the ``--server`` argument of the CLI. You will have to regenerate the coordinator's SSL certificate
-with the appropriate :abbr:`SAN (Subject Alternative Name)` added.
+with the appropriate SAN (Subject Alternative Name) added.
 
 Adding a SAN to this certificate is required in cases where ``https://`` uses IP address in the URL rather
 than the domain contained in the coordinator's certificate, and the certificate does not contain the
-:abbr:`SAN (Subject Alternative Name)` parameter with the matching IP address as an alternative attribute.
+SAN parameter with the matching IP address as an alternative attribute.
+
+No console from which to read password
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+If you use the command line options ``--user`` and ``--password`` along with
+supplying the query statements to execute using ``--file`` or ``--execute`` command line options as below -
+
+.. code-block:: none
+
+    ./presto \
+    --server https://presto-coordinator.example.com:8443 \
+    --execute "select * from tpch.tiny.nation"
+    --user <LDAP user> \
+    --password
+
+    OR
+
+    ./presto \
+    --server https://presto-coordinator.example.com:8443 \
+    --file input_queries.txt
+    --user <LDAP user> \
+    --password > output.txt
+
+The following error might be displayed:
+
+.. code-block:: none
+
+    java.lang.RuntimeException: No console from which to read password
+
+To avoid this error, export the password using the ``PRESTO_PASSWORD`` environment variable:
+
+.. code-block:: none
+
+    export PRESTO_PASSWORD=<password>

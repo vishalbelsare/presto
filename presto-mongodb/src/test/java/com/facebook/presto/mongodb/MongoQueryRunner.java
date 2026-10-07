@@ -18,12 +18,13 @@ import com.facebook.presto.tests.DistributedQueryRunner;
 import com.facebook.presto.tpch.TpchPlugin;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.mongodb.MongoClient;
-import com.mongodb.ServerAddress;
+import com.mongodb.client.MongoClient;
+import com.mongodb.client.MongoClients;
 import de.bwaldvogel.mongo.MongoServer;
 import io.airlift.tpch.TpchTable;
 
 import java.net.InetSocketAddress;
+import java.util.HashMap;
 import java.util.Map;
 
 import static com.facebook.airlift.testing.Closeables.closeAllSuppress;
@@ -47,16 +48,16 @@ public class MongoQueryRunner
 
         server = new MongoServer(new SyncMemoryBackend());
         address = server.bind();
-        client = new MongoClient(new ServerAddress(address));
+        client = MongoClients.create("mongodb://" + address.getHostString() + ":" + address.getPort());
     }
 
     public static MongoQueryRunner createMongoQueryRunner(TpchTable<?>... tables)
             throws Exception
     {
-        return createMongoQueryRunner(ImmutableList.copyOf(tables));
+        return createMongoQueryRunner(ImmutableList.copyOf(tables), ImmutableMap.of());
     }
 
-    public static MongoQueryRunner createMongoQueryRunner(Iterable<TpchTable<?>> tables)
+    public static MongoQueryRunner createMongoQueryRunner(Iterable<TpchTable<?>> tables, Map<String, String> connectorProperties)
             throws Exception
     {
         MongoQueryRunner queryRunner = null;
@@ -66,12 +67,12 @@ public class MongoQueryRunner
             queryRunner.installPlugin(new TpchPlugin());
             queryRunner.createCatalog("tpch", "tpch");
 
-            Map<String, String> properties = ImmutableMap.of(
-                    "mongodb.seeds", queryRunner.getAddress().getHostString() + ":" + queryRunner.getAddress().getPort(),
-                    "mongodb.socket-keep-alive", "true");
+            connectorProperties = new HashMap<>(connectorProperties);
+            connectorProperties.putIfAbsent("mongodb.seeds", queryRunner.getAddress().getHostString() + ":" + queryRunner.getAddress().getPort());
+            connectorProperties.putIfAbsent("mongodb.socket-keep-alive", "true");
 
             queryRunner.installPlugin(new MongoPlugin());
-            queryRunner.createCatalog("mongodb", "mongodb", properties);
+            queryRunner.createCatalog("mongodb", "mongodb", connectorProperties);
 
             copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, createSession(), tables);
 

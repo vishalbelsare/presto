@@ -19,6 +19,7 @@ import java.security.Principal;
 import java.util.Collection;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.facebook.presto.spi.StandardErrorCode.PERMISSION_DENIED;
 import static java.lang.String.format;
@@ -96,6 +97,16 @@ public class AccessDeniedException
         throw new AccessDeniedException(format("Cannot show schemas%s", formatExtraInfo(extraInfo)));
     }
 
+    public static void denyShowCreateTable(String tableName)
+    {
+        denyShowCreateTable(tableName, null);
+    }
+
+    public static void denyShowCreateTable(String tableName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot show create table for %s%s", tableName, formatExtraInfo(extraInfo)));
+    }
+
     public static void denyCreateTable(String tableName)
     {
         denyCreateTable(tableName, null);
@@ -104,6 +115,16 @@ public class AccessDeniedException
     public static void denyCreateTable(String tableName, String extraInfo)
     {
         throw new AccessDeniedException(format("Cannot create table %s%s", tableName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denySetTableProperties(String tableName)
+    {
+        denySetTableProperties(tableName, null);
+    }
+
+    public static void denySetTableProperties(String tableName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot set table properties to %s%s", tableName, formatExtraInfo(extraInfo)));
     }
 
     public static void denyDropTable(String tableName)
@@ -136,6 +157,16 @@ public class AccessDeniedException
         throw new AccessDeniedException(format("Cannot show metadata of tables in %s%s", schemaName, formatExtraInfo(extraInfo)));
     }
 
+    public static void denyShowColumnsMetadata(String tableName)
+    {
+        denyShowColumnsMetadata(tableName, null);
+    }
+
+    public static void denyShowColumnsMetadata(String tableName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot show columns of table %s%s", tableName, formatExtraInfo(extraInfo)));
+    }
+
     public static void denyAddColumn(String tableName)
     {
         denyAddColumn(tableName, null);
@@ -154,6 +185,16 @@ public class AccessDeniedException
     public static void denyDropColumn(String tableName, String extraInfo)
     {
         throw new AccessDeniedException(format("Cannot drop a column from table %s%s", tableName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyAlterColumn(String tableName)
+    {
+        denyAlterColumn(tableName, null);
+    }
+
+    public static void denyAlterColumn(String tableName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot alter a column for table %s%s", tableName, formatExtraInfo(extraInfo)));
     }
 
     public static void denyRenameColumn(String tableName)
@@ -196,6 +237,26 @@ public class AccessDeniedException
         throw new AccessDeniedException(format("Cannot delete from table %s%s", tableName, formatExtraInfo(extraInfo)));
     }
 
+    public static void denyTruncateTable(String tableName)
+    {
+        denyTruncateTable(tableName, null);
+    }
+
+    public static void denyTruncateTable(String tableName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot truncate table %s%s", tableName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyUpdateTableColumns(String tableName, Set<String> updatedColumnNames)
+    {
+        denyUpdateTableColumns(tableName, updatedColumnNames, null);
+    }
+
+    public static void denyUpdateTableColumns(String tableName, Set<String> updatedColumnNames, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot update columns [%s] in table %s%s", updatedColumnNames, tableName, formatExtraInfo(extraInfo)));
+    }
+
     public static void denyCreateView(String viewName)
     {
         denyCreateView(viewName, null);
@@ -219,6 +280,16 @@ public class AccessDeniedException
     public static void denyCreateViewWithSelect(String sourceName, ConnectorIdentity identity, String extraInfo)
     {
         throw new AccessDeniedException(format("View owner '%s' cannot create view that selects from %s%s", identity.getUser(), sourceName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyRenameView(String viewName, String newViewName)
+    {
+        denyRenameView(viewName, newViewName, null);
+    }
+
+    public static void denyRenameView(String viewName, String newViewName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot rename view from %s to %s%s", viewName, newViewName, formatExtraInfo(extraInfo)));
     }
 
     public static void denyDropView(String viewName)
@@ -308,7 +379,17 @@ public class AccessDeniedException
 
     public static void denySelectColumns(String tableName, Collection<String> columnNames, String extraInfo)
     {
-        throw new AccessDeniedException(format("Cannot select from columns %s in table or view %s%s", columnNames, tableName, formatExtraInfo(extraInfo)));
+        throw new AccessDeniedException(format("Cannot select from columns %s in table or view %s%s", columnNames.stream().sorted().collect(Collectors.toList()), tableName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyCallProcedure(String procedureName)
+    {
+        denyCallProcedure(procedureName, null);
+    }
+
+    public static void denyCallProcedure(String procedureName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot call procedure %s%s", procedureName, formatExtraInfo(extraInfo)));
     }
 
     public static void denyCreateRole(String roleName)
@@ -334,6 +415,66 @@ public class AccessDeniedException
     public static void denySetRole(String role)
     {
         throw new AccessDeniedException(format("Cannot set role %s", role));
+    }
+
+    public static void denyCreateBranch(String tableName)
+    {
+        denyCreateBranch(tableName, null);
+    }
+
+    public static void denyCreateBranch(String tableName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot create branch on table %s%s", tableName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyCreateTag(String tableName)
+    {
+        denyCreateTag(tableName, null);
+    }
+
+    public static void denyCreateTag(String tableName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot create tag on table %s%s", tableName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyDropBranch(String tableName)
+    {
+        denyDropBranch(tableName, null);
+    }
+
+    public static void denyDropBranch(String tableName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot drop a branch from table %s%s", tableName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyDropTag(String tableName)
+    {
+        denyDropTag(tableName, null);
+    }
+
+    public static void denyDropTag(String tableName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot drop a tag from table %s%s", tableName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyDropConstraint(String tableName)
+    {
+        denyDropConstraint(tableName, null);
+    }
+
+    public static void denyDropConstraint(String tableName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot drop a constraint from table %s%s", tableName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyAddConstraint(String tableName)
+    {
+        denyAddConstraint(tableName, null);
+    }
+
+    public static void denyAddConstraint(String tableName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot add a constraint to table %s%s", tableName, formatExtraInfo(extraInfo)));
     }
 
     private static Object formatExtraInfo(String extraInfo)

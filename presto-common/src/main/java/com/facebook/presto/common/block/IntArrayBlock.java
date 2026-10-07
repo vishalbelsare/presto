@@ -14,14 +14,14 @@
 package com.facebook.presto.common.block;
 
 import io.airlift.slice.SliceOutput;
+import jakarta.annotation.Nullable;
 import org.openjdk.jol.info.ClassLayout;
-
-import javax.annotation.Nullable;
 
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.BiConsumer;
+import java.util.OptionalInt;
+import java.util.function.ObjLongConsumer;
 
 import static com.facebook.presto.common.array.Arrays.ExpansionFactor.SMALL;
 import static com.facebook.presto.common.array.Arrays.ExpansionOption.PRESERVE;
@@ -30,7 +30,6 @@ import static com.facebook.presto.common.block.BlockUtil.appendNullToIsNullArray
 import static com.facebook.presto.common.block.BlockUtil.checkArrayRange;
 import static com.facebook.presto.common.block.BlockUtil.checkValidRegion;
 import static com.facebook.presto.common.block.BlockUtil.compactArray;
-import static com.facebook.presto.common.block.BlockUtil.countUsedPositions;
 import static com.facebook.presto.common.block.BlockUtil.internalPositionInRange;
 import static io.airlift.slice.SizeOf.sizeOf;
 import static java.lang.String.format;
@@ -39,6 +38,7 @@ public class IntArrayBlock
         implements Block
 {
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(IntArrayBlock.class).instanceSize();
+    public static final int SIZE_IN_BYTES_PER_POSITION = Integer.BYTES + Byte.BYTES;
 
     private final int arrayOffset;
     private final int positionCount;
@@ -46,7 +46,6 @@ public class IntArrayBlock
     private final boolean[] valueIsNull;
     private final int[] values;
 
-    private final long sizeInBytes;
     private final long retainedSizeInBytes;
 
     public IntArrayBlock(int positionCount, Optional<boolean[]> valueIsNull, int[] values)
@@ -75,26 +74,31 @@ public class IntArrayBlock
         }
         this.valueIsNull = valueIsNull;
 
-        sizeInBytes = (Integer.BYTES + Byte.BYTES) * (long) positionCount;
         retainedSizeInBytes = INSTANCE_SIZE + sizeOf(valueIsNull) + sizeOf(values);
     }
 
     @Override
     public long getSizeInBytes()
     {
-        return sizeInBytes;
+        return SIZE_IN_BYTES_PER_POSITION * (long) positionCount;
+    }
+
+    @Override
+    public OptionalInt fixedSizeInBytesPerPosition()
+    {
+        return OptionalInt.of(SIZE_IN_BYTES_PER_POSITION);
     }
 
     @Override
     public long getRegionSizeInBytes(int position, int length)
     {
-        return (Integer.BYTES + Byte.BYTES) * (long) length;
+        return SIZE_IN_BYTES_PER_POSITION * (long) length;
     }
 
     @Override
-    public long getPositionsSizeInBytes(boolean[] positions)
+    public long getPositionsSizeInBytes(boolean[] usedPositions, int usedPositionCount)
     {
-        return (Integer.BYTES + Byte.BYTES) * (long) countUsedPositions(positions);
+        return SIZE_IN_BYTES_PER_POSITION * (long) usedPositionCount;
     }
 
     @Override
@@ -110,13 +114,13 @@ public class IntArrayBlock
     }
 
     @Override
-    public void retainedBytesForEachPart(BiConsumer<Object, Long> consumer)
+    public void retainedBytesForEachPart(ObjLongConsumer<Object> consumer)
     {
         consumer.accept(values, sizeOf(values));
         if (valueIsNull != null) {
             consumer.accept(valueIsNull, sizeOf(valueIsNull));
         }
-        consumer.accept(this, (long) INSTANCE_SIZE);
+        consumer.accept(this, INSTANCE_SIZE);
     }
 
     @Override
@@ -270,6 +274,13 @@ public class IntArrayBlock
     }
 
     @Override
+    public long toLong(int position)
+    {
+        checkReadablePosition(position);
+        return getIntUnchecked(position + arrayOffset);
+    }
+
+    @Override
     public boolean equals(Object o)
     {
         if (this == o) {
@@ -281,7 +292,6 @@ public class IntArrayBlock
         IntArrayBlock that = (IntArrayBlock) o;
         return arrayOffset == that.arrayOffset &&
                 positionCount == that.positionCount &&
-                sizeInBytes == that.sizeInBytes &&
                 retainedSizeInBytes == that.retainedSizeInBytes &&
                 Arrays.equals(valueIsNull, that.valueIsNull) &&
                 Arrays.equals(values, that.values);
@@ -290,7 +300,7 @@ public class IntArrayBlock
     @Override
     public int hashCode()
     {
-        int result = Objects.hash(arrayOffset, positionCount, sizeInBytes, retainedSizeInBytes);
+        int result = Objects.hash(arrayOffset, positionCount, retainedSizeInBytes);
         result = 31 * result + Arrays.hashCode(valueIsNull);
         result = 31 * result + Arrays.hashCode(values);
         return result;

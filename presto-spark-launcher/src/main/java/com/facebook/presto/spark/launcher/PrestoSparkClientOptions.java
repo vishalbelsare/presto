@@ -26,12 +26,21 @@ public class PrestoSparkClientOptions
     @Option(name = {"-c", "--config"}, title = "file", description = "config.properties path", required = true)
     public String config;
 
+    @Option(name = {"-nc", "--native-worker-config"}, title = "file", description = "native worker config.properties path")
+    public String nativeWorkerConfig;
+
     @Option(name = {"--catalogs"}, title = "directory", description = "catalog configuration directory path", required = true)
     public String catalogs;
+
+    @Option(name = {"-nca", "--native-worker-catalogs"}, title = "directory", description = "native worker catalog configuration directory path")
+    public String nativeWorkerCatalogs;
 
     @Option(name = "--catalog", title = "catalog", description = "Default catalog")
     public String catalog;
 
     @Option(name = "--schema", title = "schema", description = "Default schema")
     public String schema;
+
+    @Option(name = "--session-property-config", title = "file", description = "session-property-configuration.properties path")
+    public String sessionPropertyConfig;
 }

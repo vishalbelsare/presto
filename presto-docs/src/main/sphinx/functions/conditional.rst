@@ -55,19 +55,19 @@ IF
 The ``IF`` function is actually a language construct
 that is equivalent to the following ``CASE`` expression:
 
-    .. code-block:: none
+.. code-block:: none
 
-        CASE
-            WHEN condition THEN true_value
-            [ ELSE false_value ]
-        END
+    CASE
+        WHEN condition THEN true_value
+        [ ELSE false_value ]
+    END
 
-.. function:: if(condition, true_value)
+.. function:: if(condition, true_value) -> boolean
 
     Evaluates and returns ``true_value`` if ``condition`` is true,
     otherwise null is returned and ``true_value`` is not evaluated.
 
-.. function:: if(condition, true_value, false_value)
+.. function:: if(condition, true_value, false_value) -> boolean
 
     Evaluates and returns ``true_value`` if ``condition`` is true,
     otherwise evaluates and returns ``false_value``.

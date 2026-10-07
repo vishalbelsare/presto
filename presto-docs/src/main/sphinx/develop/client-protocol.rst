@@ -35,6 +35,11 @@ the columns returned by the query.  Most of the response headers should be treat
 browser cookies by the client, and echoed back as request headers in subsequent client requests,
 as documented below.
 
+To request the results in binary format, include binaryResults=true query parameter in the initial
+``/v1/statement`` ``POST`` request. The response JSON document will contain ``binaryData`` field
+with a list of base64-encoded pages in :doc:`SerializedPage </develop/serialized-page>` format. The
+``data`` field will not be present.
+
 If the JSON document returned by the ``POST`` to ``/v1/statement`` does not contain a ``nextUri`` link, the query has completed,
 either successfully or unsuccessfully, and no additional requests need to be made.  If the ``nextUri`` link is present in
 the document, there are more query results to be fetched.  The client should loop executing a ``GET`` request
@@ -57,11 +62,11 @@ Attribute                              Description
 ``nextUri``                            If present, the URL that should be used in subsequent ``GET`` or ``DELETE`` requests.  If not present, the query is
                                        complete or ended in error.
 ``columns``                            A list of the names and types of the columns returned by the query.
-``data``                               The ``data`` attribute contains a list of the rows returned by the query request.  Each row is itself a
+``data``                               The ``data`` attribute contains a list of the rows returned by the query request. Each row is itself a
                                        list that holds values of the columns in the row, in the order specified by the ``columns`` attribute.
-``updateType``                         A human-readable string representing the operation.  For a ``CREATE TABLE`` request, the ``updateType`` will be,
-                                       "CREATE TABLE"; for ``SET SESSION`` it will be "SET SESSION"; etc.
-``error``                              If query failed, the ``error`` attribute will contain JSON for a ``QueryError`` object.  That object contains
+``updateType``                         A human-readable string representing the operation. For example, for a ``CREATE TABLE`` request the ``updateType`` 
+                                       will be "CREATE TABLE"; or for ``SET SESSION`` it will be "SET SESSION".
+``error``                              If query failed, the ``error`` attribute will contain JSON for a ``QueryError`` object. That object contains
                                        a ``message``, an ``errorCode`` and other information about the error.  See the ``QueryError`` class for more details.
 ====================================== ===========================================================================================================================
 
@@ -86,7 +91,7 @@ Request Header Name                    Description
                                        the Presto engine.
 ``X-Presto-Language``                  The language to be used when running the query and formatting results.  The language
                                        of the session can be set on a per-query basis using the ``X-Presto-Language``
-                                       HTTP header, or via the ``PrestoConnection.setLocale(Locale)`` method in the
+                                       HTTP header, or with the ``PrestoConnection.setLocale(Locale)`` method in the
                                        JDBC driver.
 ``X-Presto-Trace-Token``               Supplies a trace token to the Presto engine to help identify log lines that originate
                                        with this query request.
@@ -106,17 +111,20 @@ Request Header Name                    Description
                                        ``X-Presto-Started-Transaction-Id`` and cleared by ``X-Presto-Clear-Transaction-Id``.
 ``X-Presto-Client-Info``               Contains arbitrary information about the client program submitting the query.
 ``X-Presto-Client-Tags``               A comma-separated list of "tag" strings, used to identify Presto resource groups.
-``X-Presto-Resource-Estimate``         A comma-separated list of ``resource=value`` type assigments.  The possible choices
+``X-Presto-Resource-Estimate``         A comma-separated list of ``resource=value`` type assignments.  The possible choices
                                        of ``resource`` are "EXECUTION_TIME", "CPU_TIME",  "PEAK_MEMORY" and "PEAK_TASK_MEMORY".
                                        "EXECUTION_TIME" and "CPU_TIME" have values specified as airlift ``Duration`` strings,
-                                       whose format is a double precision number followed by a ``TimeUnit`` string, e.g.,
-                                       of ``s`` for seconds, ``m`` for minutes, ``h`` for hours, etc.  "PEAK_MEMORY" and
+                                       whose format is a double precision number followed by a ``TimeUnit`` string
+                                       of ``s`` for seconds, ``m`` for minutes, ``h`` for hours.  "PEAK_MEMORY" and
                                        "PEAK_TASK_MEMORY" are specified as as airlift ``DataSize`` strings, whose format
                                        is an integer followed by ``B`` for bytes; ``kB`` for kilobytes; ``mB`` for megabytes,
-                                       ``gB`` for gigabytes, etc.
+                                       ``gB`` for gigabytes.
 ``X-Presto-Extra-Credential``          Provides extra credentials to the connector.  The header is a name=value string that
                                        is saved in the session ``Identity`` object.  The name and value are only
                                        meaningful to the connector.
+``X-Presto-Retry-Query``               Boolean flag indicating that this query is a placeholder for potential retry.
+                                       When set to ``true``, marks the query on the backup cluster as a retry placeholder
+                                       and prevents retry chains in cross-cluster retry scenarios.
 ====================================== =========================================================================================
 
 
@@ -127,7 +135,7 @@ This table lists the supported client response headers.  After receiving a respo
 request headers that will be used in subsequent requests to be consistent with the response headers received.
 
 ====================================== =================================================================================================
-Respone Header Name                    Description
+Response Header Name                   Description
 ====================================== =================================================================================================
 ``X-Presto-Set-Catalog``               Instructs the client to set the catalog that will be sent in the
                                        ``X-Presto-Catalog`` request header in subsequent client requests.
@@ -179,3 +187,69 @@ Data Member                Type                         Notes
 =================
 
 Class ``PrestoHeaders`` enumerates all the HTTP request and response headers allowed by the Presto client REST API.
+
+
+Cross-Cluster Query Retry
+=========================
+
+Presto supports automatic query retry on a backup cluster when a query fails on the primary cluster. This feature enables
+high availability by transparently redirecting failed queries to a backup cluster.
+
+The cross-cluster retry mechanism works as follows:
+
+Query Parameters
+----------------
+
+When a router or load balancer handles a query that should support cross-cluster retry, it includes the following 
+query parameters when redirecting the client to the primary cluster:
+
+* ``retryUrl`` - The URL-encoded endpoint of the backup cluster where the query can be retried if it fails
+* ``retryExpirationInSeconds`` - The number of seconds until the retry URL expires (must be at least 1). This value
+  should be set based on the ``Cache-Control`` headers returned by Presto query endpoints. Presto uses ``Cache-Control``
+  headers to indicate how long a query will be retained in the server's memory. The retry expiration should not exceed
+  this cache duration to ensure the placeholder query is still available when the retry occurs.
+
+Both parameters must be provided together. If only one is provided, the request will be rejected with a 400 Bad Request error.
+
+Example request to primary cluster::
+
+    POST /v1/statement?retryUrl=https%3A%2F%2Fbackup.example.com%3A8080%2Fv1%2Fstatement&retryExpirationInSeconds=300
+    
+Retry Header
+------------
+
+The ``X-Presto-Retry-Query`` header is used to indicate that a query is being created as a placeholder for potential
+retry. When set to ``true``, this header:
+
+* Indicates the query is a retry placeholder on the backup cluster
+* Prevents retry chains - a query marked with this header will not trigger another retry if it fails
+
+Retry Flow
+----------
+
+1. Router/load balancer POSTs the query to the backup cluster with ``X-Presto-Retry-Query: true`` header to create
+   a placeholder query that can be used as a retry destination
+2. Router redirects (HTTP 307) the client to the primary cluster with ``retryUrl`` and ``retryExpirationInSeconds``
+   query parameters
+3. Client follows the redirect and POSTs the query to the primary cluster
+4. Primary cluster executes the query normally
+5. If the query fails with a retriable error code (configured on the server), the Presto server modifies the
+   ``nextUri`` in the response to point to the retry URL of the backup cluster
+6. Client follows the ``nextUri`` to the backup cluster where the placeholder query executes the actual query
+7. If the retry query fails, it will not trigger another retry since it's marked with ``X-Presto-Retry-Query``
+
+Limitations
+-----------
+
+Cross-cluster retry has the following limitations:
+
+* **Query types**: Retry only works when no results have been sent back to the client. In practice, this feature 
+  works well for:
+  
+  - ``CREATE TABLE AS SELECT`` statements
+  - DDL operations (such as ``CREATE``, ``ALTER``, ``DROP``)
+  - ``INSERT`` statements
+  - ``SELECT`` queries that fail before any results are produced
+  
+  For ``SELECT`` queries that produce results, retry will only occur if the failure happens during planning or
+  before the first batch of results is generated.

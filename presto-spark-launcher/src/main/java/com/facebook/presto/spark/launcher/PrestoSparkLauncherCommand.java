@@ -14,18 +14,20 @@
 package com.facebook.presto.spark.launcher;
 
 import com.facebook.presto.spark.classloader_interface.PrestoSparkConfInitializer;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.airline.Command;
 import io.airlift.airline.HelpOption;
+import jakarta.inject.Inject;
 import org.apache.spark.SparkConf;
 import org.apache.spark.SparkContext;
-
-import javax.inject.Inject;
 
 import java.io.File;
 import java.util.Optional;
 
+import static com.facebook.presto.spark.classloader_interface.PrestoSparkConfiguration.METADATA_STORAGE_TYPE_KEY;
+import static com.facebook.presto.spark.classloader_interface.PrestoSparkConfiguration.METADATA_STORAGE_TYPE_LOCAL;
 import static com.facebook.presto.spark.launcher.LauncherUtils.checkFile;
 import static com.facebook.presto.spark.launcher.LauncherUtils.loadCatalogProperties;
 import static com.facebook.presto.spark.launcher.LauncherUtils.loadProperties;
@@ -57,10 +59,15 @@ public class PrestoSparkLauncherCommand
                 packageSupplier,
                 loadProperties(checkFile(new File(clientOptions.config))),
                 loadCatalogProperties(new File(clientOptions.catalogs)),
-                "LOCAL",
+                ImmutableMap.of(METADATA_STORAGE_TYPE_KEY, METADATA_STORAGE_TYPE_LOCAL),
+                clientOptions.nativeWorkerConfig == null ? Optional.empty() : Optional.of(
+                        loadProperties(checkFile(new File(clientOptions.nativeWorkerConfig)))),
+                clientOptions.nativeWorkerCatalogs == null ? Optional.empty() : Optional.of(
+                        loadCatalogProperties(new File(clientOptions.nativeWorkerCatalogs))),
                 Optional.empty(),
                 Optional.empty(),
-                Optional.empty(),
+                clientOptions.sessionPropertyConfig == null ? Optional.empty() : Optional.of(
+                        loadProperties(checkFile(new File(clientOptions.sessionPropertyConfig)))),
                 Optional.empty(),
                 Optional.empty());
 
@@ -69,6 +76,7 @@ public class PrestoSparkLauncherCommand
                     "test",
                     Optional.empty(),
                     ImmutableMap.of(),
+                    ImmutableList.of(),
                     clientOptions.catalog,
                     clientOptions.schema,
                     Optional.empty(),

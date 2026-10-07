@@ -10,8 +10,8 @@ equivalent varchar.
 
 When necessary, values can be explicitly cast to a particular type.
 
-Conversion Functions
---------------------
+Functions
+---------
 
 .. function:: cast(value AS type) -> type
 
@@ -20,7 +20,15 @@ Conversion Functions
 
 .. function:: try_cast(value AS type) -> type
 
-    Like :func:`cast`, but returns null if the cast fails.
+    Like :func:`!cast`, but returns null if the cast fails.
+
+.. note::
+
+    When casting strings to integer types such as ``TINYINT``, 
+    ``SMALLINT``, ``INTEGER``, or ``BIGINT``, leading 
+    and trailing spaces in the string are allowed. See  `Integer <../language/types.html#integer>`_.
+
+
 
 Data Size
 ---------

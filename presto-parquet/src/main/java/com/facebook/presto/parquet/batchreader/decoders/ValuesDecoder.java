@@ -13,7 +13,10 @@
  */
 package com.facebook.presto.parquet.batchreader.decoders;
 
+import org.joda.time.DateTimeZone;
+
 import java.io.IOException;
+import java.util.Optional;
 
 public interface ValuesDecoder
 {
@@ -54,7 +57,7 @@ public interface ValuesDecoder
                 throws IOException;
     }
 
-    interface Int64TimestampMicrosValuesDecoder
+    interface Int64TimeAndTimestampMicrosValuesDecoder
             extends ValuesDecoder
     {
         void readNext(long[] values, int offset, int length)
@@ -64,10 +67,15 @@ public interface ValuesDecoder
                 throws IOException;
     }
 
+    interface PackFunction
+    {
+        long pack(long millis);
+    }
+
     interface TimestampValuesDecoder
             extends ValuesDecoder
     {
-        void readNext(long[] values, int offset, int length)
+        void readNext(long[] values, int offset, int length, Optional<DateTimeZone> timezone)
                 throws IOException;
 
         void skip(int length)
@@ -81,4 +89,36 @@ public interface ValuesDecoder
 
         void skip(int length);
     }
+
+    interface ShortDecimalValuesDecoder
+            extends ValuesDecoder
+    {
+        void readNext(long[] values, int offset, int length)
+                throws IOException;
+
+        void skip(int length)
+                throws IOException;
+    }
+
+    interface LongDecimalValuesDecoder
+            extends ValuesDecoder
+    {
+        void readNext(long[] values, int offset, int length)
+                throws IOException;
+
+        void skip(int length)
+                throws IOException;
+    }
+
+    interface UuidValuesDecoder
+            extends ValuesDecoder
+    {
+        void readNext(long[] values, int offset, int length)
+                throws IOException;
+
+        void skip(int length)
+                throws IOException;
+    }
+
+    public long getRetainedSizeInBytes();
 }

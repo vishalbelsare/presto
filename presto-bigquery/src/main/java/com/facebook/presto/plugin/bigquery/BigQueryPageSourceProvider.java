@@ -14,6 +14,7 @@
 package com.facebook.presto.plugin.bigquery;
 
 import com.facebook.airlift.log.Logger;
+import com.facebook.presto.common.RuntimeStats;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorPageSource;
 import com.facebook.presto.spi.ConnectorSession;
@@ -23,8 +24,7 @@ import com.facebook.presto.spi.SplitContext;
 import com.facebook.presto.spi.connector.ConnectorPageSourceProvider;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
 import com.google.common.collect.ImmutableList;
-
-import javax.inject.Inject;
+import jakarta.inject.Inject;
 
 import java.util.List;
 
@@ -34,13 +34,13 @@ public class BigQueryPageSourceProvider
         implements ConnectorPageSourceProvider
 {
     private static final Logger log = Logger.get(BigQueryPageSourceProvider.class);
-    private final BigQueryStorageClientFactory bigQueryStorageClientFactory;
+    private final BigQueryReadClientFactory bigQueryReadClientFactory;
     private final int maxReadRowsRetries;
 
     @Inject
-    public BigQueryPageSourceProvider(BigQueryStorageClientFactory bigQueryStorageClientFactory, BigQueryConfig config)
+    public BigQueryPageSourceProvider(BigQueryReadClientFactory bigQueryReadClientFactory, BigQueryConfig config)
     {
-        this.bigQueryStorageClientFactory = bigQueryStorageClientFactory;
+        this.bigQueryReadClientFactory = bigQueryReadClientFactory;
         this.maxReadRowsRetries = config.getMaxReadRowsRetries();
     }
 
@@ -51,7 +51,8 @@ public class BigQueryPageSourceProvider
             ConnectorSplit split,
             ConnectorTableLayoutHandle layout,
             List<ColumnHandle> columns,
-            SplitContext splitContext)
+            SplitContext splitContext,
+            RuntimeStats runtimeStats)
     {
         BigQuerySplit bigQuerySplit = (BigQuerySplit) split;
         if (bigQuerySplit.representsEmptyProjection()) {
@@ -65,6 +66,6 @@ public class BigQueryPageSourceProvider
                 .map(BigQueryColumnHandle.class::cast)
                 .collect(toImmutableList());
 
-        return new BigQueryResultPageSource(bigQueryStorageClientFactory, maxReadRowsRetries, bigQuerySplit, bigQueryTableHandle, bigQueryColumnHandles);
+        return new BigQueryResultPageSource(bigQueryReadClientFactory, maxReadRowsRetries, bigQuerySplit, bigQueryColumnHandles);
     }
 }

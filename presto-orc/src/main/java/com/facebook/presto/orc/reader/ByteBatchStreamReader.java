@@ -26,11 +26,11 @@ import com.facebook.presto.orc.stream.BooleanInputStream;
 import com.facebook.presto.orc.stream.ByteInputStream;
 import com.facebook.presto.orc.stream.InputStreamSource;
 import com.facebook.presto.orc.stream.InputStreamSources;
+import jakarta.annotation.Nullable;
 import org.openjdk.jol.info.ClassLayout;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
+import java.time.ZoneId;
 import java.util.Optional;
 
 import static com.facebook.presto.common.type.TinyintType.TINYINT;
@@ -38,7 +38,8 @@ import static com.facebook.presto.orc.metadata.Stream.StreamKind.DATA;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.PRESENT;
 import static com.facebook.presto.orc.reader.ReaderUtils.minNonNullValueSize;
 import static com.facebook.presto.orc.reader.ReaderUtils.verifyStreamType;
-import static com.facebook.presto.orc.stream.MissingInputStreamSource.missingStreamSource;
+import static com.facebook.presto.orc.stream.MissingInputStreamSource.getBooleanMissingStreamSource;
+import static com.facebook.presto.orc.stream.MissingInputStreamSource.getByteMissingStreamSource;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Verify.verify;
 import static io.airlift.slice.SizeOf.sizeOf;
@@ -54,11 +55,11 @@ public class ByteBatchStreamReader
     private int readOffset;
     private int nextBatchSize;
 
-    private InputStreamSource<BooleanInputStream> presentStreamSource = missingStreamSource(BooleanInputStream.class);
+    private InputStreamSource<BooleanInputStream> presentStreamSource = getBooleanMissingStreamSource();
     @Nullable
     private BooleanInputStream presentStream;
 
-    private InputStreamSource<ByteInputStream> dataStreamSource = missingStreamSource(ByteInputStream.class);
+    private InputStreamSource<ByteInputStream> dataStreamSource = getByteMissingStreamSource();
     @Nullable
     private ByteInputStream dataStream;
 
@@ -172,10 +173,10 @@ public class ByteBatchStreamReader
     }
 
     @Override
-    public void startStripe(Stripe stripe)
+    public void startStripe(ZoneId timezone, Stripe stripe)
     {
-        presentStreamSource = missingStreamSource(BooleanInputStream.class);
-        dataStreamSource = missingStreamSource(ByteInputStream.class);
+        presentStreamSource = getBooleanMissingStreamSource();
+        dataStreamSource = getByteMissingStreamSource();
 
         readOffset = 0;
         nextBatchSize = 0;

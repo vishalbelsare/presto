@@ -62,12 +62,12 @@ public class TupleDomainFilterUtils
         boolean nullAllowed = domain.isNullAllowed();
 
         if (values.isAll()) {
-            checkArgument(!nullAllowed, "Unexpected allways-true filter");
+            checkArgument(!nullAllowed, "Unexpected always-true filter");
             return IS_NOT_NULL;
         }
 
         if (values.isNone()) {
-            checkArgument(nullAllowed, "Unexpected allways-false filter");
+            checkArgument(nullAllowed, "Unexpected always-false filter");
             return IS_NULL;
         }
 
@@ -136,19 +136,12 @@ public class TupleDomainFilterUtils
             }
         }
 
-        if (firstRangeFilter instanceof DoubleRange || firstRangeFilter instanceof FloatRange) {
-            // != and NOT IN filters should return true when applied to NaN
-            // E.g. NaN != 1.0 as well as NaN NOT IN (1.0, 2.5, 3.6) should return true; otherwise false.
-            boolean nanAllowed = isNotIn(ranges);
-            return MultiRange.of(rangeFilters, nullAllowed, nanAllowed);
-        }
-
-        return MultiRange.of(rangeFilters, nullAllowed, false);
+        return MultiRange.of(rangeFilters, nullAllowed);
     }
 
     /**
-     * Returns true is ranges represent != or NOT IN filter for double, float or string column.
-     *
+     * Returns true if ranges represent != or NOT IN filter for double, float or string column.
+     * <p>
      * The logic is to return true if ranges are next to each other, but don't include the touch value.
      */
     private static boolean isNotIn(List<Range> ranges)
@@ -161,7 +154,7 @@ public class TupleDomainFilterUtils
         Marker previousHigh = firstRange.getHigh();
 
         Type type = previousHigh.getType();
-        if (type != DOUBLE && type != REAL && !isVarcharType(type) && !(type instanceof CharType)) {
+        if (!type.equals(DOUBLE) && !type.equals(REAL) && !isVarcharType(type) && !(type instanceof CharType)) {
             return false;
         }
 
@@ -219,10 +212,10 @@ public class TupleDomainFilterUtils
             checkArgument(range.isSingleValue(), "Unexpected range of boolean values");
             return BooleanValue.of(((Boolean) range.getSingleValue()).booleanValue(), nullAllowed);
         }
-        if (type == DOUBLE) {
+        if (type.equals(DOUBLE)) {
             return doubleRangeToFilter(range, nullAllowed);
         }
-        if (type == REAL) {
+        if (type.equals(REAL)) {
             return floatRangeToFilter(range, nullAllowed);
         }
         if (type instanceof DecimalType) {
@@ -262,12 +255,6 @@ public class TupleDomainFilterUtils
         Marker high = range.getHigh();
         double lowerDouble = low.isLowerUnbounded() ? Double.MIN_VALUE : (double) low.getValue();
         double upperDouble = high.isUpperUnbounded() ? Double.MAX_VALUE : (double) high.getValue();
-        if (!low.isLowerUnbounded() && Double.isNaN(lowerDouble)) {
-            return ALWAYS_FALSE;
-        }
-        if (!high.isUpperUnbounded() && Double.isNaN(upperDouble)) {
-            return ALWAYS_FALSE;
-        }
         return DoubleRange.of(
                 lowerDouble,
                 low.isLowerUnbounded(),
@@ -284,12 +271,6 @@ public class TupleDomainFilterUtils
         Marker high = range.getHigh();
         float lowerFloat = low.isLowerUnbounded() ? Float.MIN_VALUE : intBitsToFloat(toIntExact((long) low.getValue()));
         float upperFloat = high.isUpperUnbounded() ? Float.MAX_VALUE : intBitsToFloat(toIntExact((long) high.getValue()));
-        if (!low.isLowerUnbounded() && Float.isNaN(lowerFloat)) {
-            return ALWAYS_FALSE;
-        }
-        if (!high.isUpperUnbounded() && Float.isNaN(upperFloat)) {
-            return ALWAYS_FALSE;
-        }
         return FloatRange.of(
                 lowerFloat,
                 low.isLowerUnbounded(),

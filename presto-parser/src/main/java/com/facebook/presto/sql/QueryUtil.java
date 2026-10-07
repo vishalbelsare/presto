@@ -17,6 +17,7 @@ import com.facebook.presto.sql.tree.AliasedRelation;
 import com.facebook.presto.sql.tree.AllColumns;
 import com.facebook.presto.sql.tree.CoalesceExpression;
 import com.facebook.presto.sql.tree.ComparisonExpression;
+import com.facebook.presto.sql.tree.DereferenceExpression;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.FunctionCall;
 import com.facebook.presto.sql.tree.GroupBy;
@@ -40,6 +41,7 @@ import com.facebook.presto.sql.tree.Table;
 import com.facebook.presto.sql.tree.TableSubquery;
 import com.facebook.presto.sql.tree.Values;
 import com.facebook.presto.sql.tree.WhenClause;
+import com.facebook.presto.sql.tree.WindowDefinition;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -62,6 +64,11 @@ public final class QueryUtil
     public static Identifier quotedIdentifier(String name)
     {
         return new Identifier(name, true);
+    }
+
+    public static Expression nameReference(String first, String... rest)
+    {
+        return DereferenceExpression.from(QualifiedName.of(first, rest));
     }
 
     public static SelectItem unaliasedName(String name)
@@ -145,7 +152,12 @@ public final class QueryUtil
 
     public static Row row(Expression... values)
     {
-        return new Row(ImmutableList.copyOf(values));
+        return Row.unnamed(ImmutableList.copyOf(values));
+    }
+
+    public static Relation aliased(Relation relation, String alias)
+    {
+        return new AliasedRelation(relation, identifier(alias), null);
     }
 
     public static Relation aliased(Relation relation, String alias, List<String> columnAliases)
@@ -176,6 +188,7 @@ public final class QueryUtil
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
+                ImmutableList.of(),
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty()));
@@ -208,12 +221,27 @@ public final class QueryUtil
 
     public static Query simpleQuery(Select select, Relation from, Optional<Expression> where, Optional<GroupBy> groupBy, Optional<Expression> having, Optional<OrderBy> orderBy, Optional<Offset> offset, Optional<String> limit)
     {
+        return simpleQuery(select, from, where, groupBy, having, ImmutableList.of(), orderBy, offset, limit);
+    }
+
+    public static Query simpleQuery(
+            Select select,
+            Relation from,
+            Optional<Expression> where,
+            Optional<GroupBy> groupBy,
+            Optional<Expression> having,
+            List<WindowDefinition> windows,
+            Optional<OrderBy> orderBy,
+            Optional<Offset> offset,
+            Optional<String> limit)
+    {
         return query(new QuerySpecification(
                 select,
                 Optional.of(from),
                 where,
                 groupBy,
                 having,
+                windows,
                 orderBy,
                 offset,
                 limit));

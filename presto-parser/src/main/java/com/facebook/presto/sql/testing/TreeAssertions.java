@@ -21,8 +21,7 @@ import com.facebook.presto.sql.tree.Node;
 import com.facebook.presto.sql.tree.Statement;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.List;
 import java.util.Optional;
@@ -63,7 +62,7 @@ public final class TreeAssertions
             return sqlParser.createStatement(sql, parsingOptions);
         }
         catch (ParsingException e) {
-            throw new AssertionError(format("failed to parse formatted SQL: %s\nerror: %s\ntree: %s", sql, e.getMessage(), tree), e);
+            throw new AssertionError(format("failed to parse formatted SQL: %s%nerror: %s%ntree: %s", sql, e.getMessage(), tree), e);
         }
     }
 

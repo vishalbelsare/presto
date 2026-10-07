@@ -14,12 +14,16 @@
 package com.facebook.presto.hive;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.spi.PrestoWarning;
+import com.facebook.presto.spi.WarningCode;
 import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestQueryFramework;
 import com.facebook.presto.tests.DistributedQueryRunner;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import org.intellij.lang.annotations.Language;
 import org.testng.annotations.Test;
 
 import java.io.IOException;
@@ -28,10 +32,12 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static com.facebook.presto.SystemSessionProperties.PUSHDOWN_SUBFIELDS_ENABLED;
 import static com.facebook.presto.common.type.StandardTypes.BIGINT;
 import static com.facebook.presto.common.type.StandardTypes.BOOLEAN;
 import static com.facebook.presto.common.type.StandardTypes.DATE;
@@ -47,6 +53,9 @@ import static com.facebook.presto.hive.HiveSessionProperties.PUSHDOWN_FILTER_ENA
 import static com.facebook.presto.hive.HiveStorageFormat.RCBINARY;
 import static com.facebook.presto.hive.HiveStorageFormat.RCTEXT;
 import static com.facebook.presto.hive.HiveStorageFormat.TEXTFILE;
+import static com.facebook.presto.hive.HiveWarningCode.HIVE_TABLESCAN_CONVERTED_TO_VALUESNODE;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.common.collect.Sets.difference;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static io.airlift.tpch.TpchTable.getTables;
@@ -54,6 +63,7 @@ import static java.lang.String.format;
 import static java.nio.file.StandardCopyOption.ATOMIC_MOVE;
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 import static java.util.stream.Collectors.joining;
+import static org.testng.Assert.assertTrue;
 
 public class TestHivePushdownFilterQueries
         extends AbstractTestQueryFramework
@@ -1035,7 +1045,8 @@ public class TestHivePushdownFilterQueries
             // no filter
             assertQueryUsingH2Cte("SELECT * FROM test_file_format_orc", cte);
             assertQueryUsingH2Cte("SELECT comment FROM test_file_format_orc", cte);
-            assertQueryFails("SELECT COUNT(*) FROM test_file_format_orc", "Partial aggregation pushdown only supported for ORC/Parquet files. Table tpch.test_file_format_orc has file ((.*?)) of format (.*?). Set session property hive.pushdown_partial_aggregations_into_scan=false and execute query again");
+            assertQueryFails("SELECT COUNT(*) FROM test_file_format_orc", "Table tpch.test_file_format_orc has file of format .* that does not support partial aggregation pushdown. " +
+                    "Set session property \\[catalog\\-name\\].pushdown_partial_aggregations_into_scan=false and execute query again.");
             assertQueryUsingH2Cte(noPartialAggregationPushdown(queryRunner.getDefaultSession()), "SELECT COUNT(*) FROM test_file_format_orc", cte, Function.identity());
 
             // filter on partition column
@@ -1095,6 +1106,8 @@ public class TestHivePushdownFilterQueries
             assertQuery("SELECT double_value FROM test_nan WHERE double_value != 1", "SELECT cast('NaN' as DOUBLE) UNION SELECT 2");
             assertQuery("SELECT float_value FROM test_nan WHERE float_value != 1", "SELECT CAST('NaN' as REAL) UNION SELECT 2");
             assertQuery("SELECT double_value FROM test_nan WHERE double_value NOT IN (1, 2)", "SELECT CAST('NaN' as DOUBLE)");
+            assertQuery("SELECT double_value FROM test_nan WHERE double_value > 1", "SELECT cast('NaN' as DOUBLE) UNION SELECT 2");
+            assertQuery("SELECT float_value FROM test_nan WHERE float_value > 1", "SELECT cast('NaN' as REAL) UNION SELECT 2");
         }
         finally {
             assertUpdate("DROP TABLE test_nan");
@@ -1106,6 +1119,90 @@ public class TestHivePushdownFilterQueries
     {
         assertQuery("SELECT partkey FROM lineitem WHERE orderkey > 10 OR if(json_extract(json_parse('{}'), '$.a') IS NOT NULL, quantity * discount) > 0",
                 "SELECT partkey FROM lineitem WHERE orderkey > 10");
+    }
+
+    @Test
+    public void testOptimizeWithWarningMessage()
+    {
+        assertWarnings(
+                getQueryRunner(),
+                getSession(),
+                "SELECT * FROM lineitem WHERE orderkey = 1 and orderkey = 2",
+                ImmutableSet.of(HIVE_TABLESCAN_CONVERTED_TO_VALUESNODE.toWarningCode()));
+    }
+
+    //Test for issue https://github.com/prestodb/presto/issues/22690
+    //Avoid negative index pushdown
+    @Test
+    public void testArraySubscriptPushdown()
+    {
+        Session session = enablePushdownFilterAndSubfield(getQueryRunner().getDefaultSession());
+        getQueryRunner().execute(session,
+                "CREATE TABLE test_neg_array_sub_pushdown AS \n" +
+                        "select ARRAY[10,20,30,40] numbers");
+
+        try {
+            assertQuery("select element_at(numbers,1) as number from test_neg_array_sub_pushdown", "SELECT 10");
+            assertQuery("select element_at(numbers,2) as number from test_neg_array_sub_pushdown", "SELECT 20");
+            assertQuery("select element_at(numbers,3) as number from test_neg_array_sub_pushdown", "SELECT 30");
+            assertQuery("select element_at(numbers,-1) as number from test_neg_array_sub_pushdown", "SELECT 40");
+            assertQuery("select element_at(numbers,-2) as number from test_neg_array_sub_pushdown", "SELECT 30");
+            assertQuery("select element_at(numbers,-3) as number from test_neg_array_sub_pushdown", "SELECT 20");
+            assertQueryFails("select element_at(numbers,0) as number from test_neg_array_sub_pushdown", "SQL array indices start at 1");
+
+            assertQuery("select numbers[1]  as number from test_neg_array_sub_pushdown", "SELECT 10");
+            assertQuery("select numbers[2]  as number from test_neg_array_sub_pushdown", "SELECT 20");
+            assertQuery("select numbers[3 ]  as number from test_neg_array_sub_pushdown", "SELECT 30");
+            assertQueryFails("select numbers[-1]  as number from test_neg_array_sub_pushdown", "Array subscript is negative");
+            assertQueryFails("select numbers[-2]  as number from test_neg_array_sub_pushdown", "Array subscript is negative");
+            assertQueryFails("select numbers[0]  as number from test_neg_array_sub_pushdown", "SQL array indices start at 1");
+        }
+        finally {
+            getQueryRunner().execute("DROP TABLE test_neg_array_sub_pushdown");
+        }
+    }
+
+    @Test
+    public void testMapSubscriptPushdown()
+    {
+        Session session = enablePushdownFilterAndSubfield(getQueryRunner().getDefaultSession());
+        getQueryRunner().execute(session,
+                "CREATE TABLE test_neg_map_sub_pushdown AS \n" +
+                        "select map(ARRAY[-10,20,30,0], array['a', 'b', 'c', 'd']) numbers");
+
+        try {
+            assertQuery("select element_at(numbers,-10) as number from test_neg_map_sub_pushdown", "SELECT 'a'");
+            assertQuery("select element_at(numbers,20) as number from test_neg_map_sub_pushdown", "SELECT 'b'");
+            assertQuery("select element_at(numbers,30) as number from test_neg_map_sub_pushdown", "SELECT 'c'");
+            assertQuery("select element_at(numbers,0) as number from test_neg_map_sub_pushdown", "SELECT 'd'");
+            assertQuery("select element_at(numbers,40) as number from test_neg_map_sub_pushdown", "SELECT cast(NULL as varchar)");
+
+            assertQuery("select numbers[-10] as number from test_neg_map_sub_pushdown", "SELECT 'a'");
+            assertQuery("select numbers[20] as number from test_neg_map_sub_pushdown", "SELECT 'b'");
+            assertQuery("select numbers[30] as number from test_neg_map_sub_pushdown", "SELECT 'c'");
+            assertQuery("select numbers[0] as number from test_neg_map_sub_pushdown", "SELECT 'd'");
+            assertQueryFails("select numbers[40] as number from test_neg_map_sub_pushdown", "Key not present in map: 40");
+        }
+        finally {
+            getQueryRunner().execute("DROP TABLE test_neg_map_sub_pushdown");
+        }
+    }
+
+    @Test
+    public void testArraySubscriptPushdownEmptyArray()
+    {
+        Session session = enablePushdownFilterAndSubfield(getQueryRunner().getDefaultSession());
+        getQueryRunner().execute(session,
+                "CREATE TABLE test_neg_array_sub_pushdown ( numbers  array(integer))");
+        assertUpdate("INSERT into test_neg_array_sub_pushdown (numbers) values (ARRAY[])", 1);
+
+        try {
+            assertQuery("select element_at(numbers,1) as number from test_neg_array_sub_pushdown", "SELECT NULL");
+            assertQuery("select element_at(numbers,-2) as number from test_neg_array_sub_pushdown", "SELECT NULL");
+        }
+        finally {
+            getQueryRunner().execute("DROP TABLE test_neg_array_sub_pushdown");
+        }
     }
 
     private Path getPartitionDirectory(String tableName, String partitionClause)
@@ -1146,6 +1243,17 @@ public class TestHivePushdownFilterQueries
         assertQuery(query, WITH_LINEITEM_EX + toH2(rewriter.apply(query)));
     }
 
+    private static void assertWarnings(QueryRunner queryRunner, Session session, @Language("SQL") String sql, Set<WarningCode> expectedWarnings)
+    {
+        Set<WarningCode> warnings = queryRunner.execute(session, sql).getWarnings().stream()
+                .map(PrestoWarning::getWarningCode)
+                .collect(toImmutableSet());
+        Set<WarningCode> expectedButMissing = difference(expectedWarnings, warnings);
+        Set<WarningCode> unexpectedWarnings = difference(warnings, expectedWarnings);
+        assertTrue(expectedButMissing.isEmpty(), "Expected warnings: " + expectedButMissing);
+        assertTrue(unexpectedWarnings.isEmpty(), "Unexpected warnings: " + unexpectedWarnings);
+    }
+
     private static String toH2(String query)
     {
         return replaceArraySubscripts(query).replaceAll(" if\\(", " casewhen(");
@@ -1182,6 +1290,14 @@ public class TestHivePushdownFilterQueries
     {
         return Session.builder(session)
                 .setCatalogSessionProperty(HIVE_CATALOG, PARTIAL_AGGREGATION_PUSHDOWN_ENABLED, "false")
+                .build();
+    }
+
+    private static Session enablePushdownFilterAndSubfield(Session session)
+    {
+        return Session.builder(session)
+                .setCatalogSessionProperty(HIVE_CATALOG, PUSHDOWN_FILTER_ENABLED, "true")
+                .setSystemProperty(PUSHDOWN_SUBFIELDS_ENABLED, "true")
                 .build();
     }
 }

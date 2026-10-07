@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.common.predicate;
 
+import com.facebook.presto.common.DataTypeMismatchException;
 import com.facebook.presto.common.Utils;
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.function.SqlFunctionProperties;
@@ -32,8 +33,11 @@ import java.util.stream.Collector;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static java.util.Collections.singleton;
 import static java.util.Collections.unmodifiableCollection;
 import static java.util.Collections.unmodifiableSet;
+import static java.util.Comparator.comparing;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toCollection;
 import static java.util.stream.Collectors.toList;
@@ -246,6 +250,23 @@ public class EquatableValueSet
                 .collect(Collectors.joining(", ")) + " ]";
     }
 
+    @Override
+    public ValueSet canonicalize(boolean removeSafeConstants)
+    {
+        if (removeSafeConstants) {
+            // Since we cannot create a set with multiple entries but same "constant", we just use number of entries
+            return new EquatableValueSet(
+                    type,
+                    whiteList,
+                    singleton(new ValueEntry(INTEGER, Utils.nativeValueToBlock(INTEGER, (long) entries.size()))));
+        }
+        return new EquatableValueSet(
+                type,
+                whiteList,
+                // As comparing blocks is messy, we just sort by block hash hoping for the best
+                entries.stream().sorted(comparing(ValueEntry::hashCode)).collect(toLinkedSet()));
+    }
+
     private static <T> Set<T> intersect(Set<T> set1, Set<T> set2)
     {
         return set1.stream()
@@ -269,7 +290,7 @@ public class EquatableValueSet
     private EquatableValueSet checkCompatibility(ValueSet other)
     {
         if (!getType().equals(other.getType())) {
-            throw new IllegalStateException(String.format("Mismatched types: %s vs %s", getType(), other.getType()));
+            throw new DataTypeMismatchException(String.format("Mismatched types: %s vs %s", getType(), other.getType()));
         }
         if (!(other instanceof EquatableValueSet)) {
             throw new IllegalStateException(String.format("ValueSet is not a EquatableValueSet: %s", other.getClass()));

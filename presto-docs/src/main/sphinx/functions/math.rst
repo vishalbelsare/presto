@@ -28,7 +28,7 @@ Mathematical Functions
 
 .. function:: ceil(x) -> [same as input]
 
-    This is an alias for :func:`ceiling`.
+    This is an alias for :func:`!ceiling`.
 
 .. function:: ceiling(x) -> [same as input]
 
@@ -39,6 +39,41 @@ Mathematical Functions
     Returns the cosine similarity between the sparse vectors ``x`` and ``y``::
 
         SELECT cosine_similarity(MAP(ARRAY['a'], ARRAY[1.0]), MAP(ARRAY['a'], ARRAY[2.0])); -- 1.0
+
+.. function:: cosine_similarity(array(double), array(double)) -> double
+
+    Returns the cosine similarity between the arrays ``x`` and ``y``.
+    If the input arrays have different sizes or if the input arrays contain a null, the function throws user error::
+
+        SELECT cosine_similarity(ARRAY[1.2], ARRAY[2.0]); -- 1.0
+
+.. function:: l2_squared(array[real], array[real]) -> real
+
+    Returns the squared `Euclidean distance <https://en.wikipedia.org/wiki/Euclidean_distance>`_ between the vectors represented as array[real].
+    If the input arrays have different sizes or if the input arrays contain a null, the function throws user error::
+
+        SELECT l2_squared(ARRAY[1.0], ARRAY[2.0]); -- 1.0
+
+.. function:: l2_squared(array[double], array[double]) -> double
+
+    Returns the squared `Euclidean distance <https://en.wikipedia.org/wiki/Euclidean_distance>`_ between the vectors represented as array[double].
+    If the input arrays have different sizes or if the input arrays contain a null, the function throws user error::
+
+        SELECT l2_squared(ARRAY[1.0], ARRAY[2.0]); -- 1.0
+
+.. function:: dot_product(array[real], array[real]) -> real
+
+    Returns the dot product of two vectors represented as array[real].
+    If the input arrays have different sizes or if the input arrays contain a null, the function throws user error::
+
+        SELECT dot_product(ARRAY[1.0, 2.0], ARRAY[3.0, 4.0]); -- 11.0
+
+.. function:: dot_product(array[double], array[double]) -> double
+
+    Returns the dot product of two vectors represented as array[double].
+    If the input arrays have different sizes or if the input arrays contain a null, the function throws user error::
+
+        SELECT dot_product(ARRAY[1.0, 2.0], ARRAY[3.0, 4.0]); -- 11.0
 
 .. function:: degrees(x) -> double
 
@@ -82,7 +117,7 @@ Mathematical Functions
 
 .. function:: pow(x, p) -> double
 
-    This is an alias for :func:`power`.
+    This is an alias for :func:`!power`.
 
 .. function:: power(x, p) -> double
 
@@ -94,7 +129,7 @@ Mathematical Functions
 
 .. function:: rand() -> double
 
-    This is an alias for :func:`random()`.
+    This is an alias for :func:`!random()`.
 
 .. function:: random() -> double
 
@@ -103,6 +138,18 @@ Mathematical Functions
 .. function:: random(n) -> [same as input]
 
     Returns a pseudo-random number between 0 and n (exclusive).
+
+.. function:: secure_rand() -> double
+
+    This is an alias for :func:`!secure_random()`.
+
+.. function:: secure_random() -> double
+
+    Returns a cryptographically secure random value in the range 0.0 <= x < 1.0.
+
+.. function:: secure_random(lower, upper) -> [same as input]
+
+    Returns a cryptographically secure random value in the range lower <= x < upper, where lower < upper.
 
 .. function:: round(x) -> [same as input]
 
@@ -156,11 +203,19 @@ Mathematical Functions
 .. function:: width_bucket(x, bins) -> bigint
 
     Returns the bin number of ``x`` according to the bins specified by the
-    array ``bins``. The ``bins`` parameter must be an array of doubles and is
-    assumed to be in sorted ascending order.
+    array ``bins``. The ``bins`` parameter must be an array of doubles, should not
+    contain ``null`` or non-finite elements, and is assumed to be in sorted ascending order.
+
+    Note: The function returns an error if it encounters a ``null`` or non-finite
+    element in ``bins``, but due to the binary search algorithm some such elements
+    might go unnoticed and the function will return a result.
+
+.. function:: factorial(x) -> bigint
+
+    Returns the factorial of ``x``.
 
 Probability Functions: cdf
------------------------
+--------------------------
 
 .. function:: beta_cdf(a, b, value) -> double
 
@@ -184,6 +239,22 @@ Probability Functions: cdf
     Compute the Chi-square cdf with given df (degrees of freedom) parameter:  P(N < value; df).
     The df parameter must be a positive real number, and value must be a non-negative real value (both of type DOUBLE).
 
+.. function:: f_cdf(df1, df2, value) -> double
+
+    Compute the F cdf with given df1 (numerator degrees of freedom) and df2 (denominator degrees of freedom) parameters:  P(N < value; df1, df2).
+    The numerator and denominator df parameters must be positive real numbers. The value must be a non-negative real number.
+
+.. function:: gamma_cdf(shape, scale, value) -> double
+
+    Compute the Gamma cdf with given shape and scale parameters:  P(N < value; shape, scale).
+    The shape and scale parameters must be positive real numbers.
+    The value must be a non-negative real number.
+
+.. function:: laplace_cdf(mean, scale, value) -> double
+
+    Compute the Laplace cdf with given mean and scale parameters:  P(N < value; mean, scale).
+    The mean and value must be real values and the scale parameter must be a positive value (all of type DOUBLE).
+
 .. function:: normal_cdf(mean, sd, value) -> double
 
     Compute the Normal cdf with given mean and standard deviation (sd):  P(N < value; mean, sd).
@@ -195,14 +266,19 @@ Probability Functions: cdf
     Compute the Poisson cdf with given lambda (mean) parameter:  P(N <= value; lambda).
     The lambda parameter must be a positive real number (of type DOUBLE) and value must be a non-negative integer.
 
+.. function:: t_cdf(df, value) -> double
+
+    Compute the Student's t cdf with given degrees of freedom:  P(N < value; df).
+    The degrees of freedom must be a positive real number and value must be a real value.
+
 .. function:: weibull_cdf(a, b, value) -> double
 
-    Compute the Weibull cdf with given parameters a, b: P(N <= value). The ``a``
+    Compute the Weibull cdf with given parameters a, b:  P(N <= value). The ``a``
     and ``b`` parameters must be positive doubles and ``value`` must also be a double.
 
 
 Probability Functions: inverse_cdf
------------------------
+----------------------------------
 
 .. function:: inverse_beta_cdf(a, b, p) -> double
 
@@ -228,6 +304,25 @@ Probability Functions: inverse_cdf
     probability (p): P(N < n). The df parameter must be positive real values.
     The probability p must lie on the interval [0, 1].
 
+.. function:: inverse_gamma_cdf(shape, scale, p) -> double
+
+    Compute the inverse of the Gamma cdf with given shape and scale parameters for the cumulative
+    probability (p): P(N < n). The shape and scale parameters must be positive real values.
+    The probability p must lie on the interval [0, 1].
+
+.. function:: inverse_f_cdf(df1, df2, p) -> double
+
+    Compute the inverse of the F cdf with a given df1 (numerator degrees of freedom) and df2 (denominator degrees of freedom) parameters
+    for the cumulative probability (p): P(N < n). The numerator and denominator df parameters must be positive real numbers.
+    The probability p must lie on the interval [0, 1].
+
+.. function:: inverse_laplace_cdf(mean, scale, p) -> double
+
+    Compute the inverse of the Laplace cdf with given mean and scale parameters
+    for the cumulative probability (p): P(N < n). The mean must be
+    a real value and the scale must be a positive real value (both of type DOUBLE).
+    The probability p must lie on the interval [0, 1].
+
 .. function:: inverse_normal_cdf(mean, sd, p) -> double
 
     Compute the inverse of the Normal cdf with given mean and standard
@@ -242,6 +337,12 @@ Probability Functions: inverse_cdf
     The lambda parameter must be a positive real number (of type DOUBLE).
     The probability p must lie on the interval [0, 1).
 
+.. function:: inverse_t_cdf(df, p) -> double
+
+    Compute the inverse of the Student's t cdf with given degrees of freedom for the cumulative
+    probability (p): P(N < n). The degrees of freedom must be a positive real value.
+    The probability p must lie on the interval [0, 1].
+
 .. function:: inverse_weibull_cdf(a, b, p) -> double
 
     Compute the inverse of the Weibull cdf with given parameters ``a``, ``b`` for the probability ``p``.
@@ -250,7 +351,7 @@ Probability Functions: inverse_cdf
 
 
 Statistical Functions
------------------------
+---------------------
 
 .. function:: wilson_interval_lower(successes, trials, z) -> double
 
@@ -266,7 +367,7 @@ Trigonometric Functions
 -----------------------
 
 All trigonometric function arguments are expressed in radians.
-See unit conversion functions :func:`degrees` and :func:`radians`.
+See unit conversion functions :func:`!degrees` and :func:`!radians`.
 
 .. function:: acos(x) -> double
 

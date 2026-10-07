@@ -23,32 +23,44 @@ import static java.util.stream.Collectors.toMap;
 
 public class PrestoSparkConfiguration
 {
+    public static final String METADATA_STORAGE_TYPE_KEY = "metadata_storage_type";
+    public static final String METADATA_STORAGE_TYPE_LOCAL = "LOCAL";
+
     private final Map<String, String> configProperties;
     private final String pluginsDirectoryPath;
     private final Map<String, Map<String, String>> catalogProperties;
-    private final String metadataStorageType;
+    private final Map<String, String> prestoSparkProperties;
+    private final Optional<Map<String, String>> nativeWorkerConfigProperties;
+    private final Optional<Map<String, Map<String, String>>> nativeWorkerCatalogProperties;
     private final Optional<Map<String, String>> eventListenerProperties;
     private final Optional<Map<String, String>> accessControlProperties;
     private final Optional<Map<String, String>> sessionPropertyConfigurationProperties;
     private final Optional<Map<String, Map<String, String>>> functionNamespaceProperties;
     private final Optional<Map<String, Map<String, String>>> tempStorageProperties;
+    private final Optional<Map<String, Map<String, String>>> expressionManagerProperties;
 
     public PrestoSparkConfiguration(
             Map<String, String> configProperties,
             String pluginsDirectoryPath,
             Map<String, Map<String, String>> catalogProperties,
-            String metadataStorageType,
+            Map<String, String> prestoSparkProperties,
+            Optional<Map<String, String>> nativeWorkerConfigProperties,
+            Optional<Map<String, Map<String, String>>> nativeWorkerCatalogProperties,
             Optional<Map<String, String>> eventListenerProperties,
             Optional<Map<String, String>> accessControlProperties,
             Optional<Map<String, String>> sessionPropertyConfigurationProperties,
             Optional<Map<String, Map<String, String>>> functionNamespaceProperties,
-            Optional<Map<String, Map<String, String>>> tempStorageProperties)
+            Optional<Map<String, Map<String, String>>> tempStorageProperties,
+            Optional<Map<String, Map<String, String>>> expressionManagerProperties)
     {
         this.configProperties = unmodifiableMap(new HashMap<>(requireNonNull(configProperties, "configProperties is null")));
         this.pluginsDirectoryPath = requireNonNull(pluginsDirectoryPath, "pluginsDirectoryPath is null");
         this.catalogProperties = unmodifiableMap(requireNonNull(catalogProperties, "catalogProperties is null").entrySet().stream()
                 .collect(toMap(Map.Entry::getKey, entry -> unmodifiableMap(new HashMap<>(entry.getValue())))));
-        this.metadataStorageType = requireNonNull(metadataStorageType, "metadataStorageType is null");
+        this.prestoSparkProperties = unmodifiableMap(new HashMap<>(requireNonNull(prestoSparkProperties, "prestoSparkProperties is null")));
+        requireNonNull(prestoSparkProperties.get(METADATA_STORAGE_TYPE_KEY), "prestoSparkProperties must contain " + METADATA_STORAGE_TYPE_KEY);
+        this.nativeWorkerConfigProperties = requireNonNull(nativeWorkerConfigProperties, "nativeWorkerConfigProperties is null");
+        this.nativeWorkerCatalogProperties = requireNonNull(nativeWorkerCatalogProperties, "nativeWorkerCatalogProperties is null");
         this.eventListenerProperties = requireNonNull(eventListenerProperties, "eventListenerProperties is null")
                 .map(properties -> unmodifiableMap(new HashMap<>(properties)));
         this.accessControlProperties = requireNonNull(accessControlProperties, "accessControlProperties is null")
@@ -59,6 +71,9 @@ public class PrestoSparkConfiguration
                 .map(map -> map.entrySet().stream()
                         .collect(toMap(Map.Entry::getKey, entry -> unmodifiableMap(new HashMap<>(entry.getValue())))));
         this.tempStorageProperties = requireNonNull(tempStorageProperties, "tempStorageProperties is null")
+                .map(map -> map.entrySet().stream()
+                        .collect(toMap(Map.Entry::getKey, entry -> unmodifiableMap(new HashMap<>(entry.getValue())))));
+        this.expressionManagerProperties = requireNonNull(expressionManagerProperties, "expressionManagerProperties is null")
                 .map(map -> map.entrySet().stream()
                         .collect(toMap(Map.Entry::getKey, entry -> unmodifiableMap(new HashMap<>(entry.getValue())))));
     }
@@ -78,9 +93,24 @@ public class PrestoSparkConfiguration
         return catalogProperties;
     }
 
+    public Map<String, String> getPrestoSparkProperties()
+    {
+        return prestoSparkProperties;
+    }
+
     public String getMetadataStorageType()
     {
-        return metadataStorageType;
+        return prestoSparkProperties.get(METADATA_STORAGE_TYPE_KEY);
+    }
+
+    public Optional<Map<String, String>> getNativeWorkerConfigProperties()
+    {
+        return nativeWorkerConfigProperties;
+    }
+
+    public Optional<Map<String, Map<String, String>>> getNativeWorkerCatalogProperties()
+    {
+        return nativeWorkerCatalogProperties;
     }
 
     public Optional<Map<String, String>> getEventListenerProperties()
@@ -106,5 +136,10 @@ public class PrestoSparkConfiguration
     public Optional<Map<String, Map<String, String>>> getTempStorageProperties()
     {
         return tempStorageProperties;
+    }
+
+    public Optional<Map<String, Map<String, String>>> getExpressionManagerProperties()
+    {
+        return expressionManagerProperties;
     }
 }

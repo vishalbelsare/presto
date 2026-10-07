@@ -20,9 +20,8 @@ import com.facebook.presto.common.block.IntArrayBlock;
 import com.facebook.presto.common.block.LongArrayBlock;
 import com.facebook.presto.common.block.ShortArrayBlock;
 import com.facebook.presto.common.type.Type;
+import jakarta.annotation.Nullable;
 import org.openjdk.jol.info.ClassLayout;
-
-import javax.annotation.Nullable;
 
 import java.util.Optional;
 
@@ -41,9 +40,7 @@ abstract class AbstractLongSelectiveStreamReader
 {
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(AbstractLongSelectiveStreamReader.class).instanceSize();
 
-    protected final boolean outputRequired;
-    @Nullable
-    protected final Type outputType;
+    protected final SelectiveReaderContext context;
 
     @Nullable
     protected long[] values;
@@ -61,17 +58,16 @@ abstract class AbstractLongSelectiveStreamReader
 
     private boolean valuesInUse;
 
-    protected AbstractLongSelectiveStreamReader(Optional<Type> outputType)
+    protected AbstractLongSelectiveStreamReader(SelectiveReaderContext context)
     {
-        this.outputRequired = requireNonNull(outputType, "outputType is null").isPresent();
-        this.outputType = outputType.orElse(null);
+        this.context = requireNonNull(context, "context is null");
     }
 
     protected void prepareNextRead(int positionCount, boolean withNulls)
     {
         checkState(!valuesInUse, "BlockLease hasn't been closed yet");
 
-        if (outputRequired) {
+        if (context.isOutputRequired()) {
             ensureValuesCapacity(positionCount, withNulls);
         }
         intValuesPopulated = false;
@@ -104,6 +100,7 @@ abstract class AbstractLongSelectiveStreamReader
     {
         checkState(!valuesInUse, "BlockLease hasn't been closed yet");
 
+        Type outputType = context.getOutputType();
         if (outputType == BIGINT) {
             if (positionCount < outputPositionCount) {
                 compactValues(positions, positionCount, includeNulls);
@@ -158,6 +155,7 @@ abstract class AbstractLongSelectiveStreamReader
     {
         checkState(!valuesInUse, "BlockLease hasn't been closed yet");
 
+        Type outputType = context.getOutputType();
         if (outputType == BIGINT) {
             return getLongArrayBlock(positions, positionCount, includeNulls);
         }

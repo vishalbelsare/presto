@@ -13,17 +13,18 @@
  */
 package com.facebook.presto.plugin.postgresql;
 
-import com.facebook.airlift.testing.postgresql.TestingPostgreSqlServer;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestIntegrationSmokeTest;
 import com.facebook.presto.tests.DistributedQueryRunner;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import org.assertj.core.api.AssertionsForClassTypes;
 import org.intellij.lang.annotations.Language;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
 
-import java.io.IOException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -42,27 +43,28 @@ import static org.testng.Assert.assertTrue;
 public class TestPostgreSqlIntegrationSmokeTest
         extends AbstractTestIntegrationSmokeTest
 {
-    private final TestingPostgreSqlServer postgreSqlServer;
+    private PostgreSQLContainer postgresContainer;
 
     public TestPostgreSqlIntegrationSmokeTest()
-            throws Exception
     {
-        this.postgreSqlServer = new TestingPostgreSqlServer("testuser", "tpch");
-        execute("CREATE EXTENSION file_fdw");
+        this.postgresContainer = new PostgreSQLContainer("postgres:14")
+                .withDatabaseName("tpch")
+                .withUsername("testuser")
+                .withPassword("testpass");
+        this.postgresContainer.start();
     }
 
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return PostgreSqlQueryRunner.createPostgreSqlQueryRunner(postgreSqlServer, ORDERS);
+        return PostgreSqlQueryRunner.createPostgreSqlQueryRunner(postgresContainer.getJdbcUrl(), ImmutableMap.of(), ImmutableList.of(ORDERS));
     }
 
     @AfterClass(alwaysRun = true)
     public final void destroy()
-            throws IOException
     {
-        postgreSqlServer.close();
+        postgresContainer.stop();
     }
 
     @Test
@@ -109,6 +111,7 @@ public class TestPostgreSqlIntegrationSmokeTest
     public void testForeignTable()
             throws Exception
     {
+        execute("CREATE EXTENSION IF NOT EXISTS file_fdw");
         execute("CREATE SERVER devnull FOREIGN DATA WRAPPER file_fdw");
         execute("CREATE FOREIGN TABLE tpch.test_ft (x bigint) SERVER devnull OPTIONS (filename '/dev/null')");
         assertTrue(getQueryRunner().tableExists(getSession(), "test_ft"));
@@ -128,18 +131,17 @@ public class TestPostgreSqlIntegrationSmokeTest
                 AutoCloseable ignore2 = withTable("tpch.supported_columns", format("(good %s)", supportedDataType));
                 AutoCloseable ignore3 = withTable("tpch.no_columns", "()")) {
             assertThat(computeActual("SHOW TABLES").getOnlyColumnAsSet()).contains("orders", "no_supported_columns", "supported_columns", "no_columns");
+            assertQueryFails("SELECT c FROM tpch.no_supported_columns", "\\QTable 'tpch.no_supported_columns" + "' has no supported columns (all 1 columns are not supported)");
+            assertQueryFails("SELECT * FROM tpch.no_supported_columns", "\\QTable 'tpch.no_supported_columns" + "' has no supported columns (all 1 columns are not supported)");
+            assertQueryFails("SELECT 'a' FROM tpch.no_supported_columns", "\\QTable 'tpch.no_supported_columns" + "' has no supported columns (all 1 columns are not supported)");
 
-            assertQueryFails("SELECT c FROM no_supported_columns", "Table 'tpch.no_supported_columns' not found");
-            assertQueryFails("SELECT * FROM no_supported_columns", "Table 'tpch.no_supported_columns' not found");
-            assertQueryFails("SELECT 'a' FROM no_supported_columns", "Table 'tpch.no_supported_columns' not found");
+            assertQueryFails("SELECT c FROM tpch.no_columns", "\\QTable 'tpch.no_columns" + "' has no supported columns (all 0 columns are not supported)");
+            assertQueryFails("SELECT * FROM tpch.no_columns", "\\QTable 'tpch.no_columns" + "' has no supported columns (all 0 columns are not supported)");
+            assertQueryFails("SELECT 'a' FROM tpch.no_columns", "\\QTable 'tpch.no_columns" + "' has no supported columns (all 0 columns are not supported)");
 
-            assertQueryFails("SELECT c FROM no_columns", "Table 'tpch.no_columns' not found");
-            assertQueryFails("SELECT * FROM no_columns", "Table 'tpch.no_columns' not found");
-            assertQueryFails("SELECT 'a' FROM no_columns", "Table 'tpch.no_columns' not found");
-
-            assertQueryFails("SELECT c FROM non_existent", ".* Table .*tpch.non_existent.* does not exist");
-            assertQueryFails("SELECT * FROM non_existent", ".* Table .*tpch.non_existent.* does not exist");
-            assertQueryFails("SELECT 'a' FROM non_existent", ".* Table .*tpch.non_existent.* does not exist");
+            assertQueryFails("SELECT c FROM non_existent", ".*Table .*tpch.non_existent.* does not exist");
+            assertQueryFails("SELECT * FROM non_existent", ".*Table .*tpch.non_existent.* does not exist");
+            assertQueryFails("SELECT 'a' FROM non_existent", ".*Table .*tpch.non_existent.* does not exist");
 
             assertQuery("SHOW COLUMNS FROM no_supported_columns", "SELECT 'nothing' WHERE false");
             assertQuery("SHOW COLUMNS FROM no_columns", "SELECT 'nothing' WHERE false");
@@ -151,7 +153,7 @@ public class TestPostgreSqlIntegrationSmokeTest
                     .contains("orders", "no_supported_columns", "supported_columns", "no_columns");
 
             // Other tables should be introspectable with SHOW COLUMNS and information_schema.columns
-            assertQuery("SHOW COLUMNS FROM supported_columns", "VALUES ('good', 'varchar(5)', '', '')");
+            assertQuery("SHOW COLUMNS FROM supported_columns", "VALUES ('good', 'varchar(5)', '', '', null, null, 5L)");
 
             // Listing columns in all tables should not fail due to tables with no columns
             computeActual("SELECT column_name FROM information_schema.columns WHERE table_schema = 'tpch'");
@@ -188,9 +190,15 @@ public class TestPostgreSqlIntegrationSmokeTest
         assertEquals(getQueryRunner().execute("SELECT * FROM char_trailing_space WHERE x = char ' test'").getRowCount(), 0);
 
         Map<String, String> properties = ImmutableMap.of("deprecated.legacy-char-to-varchar-coercion", "true");
-        Map<String, String> connectorProperties = ImmutableMap.of("connection-url", postgreSqlServer.getJdbcUrl());
+        String jdbcUrl = postgresContainer.getJdbcUrl();
+        String jdbcUrlWithCredentials = format("%s%suser=%s&password=%s",
+                jdbcUrl,
+                jdbcUrl.contains("?") ? "&" : "?",
+                postgresContainer.getUsername(),
+                postgresContainer.getPassword());
+        Map<String, String> connectorProperties = ImmutableMap.of("connection-url", jdbcUrlWithCredentials);
 
-        try (QueryRunner queryRunner = new DistributedQueryRunner(getSession(), 3, properties);) {
+        try (QueryRunner queryRunner = new DistributedQueryRunner(getSession(), 3, properties)) {
             queryRunner.installPlugin(new PostgreSqlPlugin());
             queryRunner.createCatalog("postgresql", "postgresql", connectorProperties);
 
@@ -270,6 +278,65 @@ public class TestPostgreSqlIntegrationSmokeTest
         assertUpdate("DROP TABLE test_column_comment");
     }
 
+    @Test
+    public void testExecuteProcedure()
+    {
+        String tableName = "test_execute";
+        String schemaTableName = getSession().getSchema().orElseThrow() + "." + tableName;
+        try {
+            assertUpdate("CALL system.execute('CREATE TABLE " + schemaTableName + "(id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, a int)')");
+            AssertionsForClassTypes.assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
+            assertUpdate("CALL system.execute('INSERT INTO " + schemaTableName + "(a) VALUES (1)')");
+            assertUpdate("CALL system.execute('INSERT INTO " + schemaTableName + "(a) VALUES (21)')");
+            assertQuery("SELECT * FROM " + schemaTableName, "VALUES (1, 1), (2, 21)");
+
+            assertUpdate("CALL system.execute('UPDATE " + schemaTableName + " SET a = 2 where id = 1')");
+            assertQuery("SELECT * FROM " + schemaTableName, "VALUES (1, 2), (2, 21)");
+
+            assertUpdate("CALL system.execute('DELETE FROM " + schemaTableName + "')");
+            assertQueryReturnsEmptyResult("SELECT * FROM " + schemaTableName);
+
+            assertUpdate("CALL system.execute('DROP TABLE " + schemaTableName + "')");
+            AssertionsForClassTypes.assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
+        }
+        finally {
+            assertUpdate("DROP TABLE IF EXISTS " + schemaTableName);
+        }
+    }
+
+    @Test
+    public void testExecuteProcedureWithNamedArgument()
+    {
+        String tableName = "test_execute_named";
+        String schemaTableName = getSession().getSchema().orElseThrow() + "." + tableName;
+        try {
+            assertUpdate("CALL system.execute(QUERY => 'CREATE TABLE " + schemaTableName + "(id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, a int)')");
+            AssertionsForClassTypes.assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
+            assertUpdate("CALL system.execute(QUERY => 'INSERT INTO " + schemaTableName + "(a) VALUES (1)')");
+            assertUpdate("CALL system.execute(QUERY => 'INSERT INTO " + schemaTableName + "(a) VALUES (21)')");
+            assertQuery("SELECT * FROM " + schemaTableName, "VALUES (1, 1), (2, 21)");
+
+            assertUpdate("CALL system.execute(QUERY => 'UPDATE " + schemaTableName + " SET a = 2 where id = 1')");
+            assertQuery("SELECT * FROM " + schemaTableName, "VALUES (1, 2), (2, 21)");
+
+            assertUpdate("CALL system.execute(QUERY => 'DELETE FROM " + schemaTableName + "')");
+            assertQueryReturnsEmptyResult("SELECT * FROM " + schemaTableName);
+
+            assertUpdate("CALL system.execute(QUERY => 'DROP TABLE " + schemaTableName + "')");
+            AssertionsForClassTypes.assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
+        }
+        finally {
+            assertUpdate("DROP TABLE IF EXISTS " + schemaTableName);
+        }
+    }
+
+    @Test
+    public void testExecuteProcedureWithInvalidQuery()
+    {
+        assertQueryFails("CALL system.execute('SELECT 1')", "(?s)Failed to execute query.*");
+        assertQueryFails("CALL system.execute('invalid')", "(?s)Failed to execute query.*");
+    }
+
     private AutoCloseable withSchema(String schema)
             throws Exception
     {
@@ -301,7 +368,10 @@ public class TestPostgreSqlIntegrationSmokeTest
     private void execute(String sql)
             throws SQLException
     {
-        try (Connection connection = DriverManager.getConnection(postgreSqlServer.getJdbcUrl());
+        try (Connection connection = DriverManager.getConnection(
+                postgresContainer.getJdbcUrl(),
+                postgresContainer.getUsername(),
+                postgresContainer.getPassword());
                 Statement statement = connection.createStatement()) {
             statement.execute(sql);
         }

@@ -47,12 +47,14 @@ public class TestPrometheusRetrieveUpValueIntegrationTests
 
     private PrometheusServer server;
     private PrometheusClient client;
+    private PrometheusConnectorConfig config;
 
     @BeforeClass
     protected void createQueryRunner()
     {
         this.server = new PrometheusServer();
         this.client = createPrometheusClient(server);
+        this.config = new PrometheusConnectorConfig();
     }
 
     @AfterClass(alwaysRun = true)
@@ -84,16 +86,16 @@ public class TestPrometheusRetrieveUpValueIntegrationTests
     @Test(dependsOnMethods = "testRetrieveUpValue")
     public void testListSchemaNames()
     {
-        PrometheusMetadata metadata = new PrometheusMetadata(client);
+        PrometheusMetadata metadata = new PrometheusMetadata(client, config);
         assertEquals(metadata.listSchemaNames(SESSION), ImmutableSet.of("default"));
     }
 
     @Test(dependsOnMethods = "testRetrieveUpValue")
     public void testGetColumnMetadata()
     {
-        PrometheusMetadata metadata = new PrometheusMetadata(client);
+        PrometheusMetadata metadata = new PrometheusMetadata(client, config);
         assertEquals(metadata.getColumnMetadata(SESSION, RUNTIME_DETERMINED_TABLE_HANDLE, new PrometheusColumnHandle("text", createUnboundedVarcharType(), 0)),
-                new ColumnMetadata("text", createUnboundedVarcharType()));
+                ColumnMetadata.builder().setName("text").setType(createUnboundedVarcharType()).build());
 
         // prometheus connector assumes that the table handle and column handle are
         // properly formed, so it will return a metadata object for any
@@ -105,19 +107,19 @@ public class TestPrometheusRetrieveUpValueIntegrationTests
     @Test(expectedExceptions = PrestoException.class, dependsOnMethods = "testRetrieveUpValue")
     public void testCreateTable()
     {
-        PrometheusMetadata metadata = new PrometheusMetadata(client);
+        PrometheusMetadata metadata = new PrometheusMetadata(client, config);
         metadata.createTable(
                 SESSION,
                 new ConnectorTableMetadata(
                         new SchemaTableName("default", "foo"),
-                        ImmutableList.of(new ColumnMetadata("text", createUnboundedVarcharType()))),
+                        ImmutableList.of(ColumnMetadata.builder().setName("text").setType(createUnboundedVarcharType()).build())),
                 false);
     }
 
     @Test(expectedExceptions = PrestoException.class, dependsOnMethods = "testRetrieveUpValue")
     public void testDropTableTable()
     {
-        PrometheusMetadata metadata = new PrometheusMetadata(client);
+        PrometheusMetadata metadata = new PrometheusMetadata(client, config);
         metadata.dropTable(SESSION, RUNTIME_DETERMINED_TABLE_HANDLE);
     }
 

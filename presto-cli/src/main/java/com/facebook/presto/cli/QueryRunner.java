@@ -14,13 +14,23 @@
 package com.facebook.presto.cli;
 
 import com.facebook.presto.client.ClientSession;
-import com.facebook.presto.client.SocketChannelSocketFactory;
+import com.facebook.presto.client.OkHttpUtil;
 import com.facebook.presto.client.StatementClient;
+import com.facebook.presto.client.auth.external.CompositeRedirectHandler;
+import com.facebook.presto.client.auth.external.ExternalAuthenticator;
+import com.facebook.presto.client.auth.external.ExternalRedirectStrategy;
+import com.facebook.presto.client.auth.external.HttpTokenPoller;
+import com.facebook.presto.client.auth.external.KnownToken;
+import com.facebook.presto.client.auth.external.RedirectHandler;
+import com.facebook.presto.client.auth.external.TokenPoller;
+import com.google.common.collect.ImmutableList;
 import com.google.common.net.HostAndPort;
 import okhttp3.OkHttpClient;
 
 import java.io.Closeable;
 import java.io.File;
+import java.time.Duration;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -47,19 +57,24 @@ public class QueryRunner
 {
     private final AtomicReference<ClientSession> session;
     private final boolean debug;
+    private final boolean runtime;
     private final OkHttpClient httpClient;
     private final Consumer<OkHttpClient.Builder> sslSetup;
 
     public QueryRunner(
             ClientSession session,
             boolean debug,
+            boolean runtime,
             Optional<HostAndPort> socksProxy,
             Optional<HostAndPort> httpProxy,
             Optional<String> keystorePath,
             Optional<String> keystorePassword,
+            Optional<String> keyStoreType,
             Optional<String> truststorePath,
             Optional<String> truststorePassword,
+            Optional<String> trustStoreType,
             Optional<String> accessToken,
+            boolean insecureSsl,
             Optional<String> user,
             Optional<String> password,
             Optional<String> kerberosPrincipal,
@@ -67,16 +82,23 @@ public class QueryRunner
             Optional<String> kerberosConfigPath,
             Optional<String> kerberosKeytabPath,
             Optional<String> kerberosCredentialCachePath,
-            boolean kerberosUseCanonicalHostname)
+            boolean kerberosUseCanonicalHostname,
+            boolean followRedirects,
+            boolean externalAuthentication,
+            List<ExternalRedirectStrategy> externalRedirectHandlers)
     {
         this.session = new AtomicReference<>(requireNonNull(session, "session is null"));
         this.debug = debug;
+        this.runtime = runtime;
 
-        this.sslSetup = builder -> setupSsl(builder, keystorePath, keystorePassword, truststorePath, truststorePassword);
+        if (insecureSsl) {
+            this.sslSetup = OkHttpUtil::setupInsecureSsl;
+        }
+        else {
+            this.sslSetup = builder -> setupSsl(builder, keystorePath, keystorePassword, keyStoreType, truststorePath, truststorePassword, trustStoreType);
+        }
 
         OkHttpClient.Builder builder = new OkHttpClient.Builder();
-
-        builder.socketFactory(new SocketChannelSocketFactory());
 
         setupTimeouts(builder, 30, SECONDS);
         setupCookieJar(builder);
@@ -84,6 +106,7 @@ public class QueryRunner
         setupHttpProxy(builder, httpProxy);
         setupBasicAuth(builder, session, user, password);
         setupTokenAuth(builder, session, accessToken);
+        setupExternalAuth(builder, session, externalAuthentication, externalRedirectHandlers, sslSetup);
 
         if (kerberosRemoteServiceName.isPresent()) {
             checkArgument(session.getServer().getScheme().equalsIgnoreCase("https"),
@@ -101,6 +124,7 @@ public class QueryRunner
         Optional.ofNullable(session.getExtraCredentials().get(GCS_CREDENTIALS_PATH_KEY))
                 .ifPresent(credentialPath -> setupGCSOauth(builder, credentialPath, Optional.ofNullable(session.getExtraCredentials().get(GCS_OAUTH_SCOPES_KEY))));
 
+        builder.followRedirects(followRedirects);
         this.httpClient = builder.build();
     }
 
@@ -121,7 +145,7 @@ public class QueryRunner
 
     public Query startQuery(String query)
     {
-        return new Query(startInternalQuery(session.get(), query), debug);
+        return new Query(startInternalQuery(session.get(), query), debug, runtime);
     }
 
     public StatementClient startInternalQuery(String query)
@@ -168,5 +192,32 @@ public class QueryRunner
                     "Authentication using an access token requires HTTPS to be enabled");
             clientBuilder.addInterceptor(tokenAuth(accessToken.get()));
         }
+    }
+
+    private static void setupExternalAuth(
+            OkHttpClient.Builder builder,
+            ClientSession session,
+            boolean enabled,
+            List<ExternalRedirectStrategy> externalRedirectHandlers,
+            Consumer<OkHttpClient.Builder> sslSetup)
+    {
+        if (!enabled) {
+            return;
+        }
+
+        checkArgument(session.getServer().getScheme().equalsIgnoreCase("https"),
+                "Authentication using externalAuthentication requires HTTPS to be enabled");
+
+        List<ExternalRedirectStrategy> redirectStrategy = externalRedirectHandlers.isEmpty() ? ImmutableList.of(ExternalRedirectStrategy.ALL) : externalRedirectHandlers;
+        RedirectHandler redirectHandler = new CompositeRedirectHandler(redirectStrategy);
+        TokenPoller poller = new HttpTokenPoller(builder.build(), sslSetup);
+        ExternalAuthenticator authenticator = new ExternalAuthenticator(
+                redirectHandler,
+                poller,
+                KnownToken.local(),
+                Duration.ofMinutes(10));
+
+        builder.authenticator(authenticator);
+        builder.addInterceptor(authenticator);
     }
 }

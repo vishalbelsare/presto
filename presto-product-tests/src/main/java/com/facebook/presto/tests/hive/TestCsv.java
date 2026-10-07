@@ -142,7 +142,7 @@ public class TestCsv
     }
 
     @Test(groups = STORAGE_FORMATS)
-    public void testCreatePartitionedCsvTableAsWithCustomParamters()
+    public void testCreatePartitionedCsvTableAsWithCustomParameters()
     {
         testCreatePartitionedCsvTableAs(
                 "storage_formats_test_create_table_as_select_partitioned_csv_with_custom_parameters",
@@ -172,10 +172,6 @@ public class TestCsv
                 .collect(toImmutableList());
 
         QueryResult actual = query(format(query, tableName));
-        List<Row> actualRows = actual.rows().stream()
-                .map((columns) -> row(columns.toArray()))
-                .collect(toImmutableList());
-
         assertThat(actual)
                 .hasColumns(expected.getColumnTypes())
                 .containsOnly(expectedRows);

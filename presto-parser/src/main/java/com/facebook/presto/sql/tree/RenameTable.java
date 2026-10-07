@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.facebook.presto.spi.analyzer.UpdateInfo;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -75,9 +76,15 @@ public final class RenameTable
     }
 
     @Override
+    public UpdateInfo getUpdateInfo()
+    {
+        return new UpdateInfo("RENAME TABLE", target.toString());
+    }
+
+    @Override
     public int hashCode()
     {
-        return Objects.hash(source, target);
+        return Objects.hash(source, target, exists);
     }
 
     @Override
@@ -91,7 +98,8 @@ public final class RenameTable
         }
         RenameTable o = (RenameTable) obj;
         return Objects.equals(source, o.source) &&
-                Objects.equals(target, o.target);
+                Objects.equals(target, o.target) &&
+                Objects.equals(exists, o.exists);
     }
 
     @Override
@@ -100,6 +108,7 @@ public final class RenameTable
         return toStringHelper(this)
                 .add("source", source)
                 .add("target", target)
+                .add("exists", exists)
                 .toString();
     }
 }

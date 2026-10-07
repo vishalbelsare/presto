@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.orc.writer;
 
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.block.BlockBuilder;
@@ -23,19 +24,18 @@ import com.facebook.presto.common.type.RowType;
 import com.facebook.presto.common.type.TimestampType;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.orc.ColumnWriterOptions;
+import com.facebook.presto.orc.DefaultOrcWriterFlushPolicy;
 import com.facebook.presto.orc.DwrfEncryptionInfo;
 import com.facebook.presto.orc.FileOrcDataSource;
 import com.facebook.presto.orc.OrcEncoding;
 import com.facebook.presto.orc.OrcTester;
 import com.facebook.presto.orc.OrcWriter;
 import com.facebook.presto.orc.OrcWriterOptions;
-import com.facebook.presto.orc.OrcWriterStats;
 import com.facebook.presto.orc.TempFile;
 import com.facebook.presto.orc.metadata.Footer;
 import com.facebook.presto.orc.metadata.OrcType;
 import com.facebook.presto.orc.metadata.StripeInformation;
 import com.google.common.collect.ImmutableList;
-import io.airlift.units.DataSize;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
@@ -45,6 +45,8 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
 
+import static com.facebook.airlift.units.DataSize.Unit.KILOBYTE;
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.common.type.DoubleType.DOUBLE;
@@ -54,14 +56,14 @@ import static com.facebook.presto.common.type.SmallintType.SMALLINT;
 import static com.facebook.presto.common.type.TinyintType.TINYINT;
 import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.orc.NoOpOrcWriterStats.NOOP_WRITER_STATS;
 import static com.facebook.presto.orc.OrcEncoding.DWRF;
 import static com.facebook.presto.orc.OrcTester.HIVE_STORAGE_TIME_ZONE;
 import static com.facebook.presto.orc.OrcTester.createOrcWriter;
 import static com.facebook.presto.orc.TestOrcMapNullKey.createMapType;
+import static com.facebook.presto.orc.metadata.ColumnEncoding.DEFAULT_SEQUENCE_ID;
 import static com.facebook.presto.orc.metadata.CompressionKind.ZSTD;
 import static io.airlift.slice.Slices.utf8Slice;
-import static io.airlift.units.DataSize.Unit.KILOBYTE;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
@@ -80,6 +82,7 @@ public class TestWriterBlockRawSize
         List<OrcType> orcTypes = OrcType.createOrcRowType(0, ImmutableList.of("test_size_col"), ImmutableList.of(type));
         ColumnWriter columnWriter = ColumnWriters.createColumnWriter(
                 COLUMN_INDEX,
+                DEFAULT_SEQUENCE_ID,
                 orcTypes,
                 type,
                 COLUMN_WRITER_OPTIONS,
@@ -180,7 +183,7 @@ public class TestWriterBlockRawSize
         BlockBuilder blockBuilder = type.createBlockBuilder(null, NUM_ELEMENTS * 2);
         for (int i = 0; i < NUM_ELEMENTS; i++) {
             blockBuilder.appendNull();
-            if (type == REAL) {
+            if (type.equals(REAL)) {
                 type.writeLong(blockBuilder, Float.floatToIntBits(i));
             }
             else {
@@ -304,12 +307,12 @@ public class TestWriterBlockRawSize
 
         OrcWriterOptions writerOptions = OrcWriterOptions.builder()
                 .withRowGroupMaxRowCount(block.getPositionCount() * numBlocksPerRowGroup)
-                .withStripeMaxRowCount(block.getPositionCount() * numBlocksPerStripe)
+                .withFlushPolicy(DefaultOrcWriterFlushPolicy.builder().withStripeMaxRowCount(block.getPositionCount() * numBlocksPerStripe).build())
                 .build();
 
         for (OrcEncoding encoding : OrcEncoding.values()) {
             try (TempFile tempFile = new TempFile()) {
-                OrcWriter writer = createOrcWriter(tempFile.getFile(), encoding, ZSTD, Optional.empty(), types, writerOptions, new OrcWriterStats());
+                OrcWriter writer = createOrcWriter(tempFile.getFile(), encoding, ZSTD, Optional.empty(), types, writerOptions, NOOP_WRITER_STATS);
                 for (int i = 0; i < numBlocksPerFile; i++) {
                     writer.write(new Page(blocks));
                 }

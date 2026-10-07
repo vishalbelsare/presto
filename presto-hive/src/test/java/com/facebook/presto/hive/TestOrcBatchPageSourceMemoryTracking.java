@@ -14,11 +14,12 @@
 package com.facebook.presto.hive;
 
 import com.facebook.airlift.stats.Distribution;
-import com.facebook.presto.cache.CacheConfig;
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.type.Type;
+import com.facebook.presto.execution.ScheduledSplit;
 import com.facebook.presto.hive.metastore.Storage;
 import com.facebook.presto.hive.metastore.StorageFormat;
 import com.facebook.presto.hive.orc.OrcBatchPageSourceFactory;
@@ -55,7 +56,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.Slice;
-import io.airlift.units.DataSize;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -67,6 +67,7 @@ import org.apache.hadoop.hive.ql.io.orc.OrcInputFormat;
 import org.apache.hadoop.hive.ql.io.orc.OrcOutputFormat;
 import org.apache.hadoop.hive.ql.io.orc.OrcSerde;
 import org.apache.hadoop.hive.ql.io.orc.Writer;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.Serializer;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.SettableStructObjectInspector;
@@ -102,15 +103,16 @@ import java.util.function.Supplier;
 
 import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.airlift.testing.Assertions.assertBetweenInclusive;
+import static com.facebook.airlift.units.DataSize.Unit.BYTE;
 import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
-import static com.facebook.presto.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
-import static com.facebook.presto.hive.HiveColumnHandle.ColumnType.REGULAR;
+import static com.facebook.presto.hive.BaseHiveColumnHandle.ColumnType.PARTITION_KEY;
+import static com.facebook.presto.hive.BaseHiveColumnHandle.ColumnType.REGULAR;
 import static com.facebook.presto.hive.HiveFileContext.DEFAULT_HIVE_FILE_CONTEXT;
 import static com.facebook.presto.hive.HiveTestUtils.FUNCTION_AND_TYPE_MANAGER;
-import static com.facebook.presto.hive.HiveTestUtils.FUNCTION_RESOLUTION;
 import static com.facebook.presto.hive.HiveTestUtils.HDFS_ENVIRONMENT;
 import static com.facebook.presto.hive.HiveTestUtils.ROW_EXPRESSION_SERVICE;
 import static com.facebook.presto.hive.HiveTestUtils.SESSION;
+import static com.facebook.presto.hive.HiveTestUtils.getAllSessionProperties;
 import static com.facebook.presto.metadata.MetadataManager.createTestMetadataManager;
 import static com.facebook.presto.orc.OrcReader.MAX_BATCH_SIZE;
 import static com.facebook.presto.sql.relational.Expressions.field;
@@ -119,7 +121,6 @@ import static com.facebook.presto.testing.TestingTaskContext.createTaskContext;
 import static com.google.common.base.Predicates.not;
 import static com.google.common.collect.Iterables.filter;
 import static com.google.common.collect.Iterables.transform;
-import static io.airlift.units.DataSize.Unit.BYTE;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.Executors.newScheduledThreadPool;
@@ -248,14 +249,9 @@ public class TestOrcBatchPageSourceMemoryTracking
             throws Exception
     {
         int maxReadBytes = 1_000;
-        HiveClientConfig config = new HiveClientConfig();
-        config.setOrcMaxReadBlockSize(new DataSize(maxReadBytes, BYTE));
-        ConnectorSession session = new TestingConnectorSession(
-                new HiveSessionProperties(
-                        config,
-                        new OrcFileWriterConfig(),
-                        new ParquetFileWriterConfig(),
-                        new CacheConfig()).getSessionProperties());
+        ConnectorSession session = new TestingConnectorSession(getAllSessionProperties(
+                new HiveClientConfig(),
+                new HiveCommonClientConfig().setOrcMaxReadBlockSize(new DataSize(maxReadBytes, BYTE))));
         FileFormatDataSourceStats stats = new FileFormatDataSourceStats();
 
         // Build a table where every row gets larger, so we can test that the "batchSize" reduces
@@ -449,10 +445,18 @@ public class TestOrcBatchPageSourceMemoryTracking
 
         public ConnectorPageSource newPageSource(FileFormatDataSourceStats stats, ConnectorSession session)
         {
+            HiveFileSplit hiveFileSplit = new HiveFileSplit(
+                    fileSplit.getPath().toString(),
+                    fileSplit.getStart(),
+                    fileSplit.getLength(),
+                    fileSplit.getLength(),
+                    Instant.now().toEpochMilli(),
+                    Optional.empty(),
+                    ImmutableMap.of(),
+                    0);
+
             OrcBatchPageSourceFactory orcPageSourceFactory = new OrcBatchPageSourceFactory(
                     FUNCTION_AND_TYPE_MANAGER,
-                    FUNCTION_RESOLUTION,
-                    false,
                     HDFS_ENVIRONMENT,
                     stats,
                     100,
@@ -463,12 +467,8 @@ public class TestOrcBatchPageSourceMemoryTracking
                     ImmutableSet.of(orcPageSourceFactory),
                     new Configuration(),
                     session,
-                    fileSplit.getPath(),
+                    hiveFileSplit,
                     OptionalInt.empty(),
-                    fileSplit.getStart(),
-                    fileSplit.getLength(),
-                    fileSplit.getLength(),
-                    Instant.now().toEpochMilli(),
                     storage,
                     TupleDomain.all(),
                     columns,
@@ -489,7 +489,7 @@ public class TestOrcBatchPageSourceMemoryTracking
                     false,
                     ROW_EXPRESSION_SERVICE,
                     Optional.empty(),
-                    ImmutableMap.of())
+                    Optional.empty())
                     .get();
         }
 
@@ -499,11 +499,15 @@ public class TestOrcBatchPageSourceMemoryTracking
             SourceOperatorFactory sourceOperatorFactory = new TableScanOperatorFactory(
                     0,
                     new PlanNodeId("0"),
-                    (session, split, table, columnHandles) -> pageSource,
+                    (session, split, table, columnHandles, runtimeStats) -> pageSource,
                     table,
                     columns.stream().map(columnHandle -> (ColumnHandle) columnHandle).collect(toList()));
             SourceOperator operator = sourceOperatorFactory.createOperator(driverContext);
-            operator.addSplit(new Split(new ConnectorId("test"), TestingTransactionHandle.create(), TestingSplit.createLocalSplit()));
+            operator.addSplit(
+                    new ScheduledSplit(
+                            0,
+                            operator.getSourceId(),
+                            new Split(new ConnectorId("test"), TestingTransactionHandle.create(), TestingSplit.createLocalSplit())));
             return operator;
         }
 
@@ -520,7 +524,7 @@ public class TestOrcBatchPageSourceMemoryTracking
                     0,
                     new PlanNodeId("test"),
                     new PlanNodeId("0"),
-                    (session, split, table, columnHandles) -> pageSource,
+                    (session, split, table, columnHandles, runtimeStats) -> pageSource,
                     cursorProcessor,
                     pageProcessor,
                     table,
@@ -530,7 +534,11 @@ public class TestOrcBatchPageSourceMemoryTracking
                     new DataSize(0, BYTE),
                     0);
             SourceOperator operator = sourceOperatorFactory.createOperator(driverContext);
-            operator.addSplit(new Split(new ConnectorId("test"), TestingTransactionHandle.create(), TestingSplit.createLocalSplit()));
+            operator.addSplit(
+                    new ScheduledSplit(
+                            0,
+                            operator.getSourceId(),
+                            new Split(new ConnectorId("test"), TestingTransactionHandle.create(), TestingSplit.createLocalSplit())));
             return operator;
         }
 
@@ -557,7 +565,7 @@ public class TestOrcBatchPageSourceMemoryTracking
         Properties tableProperties = new Properties();
         tableProperties.setProperty("columns", Joiner.on(',').join(transform(testColumns, TestColumn::getName)));
         tableProperties.setProperty("columns.types", Joiner.on(',').join(transform(testColumns, TestColumn::getType)));
-        serializer.initialize(CONFIGURATION, tableProperties);
+        ((AbstractSerDe) serializer).initialize(CONFIGURATION, tableProperties, null);
 
         JobConf jobConf = new JobConf();
         if (compressionCodec != null) {

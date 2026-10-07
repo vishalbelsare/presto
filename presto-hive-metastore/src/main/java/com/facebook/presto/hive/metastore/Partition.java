@@ -19,9 +19,9 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.errorprone.annotations.Immutable;
 
-import javax.annotation.concurrent.Immutable;
-
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -34,6 +34,7 @@ import static java.util.Objects.requireNonNull;
 @Immutable
 public class Partition
 {
+    private final Optional<String> catalogName;
     private final String databaseName;
     private final String tableName;
     private final List<String> values;
@@ -44,6 +45,8 @@ public class Partition
     private final boolean eligibleToIgnore;
     private final boolean sealedPartition;
     private final int createTime;
+    private final long lastDataCommitTime;
+    private final Optional<byte[]> rowIdPartitionComponent;
 
     @JsonCreator
     public Partition(
@@ -56,8 +59,41 @@ public class Partition
             @JsonProperty("partitionVersion") Optional<Long> partitionVersion,
             @JsonProperty("eligibleToIgnore") boolean eligibleToIgnore,
             @JsonProperty("sealedPartition") boolean sealedPartition,
-            @JsonProperty("createTime") int createTime)
+            @JsonProperty("createTime") int createTime,
+            @JsonProperty("lastDataCommitTime") long lastDataCommitTime,
+            @JsonProperty("rowIdPartitionComponent") Optional<byte[]> rowIdPartitionComponent)
     {
+        this(
+                Optional.empty(),
+                databaseName,
+                tableName,
+                values,
+                storage,
+                columns,
+                parameters,
+                partitionVersion,
+                eligibleToIgnore,
+                sealedPartition,
+                createTime,
+                lastDataCommitTime,
+                rowIdPartitionComponent);
+    }
+    public Partition(
+            Optional<String> catalogName,
+            String databaseName,
+            String tableName,
+            List<String> values,
+            Storage storage,
+            List<Column> columns,
+            Map<String, String> parameters,
+            Optional<Long> partitionVersion,
+            boolean eligibleToIgnore,
+            boolean sealedPartition,
+            int createTime,
+            long lastDataCommitTime,
+            Optional<byte[]> rowIdPartitionComponent)
+    {
+        this.catalogName = requireNonNull(catalogName, "catalogName is null");
         this.databaseName = requireNonNull(databaseName, "databaseName is null");
         this.tableName = requireNonNull(tableName, "tableName is null");
         this.values = ImmutableList.copyOf(requireNonNull(values, "values is null"));
@@ -68,8 +104,15 @@ public class Partition
         this.eligibleToIgnore = eligibleToIgnore;
         this.sealedPartition = sealedPartition;
         this.createTime = createTime;
+        this.lastDataCommitTime = lastDataCommitTime;
+        this.rowIdPartitionComponent = requireNonNull(rowIdPartitionComponent);
     }
 
+    @JsonProperty
+    public Optional<String> getCatalogName()
+    {
+        return catalogName;
+    }
     @JsonProperty
     public String getDatabaseName()
     {
@@ -136,6 +179,26 @@ public class Partition
         return createTime;
     }
 
+    @JsonProperty
+    public long getLastDataCommitTime()
+    {
+        return lastDataCommitTime;
+    }
+
+    /**
+     * A unique identifier for a specific version of a
+     * specific partition in a specific table.
+     */
+    @JsonProperty
+    public Optional<byte[]> getRowIdPartitionComponent()
+    {
+        if (rowIdPartitionComponent.isPresent()) {
+            byte[] copy = Arrays.copyOf(rowIdPartitionComponent.get(), rowIdPartitionComponent.get().length);
+            return Optional.of(copy);
+        }
+        return Optional.empty();
+    }
+
     @Override
     public String toString()
     {
@@ -157,7 +220,8 @@ public class Partition
         }
 
         Partition partition = (Partition) o;
-        return Objects.equals(databaseName, partition.databaseName) &&
+        return Objects.equals(catalogName, partition.catalogName) &&
+                Objects.equals(databaseName, partition.databaseName) &&
                 Objects.equals(tableName, partition.tableName) &&
                 Objects.equals(values, partition.values) &&
                 Objects.equals(storage, partition.storage) &&
@@ -166,13 +230,14 @@ public class Partition
                 Objects.equals(partitionVersion, partition.partitionVersion) &&
                 Objects.equals(eligibleToIgnore, partition.eligibleToIgnore) &&
                 Objects.equals(sealedPartition, partition.sealedPartition) &&
-                Objects.equals(createTime, partition.getCreateTime());
+                Objects.equals(createTime, partition.getCreateTime()) &&
+                Objects.equals(lastDataCommitTime, partition.getLastDataCommitTime());
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(databaseName, tableName, values, storage, columns, parameters, partitionVersion, eligibleToIgnore, sealedPartition, createTime);
+        return Objects.hash(catalogName, databaseName, tableName, values, storage, columns, parameters, partitionVersion, eligibleToIgnore, sealedPartition, createTime, lastDataCommitTime);
     }
 
     public static Builder builder()
@@ -188,6 +253,7 @@ public class Partition
     public static class Builder
     {
         private final Storage.Builder storageBuilder;
+        private Optional<String> catalogName;
         private String databaseName;
         private String tableName;
         private List<String> values;
@@ -197,6 +263,8 @@ public class Partition
         private boolean isEligibleToIgnore;
         private boolean isSealedPartition = true;
         private int createTime;
+        private long lastDataCommitTime;
+        private Optional<byte[]> rowIdPartitionComponent = Optional.empty();
 
         private Builder()
         {
@@ -206,6 +274,7 @@ public class Partition
         private Builder(Partition partition)
         {
             this.storageBuilder = Storage.builder(partition.getStorage());
+            this.catalogName = partition.getCatalogName();
             this.databaseName = partition.getDatabaseName();
             this.tableName = partition.getTableName();
             this.values = partition.getValues();
@@ -214,8 +283,15 @@ public class Partition
             this.partitionVersion = partition.getPartitionVersion();
             this.isEligibleToIgnore = partition.isEligibleToIgnore();
             this.createTime = partition.getCreateTime();
+            this.lastDataCommitTime = partition.getLastDataCommitTime();
+            this.rowIdPartitionComponent = partition.getRowIdPartitionComponent();
         }
 
+        public Builder setCatalogName(Optional<String> catalogName)
+        {
+            this.catalogName = catalogName;
+            return this;
+        }
         public Builder setDatabaseName(String databaseName)
         {
             this.databaseName = databaseName;
@@ -281,9 +357,26 @@ public class Partition
             return this;
         }
 
+        public Builder setLastDataCommitTime(long lastDataCommitTime)
+        {
+            this.lastDataCommitTime = lastDataCommitTime;
+            return this;
+        }
+
+        /**
+         * Sets a unique identifier for a specific version of a
+         * specific partition in a specific table. This value will normally be
+         * supplied by Metastore, along with other metadata.
+         */
+        public Builder setRowIdPartitionComponent(Optional<byte[]> rowIdPartitionComponent)
+        {
+            this.rowIdPartitionComponent = rowIdPartitionComponent;
+            return this;
+        }
+
         public Partition build()
         {
-            return new Partition(databaseName, tableName, values, storageBuilder.build(), columns, parameters, partitionVersion, isEligibleToIgnore, isSealedPartition, createTime);
+            return new Partition(catalogName, databaseName, tableName, values, storageBuilder.build(), columns, parameters, partitionVersion, isEligibleToIgnore, isSealedPartition, createTime, lastDataCommitTime, rowIdPartitionComponent);
         }
     }
 }

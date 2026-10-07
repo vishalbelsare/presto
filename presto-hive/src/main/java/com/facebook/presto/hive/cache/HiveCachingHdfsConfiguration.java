@@ -21,20 +21,18 @@ import com.facebook.presto.hadoop.FileSystemFactory;
 import com.facebook.presto.hive.HdfsConfiguration;
 import com.facebook.presto.hive.HdfsContext;
 import com.facebook.presto.hive.HiveSessionProperties;
+import com.facebook.presto.hive.WrapperJobConf;
 import com.facebook.presto.hive.filesystem.ExtendedFileSystem;
 import com.facebook.presto.spi.PrestoException;
+import jakarta.inject.Inject;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.mapred.JobConf;
-
-import javax.inject.Inject;
 
 import java.io.IOException;
 import java.net.URI;
 import java.util.function.BiFunction;
 
-import static com.facebook.presto.hive.util.ConfigurationUtils.copy;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
@@ -63,10 +61,15 @@ public class HiveCachingHdfsConfiguration
     @Override
     public Configuration getConfiguration(HdfsContext context, URI uri)
     {
+        Configuration defaultConfig = hiveHdfsConfiguration.getConfiguration(context, uri);
         @SuppressWarnings("resource")
         Configuration config = new CachingJobConf((factoryConfig, factoryUri) -> {
             try {
-                FileSystem fileSystem = (new Path(factoryUri)).getFileSystem(hiveHdfsConfiguration.getConfiguration(context, factoryUri));
+                Configuration currentConfig = defaultConfig;
+                if (uri.compareTo(factoryUri) != 0) {
+                    currentConfig = hiveHdfsConfiguration.getConfiguration(context, factoryUri);
+                }
+                FileSystem fileSystem = (new Path(factoryUri)).getFileSystem(currentConfig);
                 checkState(fileSystem instanceof ExtendedFileSystem);
                 return cacheFactory.createCachingFileSystem(
                         factoryConfig,
@@ -74,35 +77,31 @@ public class HiveCachingHdfsConfiguration
                         (ExtendedFileSystem) fileSystem,
                         cacheManager,
                         context.getSession().map(HiveSessionProperties::isCacheEnabled).orElse(cacheConfig.isCachingEnabled()),
-                        cacheConfig.getCacheType(),
-                        cacheConfig.isValidationEnabled());
+                        cacheConfig);
             }
             catch (IOException e) {
                 throw new PrestoException(GENERIC_INTERNAL_ERROR, "cannot create caching file system", e);
             }
-        });
-        Configuration defaultConfig = hiveHdfsConfiguration.getConfiguration(context, uri);
-
-        copy(defaultConfig, config);
+        }, defaultConfig);
         return config;
     }
 
-    private static class CachingJobConf
-            extends JobConf
+    public static class CachingJobConf
+            extends WrapperJobConf
             implements FileSystemFactory
     {
         private final BiFunction<Configuration, URI, FileSystem> factory;
 
-        private CachingJobConf(BiFunction<Configuration, URI, FileSystem> factory)
+        public CachingJobConf(BiFunction<Configuration, URI, FileSystem> factory, Configuration config)
         {
-            super(false);
+            super(config);
             this.factory = requireNonNull(factory, "factory is null");
         }
 
         @Override
         public FileSystem createFileSystem(URI uri)
         {
-            return factory.apply(this, uri);
+            return factory.apply(getConfig(), uri);
         }
     }
 }

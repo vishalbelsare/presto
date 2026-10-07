@@ -15,9 +15,12 @@ package com.facebook.presto.hive;
 
 import com.facebook.airlift.log.Logger;
 import com.facebook.airlift.stats.CounterStat;
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.GroupByHashPageIndexerFactory;
 import com.facebook.presto.cache.CacheConfig;
 import com.facebook.presto.common.Page;
+import com.facebook.presto.common.RuntimeStats;
 import com.facebook.presto.common.Subfield;
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.function.SqlFunctionProperties;
@@ -26,6 +29,7 @@ import com.facebook.presto.common.predicate.NullableValue;
 import com.facebook.presto.common.predicate.Range;
 import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.predicate.ValueSet;
+import com.facebook.presto.common.resourceGroups.QueryType;
 import com.facebook.presto.common.type.ArrayType;
 import com.facebook.presto.common.type.MapType;
 import com.facebook.presto.common.type.NamedTypeSignature;
@@ -35,18 +39,19 @@ import com.facebook.presto.common.type.SqlDate;
 import com.facebook.presto.common.type.SqlTimestamp;
 import com.facebook.presto.common.type.SqlVarbinary;
 import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.TimeZoneKey;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.hive.LocationService.WriteInfo;
 import com.facebook.presto.hive.authentication.NoHdfsAuthentication;
 import com.facebook.presto.hive.datasink.OutputStreamDataSinkFactory;
-import com.facebook.presto.hive.metastore.CachingHiveMetastore;
-import com.facebook.presto.hive.metastore.CachingHiveMetastore.MetastoreCacheScope;
 import com.facebook.presto.hive.metastore.Column;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
 import com.facebook.presto.hive.metastore.HiveColumnStatistics;
 import com.facebook.presto.hive.metastore.HivePartitionMutator;
 import com.facebook.presto.hive.metastore.HivePrivilegeInfo;
 import com.facebook.presto.hive.metastore.HivePrivilegeInfo.HivePrivilege;
+import com.facebook.presto.hive.metastore.InMemoryCachingHiveMetastore;
+import com.facebook.presto.hive.metastore.MetastoreCacheSpecProvider;
 import com.facebook.presto.hive.metastore.MetastoreContext;
 import com.facebook.presto.hive.metastore.Partition;
 import com.facebook.presto.hive.metastore.PartitionStatistics;
@@ -61,11 +66,16 @@ import com.facebook.presto.hive.metastore.thrift.BridgingHiveMetastore;
 import com.facebook.presto.hive.metastore.thrift.HiveCluster;
 import com.facebook.presto.hive.metastore.thrift.TestingHiveCluster;
 import com.facebook.presto.hive.metastore.thrift.ThriftHiveMetastore;
+import com.facebook.presto.hive.metastore.thrift.ThriftHiveMetastoreConfig;
 import com.facebook.presto.hive.orc.OrcBatchPageSource;
 import com.facebook.presto.hive.orc.OrcSelectivePageSource;
 import com.facebook.presto.hive.pagefile.PageFilePageSource;
 import com.facebook.presto.hive.parquet.ParquetPageSource;
 import com.facebook.presto.hive.rcfile.RcFilePageSource;
+import com.facebook.presto.hive.rule.BaseSubfieldExtractionRewriter.ConnectorPushdownFilterResult;
+import com.facebook.presto.hive.rule.HiveFilterPushdown;
+import com.facebook.presto.hive.rule.HiveFilterPushdown.SubfieldExtractionRewriter;
+import com.facebook.presto.hive.statistics.QuickStatsProvider;
 import com.facebook.presto.metadata.MetadataManager;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
@@ -102,16 +112,22 @@ import com.facebook.presto.spi.connector.ConnectorPartitioningMetadata;
 import com.facebook.presto.spi.connector.ConnectorSplitManager;
 import com.facebook.presto.spi.connector.ConnectorSplitManager.SplitSchedulingContext;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
+import com.facebook.presto.spi.constraints.PrimaryKeyConstraint;
+import com.facebook.presto.spi.constraints.TableConstraint;
+import com.facebook.presto.spi.constraints.UniqueConstraint;
+import com.facebook.presto.spi.function.FunctionMetadataManager;
 import com.facebook.presto.spi.function.SqlFunctionId;
 import com.facebook.presto.spi.function.SqlInvokedFunction;
+import com.facebook.presto.spi.function.StandardFunctionResolution;
+import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.spi.relation.RowExpression;
+import com.facebook.presto.spi.relation.RowExpressionService;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.spi.security.ConnectorIdentity;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.statistics.ColumnStatistics;
 import com.facebook.presto.spi.statistics.TableStatistics;
 import com.facebook.presto.sql.TestingRowExpressionTranslator;
-import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.sql.gen.JoinCompiler;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.testing.MaterializedResult;
@@ -126,8 +142,6 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.net.HostAndPort;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -146,6 +160,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -157,11 +172,13 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
@@ -172,6 +189,8 @@ import static com.facebook.airlift.testing.Assertions.assertGreaterThan;
 import static com.facebook.airlift.testing.Assertions.assertGreaterThanOrEqual;
 import static com.facebook.airlift.testing.Assertions.assertInstanceOf;
 import static com.facebook.airlift.testing.Assertions.assertLessThanOrEqual;
+import static com.facebook.airlift.units.DataSize.Unit.GIGABYTE;
+import static com.facebook.airlift.units.DataSize.Unit.KILOBYTE;
 import static com.facebook.presto.common.predicate.TupleDomain.withColumnDomains;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
@@ -201,23 +220,23 @@ import static com.facebook.presto.hive.AbstractTestHiveClient.TransactionDeleteI
 import static com.facebook.presto.hive.AbstractTestHiveClient.TransactionDeleteInsertTestTag.ROLLBACK_AFTER_FINISH_INSERT;
 import static com.facebook.presto.hive.AbstractTestHiveClient.TransactionDeleteInsertTestTag.ROLLBACK_AFTER_SINK_FINISH;
 import static com.facebook.presto.hive.AbstractTestHiveClient.TransactionDeleteInsertTestTag.ROLLBACK_RIGHT_AWAY;
+import static com.facebook.presto.hive.BaseHiveColumnHandle.ColumnType.PARTITION_KEY;
+import static com.facebook.presto.hive.BaseHiveColumnHandle.ColumnType.REGULAR;
 import static com.facebook.presto.hive.BucketFunctionType.HIVE_COMPATIBLE;
 import static com.facebook.presto.hive.CacheQuotaScope.TABLE;
 import static com.facebook.presto.hive.HiveBasicStatistics.createEmptyStatistics;
 import static com.facebook.presto.hive.HiveBasicStatistics.createZeroStatistics;
 import static com.facebook.presto.hive.HiveColumnConverterProvider.DEFAULT_COLUMN_CONVERTER_PROVIDER;
 import static com.facebook.presto.hive.HiveColumnHandle.BUCKET_COLUMN_NAME;
-import static com.facebook.presto.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
-import static com.facebook.presto.hive.HiveColumnHandle.ColumnType.REGULAR;
 import static com.facebook.presto.hive.HiveColumnHandle.MAX_PARTITION_KEY_COLUMN_INDEX;
 import static com.facebook.presto.hive.HiveColumnHandle.bucketColumnHandle;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_PARTITION_VALUE;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_PARTITION_SCHEMA_MISMATCH;
-import static com.facebook.presto.hive.HiveMetadata.PRESTO_VERSION_NAME;
 import static com.facebook.presto.hive.HiveMetadata.convertToPredicate;
 import static com.facebook.presto.hive.HiveQueryRunner.METASTORE_CONTEXT;
 import static com.facebook.presto.hive.HiveSessionProperties.OFFLINE_DATA_DEBUG_MODE_ENABLED;
 import static com.facebook.presto.hive.HiveSessionProperties.SORTED_WRITE_TO_TEMP_PATH_ENABLED;
+import static com.facebook.presto.hive.HiveStorageFormat.ALPHA;
 import static com.facebook.presto.hive.HiveStorageFormat.AVRO;
 import static com.facebook.presto.hive.HiveStorageFormat.CSV;
 import static com.facebook.presto.hive.HiveStorageFormat.DWRF;
@@ -234,14 +253,18 @@ import static com.facebook.presto.hive.HiveTableProperties.BUCKET_COUNT_PROPERTY
 import static com.facebook.presto.hive.HiveTableProperties.PARTITIONED_BY_PROPERTY;
 import static com.facebook.presto.hive.HiveTableProperties.SORTED_BY_PROPERTY;
 import static com.facebook.presto.hive.HiveTableProperties.STORAGE_FORMAT_PROPERTY;
+import static com.facebook.presto.hive.HiveTestUtils.DO_NOTHING_DIRECTORY_LISTER;
 import static com.facebook.presto.hive.HiveTestUtils.FILTER_STATS_CALCULATOR_SERVICE;
 import static com.facebook.presto.hive.HiveTestUtils.FUNCTION_AND_TYPE_MANAGER;
 import static com.facebook.presto.hive.HiveTestUtils.FUNCTION_RESOLUTION;
+import static com.facebook.presto.hive.HiveTestUtils.HDFS_ENVIRONMENT;
 import static com.facebook.presto.hive.HiveTestUtils.METADATA;
 import static com.facebook.presto.hive.HiveTestUtils.PAGE_SORTER;
 import static com.facebook.presto.hive.HiveTestUtils.ROW_EXPRESSION_SERVICE;
 import static com.facebook.presto.hive.HiveTestUtils.SESSION;
 import static com.facebook.presto.hive.HiveTestUtils.arrayType;
+import static com.facebook.presto.hive.HiveTestUtils.getAllSessionProperties;
+import static com.facebook.presto.hive.HiveTestUtils.getDefaultHiveAggregatedPageSourceFactories;
 import static com.facebook.presto.hive.HiveTestUtils.getDefaultHiveBatchPageSourceFactories;
 import static com.facebook.presto.hive.HiveTestUtils.getDefaultHiveFileWriterFactories;
 import static com.facebook.presto.hive.HiveTestUtils.getDefaultHiveRecordCursorProvider;
@@ -261,6 +284,7 @@ import static com.facebook.presto.hive.HiveType.HIVE_STRING;
 import static com.facebook.presto.hive.HiveType.toHiveType;
 import static com.facebook.presto.hive.HiveUtil.columnExtraInfo;
 import static com.facebook.presto.hive.LocationHandle.WriteMode.STAGE_AND_MOVE_TO_TARGET_DIRECTORY;
+import static com.facebook.presto.hive.metastore.AbstractCachingHiveMetastore.MetastoreCacheType.ALL;
 import static com.facebook.presto.hive.metastore.HiveColumnStatistics.createBinaryColumnStatistics;
 import static com.facebook.presto.hive.metastore.HiveColumnStatistics.createBooleanColumnStatistics;
 import static com.facebook.presto.hive.metastore.HiveColumnStatistics.createDateColumnStatistics;
@@ -269,12 +293,14 @@ import static com.facebook.presto.hive.metastore.HiveColumnStatistics.createDoub
 import static com.facebook.presto.hive.metastore.HiveColumnStatistics.createIntegerColumnStatistics;
 import static com.facebook.presto.hive.metastore.HiveColumnStatistics.createStringColumnStatistics;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.PRESTO_QUERY_ID_NAME;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.PRESTO_VERSION_NAME;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.createDirectory;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.getMetastoreHeaders;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.getPartitionNames;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.toPartitionValues;
+import static com.facebook.presto.hive.metastore.NoopMetastoreCacheStats.NOOP_METASTORE_CACHE_STATS;
 import static com.facebook.presto.hive.metastore.PrestoTableType.MANAGED_TABLE;
 import static com.facebook.presto.hive.metastore.StorageFormat.fromHiveStorageFormat;
-import static com.facebook.presto.hive.rule.HiveFilterPushdown.pushdownFilter;
 import static com.facebook.presto.spi.SplitContext.NON_CACHEABLE;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.spi.StandardErrorCode.TRANSACTION_CONFLICT;
@@ -302,13 +328,12 @@ import static com.google.common.hash.Hashing.sha256;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static com.google.common.util.concurrent.MoreExecutors.listeningDecorator;
 import static io.airlift.slice.Slices.utf8Slice;
-import static io.airlift.units.DataSize.Unit.GIGABYTE;
-import static io.airlift.units.DataSize.Unit.KILOBYTE;
 import static java.lang.Float.floatToRawIntBits;
 import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.lang.Thread.sleep;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Collections.emptyList;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
@@ -338,7 +363,7 @@ public abstract class AbstractTestHiveClient
     protected static final String TEST_SERVER_VERSION = "test_version";
 
     protected static final Executor EXECUTOR = Executors.newFixedThreadPool(5);
-    protected static final PageSinkContext TEST_HIVE_PAGE_SINK_CONTEXT = PageSinkContext.builder().setCommitRequired(false).setConnectorMetadataUpdater(new HiveMetadataUpdater(EXECUTOR)).build();
+    protected static final PageSinkContext TEST_HIVE_PAGE_SINK_CONTEXT = PageSinkContext.builder().setCommitRequired(false).build();
 
     private static final Type ARRAY_TYPE = arrayType(createUnboundedVarcharType());
     private static final Type MAP_TYPE = mapType(createUnboundedVarcharType(), BIGINT);
@@ -348,18 +373,24 @@ public abstract class AbstractTestHiveClient
             new NamedTypeSignature(Optional.of(new RowFieldName("f_boolean", false)), BOOLEAN.getTypeSignature())));
 
     private static final List<ColumnMetadata> CREATE_TABLE_COLUMNS = ImmutableList.<ColumnMetadata>builder()
-            .add(new ColumnMetadata("id", BIGINT))
-            .add(new ColumnMetadata("t_string", createUnboundedVarcharType()))
-            .add(new ColumnMetadata("t_tinyint", TINYINT))
-            .add(new ColumnMetadata("t_smallint", SMALLINT))
-            .add(new ColumnMetadata("t_integer", INTEGER))
-            .add(new ColumnMetadata("t_bigint", BIGINT))
-            .add(new ColumnMetadata("t_float", REAL))
-            .add(new ColumnMetadata("t_double", DOUBLE))
-            .add(new ColumnMetadata("t_boolean", BOOLEAN))
-            .add(new ColumnMetadata("t_array", ARRAY_TYPE))
-            .add(new ColumnMetadata("t_map", MAP_TYPE))
-            .add(new ColumnMetadata("t_row", ROW_TYPE))
+            .add(ColumnMetadata.builder().setName("id").setType(BIGINT).build())
+            .add(ColumnMetadata.builder().setName("t_string").setType(createUnboundedVarcharType()).build())
+            .add(ColumnMetadata.builder().setName("t_tinyint").setType(TINYINT).build())
+            .add(ColumnMetadata.builder().setName("t_smallint").setType(SMALLINT).build())
+            .add(ColumnMetadata.builder().setName("t_integer").setType(INTEGER).build())
+            .add(ColumnMetadata.builder().setName("t_bigint").setType(BIGINT).build())
+            .add(ColumnMetadata.builder().setName("t_float").setType(REAL).build())
+            .add(ColumnMetadata.builder().setName("t_double").setType(DOUBLE).build())
+            .add(ColumnMetadata.builder().setName("t_boolean").setType(BOOLEAN).build())
+            .add(ColumnMetadata.builder().setName("t_array").setType(ARRAY_TYPE).build())
+            .add(ColumnMetadata.builder().setName("t_map").setType(MAP_TYPE).build())
+            .add(ColumnMetadata.builder().setName("t_row").setType(ROW_TYPE).build())
+            .build();
+
+    private static final List<ColumnMetadata> CREATE_TABLE_COLUMNS_FOR_DROP = ImmutableList.<ColumnMetadata>builder()
+            .add(ColumnMetadata.builder().setName("id").setType(BIGINT).build())
+            .add(ColumnMetadata.builder().setName("t_string").setType(createUnboundedVarcharType()).build())
+            .add(ColumnMetadata.builder().setName("t_double").setType(DOUBLE).build())
             .build();
 
     private static final MaterializedResult CREATE_TABLE_DATA =
@@ -371,10 +402,12 @@ public abstract class AbstractTestHiveClient
 
     protected static final List<ColumnMetadata> CREATE_TABLE_COLUMNS_PARTITIONED = ImmutableList.<ColumnMetadata>builder()
             .addAll(CREATE_TABLE_COLUMNS)
-            .add(new ColumnMetadata("ds", createUnboundedVarcharType()))
+            .add(ColumnMetadata.builder().setName("ds").setType(createUnboundedVarcharType()).build())
             .build();
 
-    private static final MaterializedResult CREATE_TABLE_PARTITIONED_DATA = new MaterializedResult(
+    protected static final Predicate<String> PARTITION_COLUMN_FILTER = columnName -> columnName.equals("ds") || columnName.startsWith("part_");
+
+    protected static final MaterializedResult CREATE_TABLE_PARTITIONED_DATA = new MaterializedResult(
             CREATE_TABLE_DATA.getMaterializedRows().stream()
                     .map(row -> new MaterializedRow(row.getPrecision(), newArrayList(concat(row.getFields(), ImmutableList.of("2015-07-0" + row.getField(0))))))
                     .collect(toList()),
@@ -393,24 +426,24 @@ public abstract class AbstractTestHiveClient
                     .build();
 
     private static final List<ColumnMetadata> MISMATCH_SCHEMA_PRIMITIVE_COLUMN_BEFORE = ImmutableList.<ColumnMetadata>builder()
-            .add(new ColumnMetadata("tinyint_to_smallint", TINYINT))
-            .add(new ColumnMetadata("tinyint_to_integer", TINYINT))
-            .add(new ColumnMetadata("tinyint_to_bigint", TINYINT))
-            .add(new ColumnMetadata("smallint_to_integer", SMALLINT))
-            .add(new ColumnMetadata("smallint_to_bigint", SMALLINT))
-            .add(new ColumnMetadata("integer_to_bigint", INTEGER))
-            .add(new ColumnMetadata("integer_to_varchar", INTEGER))
-            .add(new ColumnMetadata("varchar_to_integer", createUnboundedVarcharType()))
-            .add(new ColumnMetadata("float_to_double", REAL))
-            .add(new ColumnMetadata("varchar_to_drop_in_row", createUnboundedVarcharType()))
+            .add(ColumnMetadata.builder().setName("tinyint_to_smallint").setType(TINYINT).build())
+            .add(ColumnMetadata.builder().setName("tinyint_to_integer").setType(TINYINT).build())
+            .add(ColumnMetadata.builder().setName("tinyint_to_bigint").setType(TINYINT).build())
+            .add(ColumnMetadata.builder().setName("smallint_to_integer").setType(SMALLINT).build())
+            .add(ColumnMetadata.builder().setName("smallint_to_bigint").setType(SMALLINT).build())
+            .add(ColumnMetadata.builder().setName("integer_to_bigint").setType(INTEGER).build())
+            .add(ColumnMetadata.builder().setName("integer_to_varchar").setType(INTEGER).build())
+            .add(ColumnMetadata.builder().setName("varchar_to_integer").setType(createUnboundedVarcharType()).build())
+            .add(ColumnMetadata.builder().setName("float_to_double").setType(REAL).build())
+            .add(ColumnMetadata.builder().setName("varchar_to_drop_in_row").setType(createUnboundedVarcharType()).build())
             .build();
 
     private static final List<ColumnMetadata> MISMATCH_SCHEMA_TABLE_BEFORE = ImmutableList.<ColumnMetadata>builder()
             .addAll(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_BEFORE)
-            .add(new ColumnMetadata("struct_to_struct", toRowType(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_BEFORE)))
-            .add(new ColumnMetadata("list_to_list", arrayType(toRowType(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_BEFORE))))
-            .add(new ColumnMetadata("map_to_map", mapType(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_BEFORE.get(1).getType(), toRowType(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_BEFORE))))
-            .add(new ColumnMetadata("ds", createUnboundedVarcharType()))
+            .add(ColumnMetadata.builder().setName("struct_to_struct").setType(toRowType(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_BEFORE)).build())
+            .add(ColumnMetadata.builder().setName("list_to_list").setType(arrayType(toRowType(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_BEFORE))).build())
+            .add(ColumnMetadata.builder().setName("map_to_map").setType(mapType(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_BEFORE.get(1).getType(), toRowType(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_BEFORE))).build())
+            .add(ColumnMetadata.builder().setName("ds").setType(createUnboundedVarcharType()).build())
             .build();
 
     private static final DataSize DEFAULT_QUOTA_SIZE = DataSize.succinctDataSize(2, GIGABYTE);
@@ -447,31 +480,34 @@ public abstract class AbstractTestHiveClient
                     .build();
 
     private static final List<ColumnMetadata> MISMATCH_SCHEMA_PRIMITIVE_COLUMN_AFTER = ImmutableList.<ColumnMetadata>builder()
-            .add(new ColumnMetadata("tinyint_to_smallint", SMALLINT))
-            .add(new ColumnMetadata("tinyint_to_integer", INTEGER))
-            .add(new ColumnMetadata("tinyint_to_bigint", BIGINT))
-            .add(new ColumnMetadata("smallint_to_integer", INTEGER))
-            .add(new ColumnMetadata("smallint_to_bigint", BIGINT))
-            .add(new ColumnMetadata("integer_to_bigint", BIGINT))
-            .add(new ColumnMetadata("integer_to_varchar", createUnboundedVarcharType()))
-            .add(new ColumnMetadata("varchar_to_integer", INTEGER))
-            .add(new ColumnMetadata("float_to_double", DOUBLE))
-            .add(new ColumnMetadata("varchar_to_drop_in_row", createUnboundedVarcharType()))
+            .add(ColumnMetadata.builder().setName("tinyint_to_smallint").setType(SMALLINT).build())
+            .add(ColumnMetadata.builder().setName("tinyint_to_integer").setType(INTEGER).build())
+            .add(ColumnMetadata.builder().setName("tinyint_to_bigint").setType(BIGINT).build())
+            .add(ColumnMetadata.builder().setName("smallint_to_integer").setType(INTEGER).build())
+            .add(ColumnMetadata.builder().setName("smallint_to_bigint").setType(BIGINT).build())
+            .add(ColumnMetadata.builder().setName("integer_to_bigint").setType(BIGINT).build())
+            .add(ColumnMetadata.builder().setName("integer_to_varchar").setType(createUnboundedVarcharType()).build())
+            .add(ColumnMetadata.builder().setName("varchar_to_integer").setType(INTEGER).build())
+            .add(ColumnMetadata.builder().setName("float_to_double").setType(DOUBLE).build())
+            .add(ColumnMetadata.builder().setName("varchar_to_drop_in_row").setType(createUnboundedVarcharType()).build())
             .build();
 
     private static final Type MISMATCH_SCHEMA_ROW_TYPE_APPEND = toRowType(ImmutableList.<ColumnMetadata>builder()
             .addAll(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_AFTER)
-            .add(new ColumnMetadata(format("%s_append", MISMATCH_SCHEMA_PRIMITIVE_COLUMN_AFTER.get(0).getName()), MISMATCH_SCHEMA_PRIMITIVE_COLUMN_AFTER.get(0).getType()))
+            .add(ColumnMetadata.builder()
+                    .setName(format("%s_append", MISMATCH_SCHEMA_PRIMITIVE_COLUMN_AFTER.get(0).getName()))
+                    .setType(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_AFTER.get(0).getType())
+                    .build())
             .build());
     private static final Type MISMATCH_SCHEMA_ROW_TYPE_DROP = toRowType(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_AFTER.subList(0, MISMATCH_SCHEMA_PRIMITIVE_COLUMN_AFTER.size() - 1));
 
     private static final List<ColumnMetadata> MISMATCH_SCHEMA_TABLE_AFTER = ImmutableList.<ColumnMetadata>builder()
             .addAll(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_AFTER)
-            .add(new ColumnMetadata("struct_to_struct", MISMATCH_SCHEMA_ROW_TYPE_APPEND))
-            .add(new ColumnMetadata("list_to_list", arrayType(MISMATCH_SCHEMA_ROW_TYPE_APPEND)))
-            .add(new ColumnMetadata("map_to_map", mapType(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_AFTER.get(1).getType(), MISMATCH_SCHEMA_ROW_TYPE_DROP)))
-            .add(new ColumnMetadata("tinyint_append", TINYINT))
-            .add(new ColumnMetadata("ds", createUnboundedVarcharType()))
+            .add(ColumnMetadata.builder().setName("struct_to_struct").setType(MISMATCH_SCHEMA_ROW_TYPE_APPEND).build())
+            .add(ColumnMetadata.builder().setName("list_to_list").setType(arrayType(MISMATCH_SCHEMA_ROW_TYPE_APPEND)).build())
+            .add(ColumnMetadata.builder().setName("map_to_map").setType(mapType(MISMATCH_SCHEMA_PRIMITIVE_COLUMN_AFTER.get(1).getType(), MISMATCH_SCHEMA_ROW_TYPE_DROP)).build())
+            .add(ColumnMetadata.builder().setName("tinyint_append").setType(TINYINT).build())
+            .add(ColumnMetadata.builder().setName("ds").setType(createUnboundedVarcharType()).build())
             .build();
 
     private static final MaterializedResult MISMATCH_SCHEMA_PRIMITIVE_FIELDS_DATA_AFTER =
@@ -500,7 +536,7 @@ public abstract class AbstractTestHiveClient
                             }).collect(toList()))
                     .build();
 
-    private static final SubfieldExtractor SUBFIELD_EXTRACTOR = new SubfieldExtractor(FUNCTION_RESOLUTION, ROW_EXPRESSION_SERVICE.getExpressionOptimizer(), SESSION);
+    private static final SubfieldExtractor SUBFIELD_EXTRACTOR = new SubfieldExtractor(FUNCTION_RESOLUTION, ROW_EXPRESSION_SERVICE.getExpressionOptimizer(SESSION), SESSION);
 
     private static final TypeProvider TYPE_PROVIDER_AFTER = TypeProvider.copyOf(MISMATCH_SCHEMA_TABLE_AFTER.stream()
             .collect(toImmutableMap(ColumnMetadata::getName, ColumnMetadata::getType)));
@@ -564,34 +600,31 @@ public abstract class AbstractTestHiveClient
             row -> row.getField(0) != null && (short) row.getField(0) + 1 > 0,
             row -> row.getField(0) != null && (short) row.getField(0) + 1 < 0);
 
-    protected Set<HiveStorageFormat> createTableFormats = difference(
-            ImmutableSet.copyOf(HiveStorageFormat.values()),
-            // exclude formats that change table schema with serde
-            ImmutableSet.of(AVRO, CSV));
+    protected Set<HiveStorageFormat> createTableFormats = getSupportedCreateTableHiveStorageFormats();
 
-    private static final JoinCompiler JOIN_COMPILER = new JoinCompiler(MetadataManager.createTestMetadataManager(), new FeaturesConfig());
+    private static final JoinCompiler JOIN_COMPILER = new JoinCompiler(MetadataManager.createTestMetadataManager());
 
     private static final List<ColumnMetadata> STATISTICS_TABLE_COLUMNS = ImmutableList.<ColumnMetadata>builder()
-            .add(new ColumnMetadata("t_boolean", BOOLEAN))
-            .add(new ColumnMetadata("t_bigint", BIGINT))
-            .add(new ColumnMetadata("t_integer", INTEGER))
-            .add(new ColumnMetadata("t_smallint", SMALLINT))
-            .add(new ColumnMetadata("t_tinyint", TINYINT))
-            .add(new ColumnMetadata("t_double", DOUBLE))
-            .add(new ColumnMetadata("t_float", REAL))
-            .add(new ColumnMetadata("t_string", createUnboundedVarcharType()))
-            .add(new ColumnMetadata("t_varchar", createVarcharType(100)))
-            .add(new ColumnMetadata("t_char", createCharType(5)))
-            .add(new ColumnMetadata("t_varbinary", VARBINARY))
-            .add(new ColumnMetadata("t_date", DATE))
-            .add(new ColumnMetadata("t_timestamp", TIMESTAMP))
-            .add(new ColumnMetadata("t_short_decimal", createDecimalType(5, 2)))
-            .add(new ColumnMetadata("t_long_decimal", createDecimalType(20, 3)))
+            .add(ColumnMetadata.builder().setName("t_boolean").setType(BOOLEAN).build())
+            .add(ColumnMetadata.builder().setName("t_bigint").setType(BIGINT).build())
+            .add(ColumnMetadata.builder().setName("t_integer").setType(INTEGER).build())
+            .add(ColumnMetadata.builder().setName("t_smallint").setType(SMALLINT).build())
+            .add(ColumnMetadata.builder().setName("t_tinyint").setType(TINYINT).build())
+            .add(ColumnMetadata.builder().setName("t_double").setType(DOUBLE).build())
+            .add(ColumnMetadata.builder().setName("t_float").setType(REAL).build())
+            .add(ColumnMetadata.builder().setName("t_string").setType(createUnboundedVarcharType()).build())
+            .add(ColumnMetadata.builder().setName("t_varchar").setType(createVarcharType(100)).build())
+            .add(ColumnMetadata.builder().setName("t_char").setType(createCharType(5)).build())
+            .add(ColumnMetadata.builder().setName("t_varbinary").setType(VARBINARY).build())
+            .add(ColumnMetadata.builder().setName("t_date").setType(DATE).build())
+            .add(ColumnMetadata.builder().setName("t_timestamp").setType(TIMESTAMP).build())
+            .add(ColumnMetadata.builder().setName("t_short_decimal").setType(createDecimalType(5, 2)).build())
+            .add(ColumnMetadata.builder().setName("t_long_decimal").setType(createDecimalType(20, 3)).build())
             .build();
 
     protected static final List<ColumnMetadata> STATISTICS_PARTITIONED_TABLE_COLUMNS = ImmutableList.<ColumnMetadata>builder()
             .addAll(STATISTICS_TABLE_COLUMNS)
-            .add(new ColumnMetadata("ds", VARCHAR))
+            .add(ColumnMetadata.builder().setName("ds").setType(VARCHAR).build())
             .build();
 
     protected static final PartitionStatistics EMPTY_TABLE_STATISTICS = new PartitionStatistics(createZeroStatistics(), ImmutableMap.of());
@@ -611,8 +644,8 @@ public abstract class AbstractTestHiveClient
                             .put("t_float", createDoubleColumnStatistics(OptionalDouble.of(123.25), OptionalDouble.of(567.58), OptionalLong.of(9), OptionalLong.of(10)))
                             .put("t_string", createStringColumnStatistics(OptionalLong.of(10), OptionalLong.of(50), OptionalLong.of(3), OptionalLong.of(7)))
                             .put("t_varchar", createStringColumnStatistics(OptionalLong.of(100), OptionalLong.of(230), OptionalLong.of(5), OptionalLong.of(3)))
-                            .put("t_char", createStringColumnStatistics(OptionalLong.of(5), OptionalLong.of(500), OptionalLong.of(1), OptionalLong.of(4)))
-                            .put("t_varbinary", createBinaryColumnStatistics(OptionalLong.of(4), OptionalLong.of(300), OptionalLong.of(1)))
+                            .put("t_char", createStringColumnStatistics(OptionalLong.of(5), OptionalLong.of(50), OptionalLong.of(1), OptionalLong.of(4)))
+                            .put("t_varbinary", createBinaryColumnStatistics(OptionalLong.of(4), OptionalLong.of(50), OptionalLong.of(1)))
                             .put("t_date", createDateColumnStatistics(Optional.of(java.time.LocalDate.ofEpochDay(1)), Optional.of(java.time.LocalDate.ofEpochDay(2)), OptionalLong.of(7), OptionalLong.of(6)))
                             .put("t_timestamp", createIntegerColumnStatistics(OptionalLong.of(1234567L), OptionalLong.of(71234567L), OptionalLong.of(7), OptionalLong.of(5)))
                             .put("t_short_decimal", createDecimalColumnStatistics(Optional.of(new BigDecimal(10)), Optional.of(new BigDecimal(12)), OptionalLong.of(3), OptionalLong.of(5)))
@@ -643,10 +676,10 @@ public abstract class AbstractTestHiveClient
                             .put("t_bigint", createIntegerColumnStatistics(OptionalLong.of(2345L), OptionalLong.of(6789L), OptionalLong.of(4), OptionalLong.of(7)))
                             .put("t_integer", createIntegerColumnStatistics(OptionalLong.of(234L), OptionalLong.of(678L), OptionalLong.of(5), OptionalLong.of(6)))
                             .put("t_smallint", createIntegerColumnStatistics(OptionalLong.of(23L), OptionalLong.of(65L), OptionalLong.of(7), OptionalLong.of(5)))
-                            .put("t_tinyint", createIntegerColumnStatistics(OptionalLong.of(12), OptionalLong.of(3L), OptionalLong.of(2), OptionalLong.of(3)))
+                            .put("t_tinyint", createIntegerColumnStatistics(OptionalLong.of(3L), OptionalLong.of(12L), OptionalLong.of(2), OptionalLong.of(3)))
                             .put("t_double", createDoubleColumnStatistics(OptionalDouble.of(2345.25), OptionalDouble.of(6785.58), OptionalLong.of(6), OptionalLong.of(3)))
                             .put("t_float", createDoubleColumnStatistics(OptionalDouble.of(235.25), OptionalDouble.of(676.58), OptionalLong.of(7), OptionalLong.of(11)))
-                            .put("t_string", createStringColumnStatistics(OptionalLong.of(11), OptionalLong.of(600), OptionalLong.of(2), OptionalLong.of(6)))
+                            .put("t_string", createStringColumnStatistics(OptionalLong.of(301), OptionalLong.of(600), OptionalLong.of(2), OptionalLong.of(6)))
                             .put("t_varchar", createStringColumnStatistics(OptionalLong.of(99), OptionalLong.of(223), OptionalLong.of(7), OptionalLong.of(1)))
                             .put("t_char", createStringColumnStatistics(OptionalLong.of(6), OptionalLong.of(60), OptionalLong.of(0), OptionalLong.of(3)))
                             .put("t_varbinary", createBinaryColumnStatistics(OptionalLong.of(2), OptionalLong.of(10), OptionalLong.of(2)))
@@ -679,8 +712,8 @@ public abstract class AbstractTestHiveClient
                             .build());
 
     private static final List<ColumnMetadata> TEMPORARY_TABLE_COLUMNS = ImmutableList.<ColumnMetadata>builder()
-            .add(new ColumnMetadata("id", VARCHAR))
-            .add(new ColumnMetadata("value", VARCHAR))
+            .add(ColumnMetadata.builder().setName("id").setType(VARCHAR).build())
+            .add(ColumnMetadata.builder().setName("value").setType(VARCHAR).build())
             .build();
     private static final int TEMPORARY_TABLE_BUCKET_COUNT = 4;
     private static final List<String> TEMPORARY_TABLE_BUCKET_COLUMNS = ImmutableList.of("id");
@@ -710,9 +743,26 @@ public abstract class AbstractTestHiveClient
     protected SchemaTableName tablePartitionSchemaChange;
     protected SchemaTableName tablePartitionSchemaChangeNonCanonical;
     protected SchemaTableName tableBucketEvolution;
+    protected SchemaTableName tableConstraintsSingleKeyRely;
+    protected SchemaTableName tableConstraintsMultiKeyRely;
+    protected SchemaTableName tableConstraintsSingleKeyNoRely;
+    protected SchemaTableName tableConstraintsMultiKeyNoRely;
+
+    protected List<SchemaTableName> constraintsTableList;
+
+    private static final List<TableConstraint<String>> constraintsSingleKeyRely = ImmutableList.of(new PrimaryKeyConstraint<>(Optional.empty(), new LinkedHashSet<>(ImmutableList.of("c1")), false, true, false),
+            new UniqueConstraint<>(Optional.of("uk1"), new LinkedHashSet<>(ImmutableList.of("c2")), false, true, false));
+    private static final List<TableConstraint<String>> constraintsMultiKeyRely = ImmutableList.of(new PrimaryKeyConstraint<>(Optional.empty(), new LinkedHashSet<>(ImmutableList.of("c1", "c2")), false, true, false),
+            new UniqueConstraint<>(Optional.of("uk2"), new LinkedHashSet<>(ImmutableList.of("c3", "c4")), false, true, false));
+    private static final List<TableConstraint<String>> constraintsSingleKeyNoRely = ImmutableList.of(new PrimaryKeyConstraint<>(Optional.empty(), new LinkedHashSet<>(ImmutableList.of("c1")), false, false, false),
+            new UniqueConstraint<>(Optional.of("uk3"), new LinkedHashSet<>(ImmutableList.of("c2")), false, false, false));
+    private static final List<TableConstraint<String>> constraintsMultiKeyNoRely = ImmutableList.of(new PrimaryKeyConstraint<>(Optional.empty(), new LinkedHashSet<>(ImmutableList.of("c1", "c2")), false, false, false),
+            new UniqueConstraint<>(Optional.of("uk4"), new LinkedHashSet<>(ImmutableList.of("c3", "c4")), false, false, false));
+
+    Map<SchemaTableName, List<TableConstraint<String>>> tableConstraintsMap;
 
     protected String invalidClientId;
-    protected ConnectorTableHandle invalidTableHandle;
+    protected HiveTableHandle invalidTableHandle;
 
     protected HiveColumnHandle dsColumn;
     protected HiveColumnHandle fileFormatColumn;
@@ -773,26 +823,43 @@ public abstract class AbstractTestHiveClient
         tablePartitionSchemaChange = new SchemaTableName(database, "presto_test_partition_schema_change");
         tablePartitionSchemaChangeNonCanonical = new SchemaTableName(database, "presto_test_partition_schema_change_non_canonical");
         tableBucketEvolution = new SchemaTableName(database, "presto_test_bucket_evolution");
+        tableConstraintsSingleKeyRely = new SchemaTableName(database, "test_constraints1");
+        tableConstraintsMultiKeyRely = new SchemaTableName(database, "test_constraints2");
+        tableConstraintsSingleKeyNoRely = new SchemaTableName(database, "test_constraints3");
+        tableConstraintsMultiKeyNoRely = new SchemaTableName(database, "test_constraints4");
+        constraintsTableList = ImmutableList.of(tableConstraintsSingleKeyRely,
+                tableConstraintsMultiKeyRely,
+                tableConstraintsSingleKeyNoRely,
+                tableConstraintsMultiKeyNoRely,
+                tablePartitionFormat);
+        tableConstraintsMap = ImmutableMap.of(tableConstraintsSingleKeyRely, constraintsSingleKeyRely,
+                tableConstraintsMultiKeyRely, constraintsMultiKeyRely,
+                tableConstraintsSingleKeyNoRely, constraintsSingleKeyNoRely,
+                tableConstraintsMultiKeyNoRely, constraintsMultiKeyNoRely,
+                tablePartitionFormat, ImmutableList.of());
 
         invalidClientId = "hive";
         invalidTableHandle = new HiveTableHandle(database, INVALID_TABLE);
-        invalidTableLayoutHandle = new HiveTableLayoutHandle(
-                invalidTable,
-                "path",
-                ImmutableList.of(),
-                ImmutableList.of(),
-                ImmutableMap.of(),
-                ImmutableList.of(new HivePartition(invalidTable, "unknown", ImmutableMap.of())),
-                TupleDomain.all(),
-                TRUE_CONSTANT,
-                ImmutableMap.of(),
-                TupleDomain.all(),
-                Optional.empty(),
-                Optional.empty(),
-                false,
-                "layout",
-                Optional.empty(),
-                false);
+        invalidTableLayoutHandle = new HiveTableLayoutHandle.Builder()
+                .setSchemaTableName(invalidTable)
+                .setTablePath("path")
+                .setPartitionColumns(ImmutableList.of())
+                .setDataColumns(ImmutableList.of())
+                .setTableParameters(ImmutableMap.of())
+                .setDomainPredicate(TupleDomain.all())
+                .setRemainingPredicate(TRUE_CONSTANT)
+                .setPredicateColumns(ImmutableMap.of())
+                .setPartitionColumnPredicate(TupleDomain.all())
+                .setPartitions(ImmutableList.of(new HivePartition(invalidTable, new PartitionNameWithVersion("unknown", Optional.empty()), ImmutableMap.of())))
+                .setBucketHandle(Optional.empty())
+                .setBucketFilter(Optional.empty())
+                .setPushdownFilterEnabled(false)
+                .setLayoutString("layout")
+                .setRequestedColumns(Optional.empty())
+                .setPartialAggregationsPushedDown(false)
+                .setAppendRowNumberEnabled(false)
+                .setHiveTableHandle(invalidTableHandle)
+                .build();
 
         int partitionColumnIndex = MAX_PARTITION_KEY_COLUMN_INDEX;
         dsColumn = new HiveColumnHandle("ds", HIVE_STRING, parseTypeSignature(StandardTypes.VARCHAR), partitionColumnIndex--, PARTITION_KEY, Optional.empty(), Optional.empty());
@@ -804,28 +871,28 @@ public abstract class AbstractTestHiveClient
         List<HiveColumnHandle> partitionColumns = ImmutableList.of(dsColumn, fileFormatColumn, dummyColumn);
         List<HivePartition> partitions = ImmutableList.<HivePartition>builder()
                 .add(new HivePartition(tablePartitionFormat,
-                        "ds=2012-12-29/file_format=textfile/dummy=1",
+                        new PartitionNameWithVersion("ds=2012-12-29/file_format=textfile/dummy=1", Optional.empty()),
                         ImmutableMap.<ColumnHandle, NullableValue>builder()
                                 .put(dsColumn, NullableValue.of(createUnboundedVarcharType(), utf8Slice("2012-12-29")))
                                 .put(fileFormatColumn, NullableValue.of(createUnboundedVarcharType(), utf8Slice("textfile")))
                                 .put(dummyColumn, NullableValue.of(INTEGER, 1L))
                                 .build()))
                 .add(new HivePartition(tablePartitionFormat,
-                        "ds=2012-12-29/file_format=sequencefile/dummy=2",
+                        new PartitionNameWithVersion("ds=2012-12-29/file_format=sequencefile/dummy=2", Optional.empty()),
                         ImmutableMap.<ColumnHandle, NullableValue>builder()
                                 .put(dsColumn, NullableValue.of(createUnboundedVarcharType(), utf8Slice("2012-12-29")))
                                 .put(fileFormatColumn, NullableValue.of(createUnboundedVarcharType(), utf8Slice("sequencefile")))
                                 .put(dummyColumn, NullableValue.of(INTEGER, 2L))
                                 .build()))
                 .add(new HivePartition(tablePartitionFormat,
-                        "ds=2012-12-29/file_format=rctext/dummy=3",
+                        new PartitionNameWithVersion("ds=2012-12-29/file_format=rctext/dummy=3", Optional.empty()),
                         ImmutableMap.<ColumnHandle, NullableValue>builder()
                                 .put(dsColumn, NullableValue.of(createUnboundedVarcharType(), utf8Slice("2012-12-29")))
                                 .put(fileFormatColumn, NullableValue.of(createUnboundedVarcharType(), utf8Slice("rctext")))
                                 .put(dummyColumn, NullableValue.of(INTEGER, 3L))
                                 .build()))
                 .add(new HivePartition(tablePartitionFormat,
-                        "ds=2012-12-29/file_format=rcbinary/dummy=4",
+                        new PartitionNameWithVersion("ds=2012-12-29/file_format=rcbinary/dummy=4", Optional.empty()),
                         ImmutableMap.<ColumnHandle, NullableValue>builder()
                                 .put(dsColumn, NullableValue.of(createUnboundedVarcharType(), utf8Slice("2012-12-29")))
                                 .put(fileFormatColumn, NullableValue.of(createUnboundedVarcharType(), utf8Slice("rcbinary")))
@@ -836,32 +903,33 @@ public abstract class AbstractTestHiveClient
         tupleDomain = TupleDomain.fromFixedValues(ImmutableMap.of(dsColumn, NullableValue.of(createUnboundedVarcharType(), utf8Slice("2012-12-29"))));
         TupleDomain<Subfield> domainPredicate = tupleDomain.transform(HiveColumnHandle.class::cast)
                 .transform(column -> new Subfield(column.getName(), ImmutableList.of()));
+        List<Column> dataColumns = ImmutableList.of(
+                new Column("t_string", HIVE_STRING, Optional.empty(), Optional.empty()),
+                new Column("t_tinyint", HIVE_BYTE, Optional.empty(), Optional.empty()),
+                new Column("t_smallint", HIVE_SHORT, Optional.empty(), Optional.empty()),
+                new Column("t_int", HIVE_INT, Optional.empty(), Optional.empty()),
+                new Column("t_bigint", HIVE_LONG, Optional.empty(), Optional.empty()),
+                new Column("t_float", HIVE_FLOAT, Optional.empty(), Optional.empty()),
+                new Column("t_double", HIVE_DOUBLE, Optional.empty(), Optional.empty()),
+                new Column("t_boolean", HIVE_BOOLEAN, Optional.empty(), Optional.empty()));
         tableLayout = new ConnectorTableLayout(
-                new HiveTableLayoutHandle(
-                        tablePartitionFormat,
-                        "path",
-                        partitionColumns,
-                        ImmutableList.of(
-                                new Column("t_string", HIVE_STRING, Optional.empty(), Optional.empty()),
-                                new Column("t_tinyint", HIVE_BYTE, Optional.empty(), Optional.empty()),
-                                new Column("t_smallint", HIVE_SHORT, Optional.empty(), Optional.empty()),
-                                new Column("t_int", HIVE_INT, Optional.empty(), Optional.empty()),
-                                new Column("t_bigint", HIVE_LONG, Optional.empty(), Optional.empty()),
-                                new Column("t_float", HIVE_FLOAT, Optional.empty(), Optional.empty()),
-                                new Column("t_double", HIVE_DOUBLE, Optional.empty(), Optional.empty()),
-                                new Column("t_boolean", HIVE_BOOLEAN, Optional.empty(), Optional.empty())),
-                        ImmutableMap.of(),
-                        partitions,
-                        domainPredicate,
-                        TRUE_CONSTANT,
-                        ImmutableMap.of(dsColumn.getName(), dsColumn),
-                        tupleDomain,
-                        Optional.empty(),
-                        Optional.empty(),
-                        false,
-                        "layout",
-                        Optional.empty(),
-                        false),
+                new HiveTableLayoutHandle.Builder()
+                        .setSchemaTableName(tablePartitionFormat).setTablePath("path")
+                        .setPartitionColumns(ImmutableList.copyOf(partitionColumns))
+                        .setDataColumns(dataColumns)
+                        .setTableParameters(ImmutableMap.of())
+                        .setDomainPredicate(domainPredicate)
+                        .setRemainingPredicate(TRUE_CONSTANT)
+                        .setPredicateColumns(ImmutableMap.of(dsColumn.getName(), dsColumn))
+                        .setPartitionColumnPredicate(tupleDomain)
+                        .setPartitions(partitions).setBucketHandle(Optional.empty())
+                        .setBucketFilter(Optional.empty())
+                        .setPushdownFilterEnabled(false)
+                        .setLayoutString("layout")
+                        .setRequestedColumns(Optional.empty())
+                        .setPartialAggregationsPushedDown(false)
+                        .setAppendRowNumberEnabled(false)
+                        .build(),
                 Optional.empty(),
                 withColumnDomains(ImmutableMap.of(
                         dsColumn, Domain.create(ValueSet.ofRanges(Range.equal(createUnboundedVarcharType(), utf8Slice("2012-12-29"))), false),
@@ -888,25 +956,28 @@ public abstract class AbstractTestHiveClient
                                 dummyColumn, Domain.create(ValueSet.ofRanges(Range.equal(INTEGER, 4L)), false)))))),
                 ImmutableList.of());
         List<HivePartition> unpartitionedPartitions = ImmutableList.of(new HivePartition(tableUnpartitioned));
-        unpartitionedTableLayout = new ConnectorTableLayout(new HiveTableLayoutHandle(
-                tableUnpartitioned,
-                "path",
-                ImmutableList.of(),
-                ImmutableList.of(
-                        new Column("t_string", HIVE_STRING, Optional.empty(), Optional.empty()),
-                        new Column("t_tinyint", HIVE_BYTE, Optional.empty(), Optional.empty())),
-                ImmutableMap.of(),
-                unpartitionedPartitions,
-                TupleDomain.all(),
-                TRUE_CONSTANT,
-                ImmutableMap.of(),
-                TupleDomain.all(),
-                Optional.empty(),
-                Optional.empty(),
-                false,
-                "layout",
-                Optional.empty(),
-                false));
+        unpartitionedTableLayout = new ConnectorTableLayout(
+                new HiveTableLayoutHandle.Builder()
+                        .setSchemaTableName(tableUnpartitioned)
+                        .setTablePath("path")
+                        .setPartitionColumns(ImmutableList.of())
+                        .setDataColumns(ImmutableList.of(
+                                new Column("t_string", HIVE_STRING, Optional.empty(), Optional.empty()),
+                                new Column("t_tinyint", HIVE_BYTE, Optional.empty(), Optional.empty())))
+                        .setTableParameters(ImmutableMap.of())
+                        .setDomainPredicate(TupleDomain.all())
+                        .setRemainingPredicate(TRUE_CONSTANT)
+                        .setPredicateColumns(ImmutableMap.of())
+                        .setPartitionColumnPredicate(TupleDomain.all())
+                        .setPartitions(unpartitionedPartitions)
+                        .setBucketHandle(Optional.empty())
+                        .setBucketFilter(Optional.empty())
+                        .setPushdownFilterEnabled(false)
+                        .setLayoutString("layout")
+                        .setRequestedColumns(Optional.empty())
+                        .setPartialAggregationsPushedDown(false)
+                        .setAppendRowNumberEnabled(false)
+                        .build());
         timeZone = DateTimeZone.forTimeZone(TimeZone.getTimeZone(ZoneId.of(timeZoneId)));
     }
 
@@ -915,23 +986,31 @@ public abstract class AbstractTestHiveClient
         HiveClientConfig hiveClientConfig = getHiveClientConfig();
         CacheConfig cacheConfig = getCacheConfig();
         MetastoreClientConfig metastoreClientConfig = getMetastoreClientConfig();
+        // Configure Metastore Cache
+        metastoreClientConfig.setDefaultMetastoreCacheTtl(Duration.valueOf("1m"));
+        metastoreClientConfig.setDefaultMetastoreCacheRefreshInterval(Duration.valueOf("15s"));
+        metastoreClientConfig.setMetastoreCacheMaximumSize(10000);
+        metastoreClientConfig.setEnabledCaches(ALL.name());
+
+        ThriftHiveMetastoreConfig thriftHiveMetastoreConfig = getThriftHiveMetastoreConfig();
         hiveClientConfig.setTimeZone(timeZone);
         String proxy = System.getProperty("hive.metastore.thrift.client.socks-proxy");
         if (proxy != null) {
             metastoreClientConfig.setMetastoreSocksProxy(HostAndPort.fromString(proxy));
         }
-
-        HiveCluster hiveCluster = new TestingHiveCluster(metastoreClientConfig, host, port);
-        ExtendedHiveMetastore metastore = new CachingHiveMetastore(
-                new BridgingHiveMetastore(new ThriftHiveMetastore(hiveCluster, metastoreClientConfig), new HivePartitionMutator()),
+        HiveCluster hiveCluster = new TestingHiveCluster(metastoreClientConfig, thriftHiveMetastoreConfig, host, port, new HiveCommonClientConfig());
+        HdfsConfiguration hdfsConfiguration = new HiveHdfsConfiguration(new HdfsConfigurationInitializer(hiveClientConfig, metastoreClientConfig), ImmutableSet.of(), hiveClientConfig);
+        hdfsEnvironment = new HdfsEnvironment(hdfsConfiguration, metastoreClientConfig, new NoHdfsAuthentication());
+        ExtendedHiveMetastore metastore = new InMemoryCachingHiveMetastore(
+                new BridgingHiveMetastore(new ThriftHiveMetastore(hiveCluster, metastoreClientConfig, hdfsEnvironment), new HivePartitionMutator()),
                 executor,
                 false,
-                Duration.valueOf("1m"),
-                Duration.valueOf("15s"),
                 10000,
                 false,
-                MetastoreCacheScope.ALL,
-                0.0);
+                0.0,
+                metastoreClientConfig.getPartitionCacheColumnCountLimit(),
+                NOOP_METASTORE_CACHE_STATS,
+                new MetastoreCacheSpecProvider(metastoreClientConfig));
 
         setup(databaseName, hiveClientConfig, cacheConfig, metastoreClientConfig, metastore);
     }
@@ -944,7 +1023,7 @@ public abstract class AbstractTestHiveClient
 
         hivePartitionManager = new HivePartitionManager(FUNCTION_AND_TYPE_MANAGER, hiveClientConfig);
         metastoreClient = hiveMetastore;
-        HdfsConfiguration hdfsConfiguration = new HiveHdfsConfiguration(new HdfsConfigurationInitializer(hiveClientConfig, metastoreClientConfig), ImmutableSet.of());
+        HdfsConfiguration hdfsConfiguration = new HiveHdfsConfiguration(new HdfsConfigurationInitializer(hiveClientConfig, metastoreClientConfig), ImmutableSet.of(), hiveClientConfig);
         hdfsEnvironment = new HdfsEnvironment(hdfsConfiguration, metastoreClientConfig, new NoHdfsAuthentication());
         locationService = new HiveLocationService(hdfsEnvironment);
         metadataFactory = new HiveMetadataFactory(
@@ -955,12 +1034,12 @@ public abstract class AbstractTestHiveClient
                 true,
                 false,
                 false,
-                false,
                 true,
                 true,
                 getHiveClientConfig().getMaxPartitionBatchSize(),
                 getHiveClientConfig().getMaxPartitionsPerScan(),
                 false,
+                10_000,
                 FUNCTION_AND_TYPE_MANAGER,
                 locationService,
                 FUNCTION_RESOLUTION,
@@ -977,11 +1056,15 @@ public abstract class AbstractTestHiveClient
                 new HivePartitionObjectBuilder(),
                 new HiveEncryptionInformationProvider(ImmutableList.of()),
                 new HivePartitionStats(),
-                new HiveFileRenamer(),
-                DEFAULT_COLUMN_CONVERTER_PROVIDER);
+                DEFAULT_COLUMN_CONVERTER_PROVIDER,
+                new QuickStatsProvider(metastoreClient, HDFS_ENVIRONMENT, DO_NOTHING_DIRECTORY_LISTER, new HiveClientConfig(), new NamenodeStats(), ImmutableList.of()),
+                new HiveTableWritabilityChecker(false));
+
         transactionManager = new HiveTransactionManager();
         encryptionInformationProvider = new HiveEncryptionInformationProvider(ImmutableList.of());
         splitManager = new HiveSplitManager(
+                hiveClientConfig.getDateTimeZone(),
+                FUNCTION_AND_TYPE_MANAGER,
                 transactionManager,
                 new NamenodeStats(),
                 hdfsEnvironment,
@@ -996,7 +1079,8 @@ public abstract class AbstractTestHiveClient
                 hiveClientConfig.getSplitLoaderConcurrency(),
                 false,
                 new ConfigBasedCacheQuotaRequirementProvider(cacheConfig),
-                encryptionInformationProvider);
+                encryptionInformationProvider,
+                new HivePartitionSkippabilityChecker());
         pageSinkProvider = new HivePageSinkProvider(
                 getDefaultHiveFileWriterFactories(hiveClientConfig, metastoreClientConfig),
                 hdfsEnvironment,
@@ -1006,6 +1090,7 @@ public abstract class AbstractTestHiveClient
                 FUNCTION_AND_TYPE_MANAGER,
                 getHiveClientConfig(),
                 getMetastoreClientConfig(),
+                getSortingFileWriterConfig(),
                 locationService,
                 HiveTestUtils.PARTITION_UPDATE_CODEC,
                 HiveTestUtils.PARTITION_UPDATE_SMILE_CODEC,
@@ -1015,7 +1100,15 @@ public abstract class AbstractTestHiveClient
                 new HiveWriterStats(),
                 getDefaultOrcFileWriterFactory(hiveClientConfig, metastoreClientConfig),
                 DEFAULT_COLUMN_CONVERTER_PROVIDER);
-        pageSourceProvider = new HivePageSourceProvider(hiveClientConfig, hdfsEnvironment, getDefaultHiveRecordCursorProvider(hiveClientConfig, metastoreClientConfig), getDefaultHiveBatchPageSourceFactories(hiveClientConfig, metastoreClientConfig), getDefaultHiveSelectivePageSourceFactories(hiveClientConfig, metastoreClientConfig), FUNCTION_AND_TYPE_MANAGER, ROW_EXPRESSION_SERVICE);
+        pageSourceProvider = new HivePageSourceProvider(
+                hiveClientConfig,
+                hdfsEnvironment,
+                getDefaultHiveRecordCursorProvider(hiveClientConfig, metastoreClientConfig),
+                getDefaultHiveBatchPageSourceFactories(hiveClientConfig, metastoreClientConfig),
+                getDefaultHiveSelectivePageSourceFactories(hiveClientConfig, metastoreClientConfig),
+                getDefaultHiveAggregatedPageSourceFactories(hiveClientConfig, metastoreClientConfig),
+                FUNCTION_AND_TYPE_MANAGER,
+                ROW_EXPRESSION_SERVICE);
     }
 
     /**
@@ -1024,10 +1117,20 @@ public abstract class AbstractTestHiveClient
     protected HiveClientConfig getHiveClientConfig()
     {
         return new HiveClientConfig()
-                .setMaxOpenSortFiles(10)
-                .setWriterSortBufferSize(new DataSize(100, KILOBYTE))
                 .setTemporaryTableSchema(database)
                 .setCreateEmptyBucketFilesForTemporaryTable(false);
+    }
+
+    protected SortingFileWriterConfig getSortingFileWriterConfig()
+    {
+        return new SortingFileWriterConfig()
+                .setMaxOpenSortFiles(10)
+                .setWriterSortBufferSize(new DataSize(100, KILOBYTE));
+    }
+
+    protected HiveCommonClientConfig getHiveCommonClientConfig()
+    {
+        return new HiveCommonClientConfig();
     }
 
     protected CacheConfig getCacheConfig()
@@ -1040,14 +1143,19 @@ public abstract class AbstractTestHiveClient
         return new MetastoreClientConfig();
     }
 
-    protected ConnectorSession newSession()
+    protected ThriftHiveMetastoreConfig getThriftHiveMetastoreConfig()
     {
-        return newSession(new HiveSessionProperties(getHiveClientConfig(), new OrcFileWriterConfig(), new ParquetFileWriterConfig(), new CacheConfig()));
+        return new ThriftHiveMetastoreConfig();
     }
 
-    protected ConnectorSession newSession(HiveSessionProperties hiveSessionProperties)
+    protected ConnectorSession newSession()
     {
-        return new TestingConnectorSession(hiveSessionProperties.getSessionProperties());
+        return newSession(getHiveClientConfig(), getHiveCommonClientConfig());
+    }
+
+    protected ConnectorSession newSession(HiveClientConfig hiveClientConfig, HiveCommonClientConfig hiveCommonClientConfig)
+    {
+        return new TestingConnectorSession(getAllSessionProperties(hiveClientConfig, hiveCommonClientConfig));
     }
 
     protected ConnectorSession newSession(Map<String, Object> extraProperties)
@@ -1071,6 +1179,12 @@ public abstract class AbstractTestHiveClient
             public ConnectorIdentity getIdentity()
             {
                 return session.getIdentity();
+            }
+
+            @Override
+            public TimeZoneKey getTimeZoneKey()
+            {
+                return session.getTimeZoneKey();
             }
 
             @Override
@@ -1131,6 +1245,30 @@ public abstract class AbstractTestHiveClient
             {
                 return Optional.empty();
             }
+
+            @Override
+            public WarningCollector getWarningCollector()
+            {
+                return WarningCollector.NOOP;
+            }
+
+            @Override
+            public RuntimeStats getRuntimeStats()
+            {
+                return session.getRuntimeStats();
+            }
+
+            @Override
+            public Optional<QueryType> getQueryType()
+            {
+                return session.getQueryType();
+            }
+
+            @Override
+            public ConnectorSession forConnectorId(ConnectorId connectorId)
+            {
+                return this;
+            }
         };
     }
 
@@ -1139,7 +1277,7 @@ public abstract class AbstractTestHiveClient
         return new HiveTransaction(transactionManager, metadataFactory.get());
     }
 
-    interface Transaction
+    protected interface Transaction
             extends AutoCloseable
     {
         ConnectorMetadata getMetadata();
@@ -1308,8 +1446,8 @@ public abstract class AbstractTestHiveClient
         try (Transaction transaction = newTransaction()) {
             ConnectorMetadata metadata = transaction.getMetadata();
             ConnectorTableHandle tableHandle = getTableHandle(metadata, tablePartitionFormat);
-            ConnectorTableLayout actuaTableLayout = getTableLayout(newSession(), metadata, tableHandle, new Constraint<>(withColumnDomains(ImmutableMap.of(intColumn, Domain.singleValue(BIGINT, 5L)))), transaction);
-            assertExpectedTableLayout(actuaTableLayout, tableLayout);
+            ConnectorTableLayout actualTableLayout = getTableLayout(newSession(), metadata, tableHandle, new Constraint<>(withColumnDomains(ImmutableMap.of(intColumn, Domain.singleValue(BIGINT, 5L)))), transaction);
+            assertExpectedTableLayout(actualTableLayout, tableLayout);
         }
     }
 
@@ -1411,7 +1549,17 @@ public abstract class AbstractTestHiveClient
         // alter the table schema
         try (Transaction transaction = newTransaction()) {
             ConnectorSession session = newSession();
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(
+                    session.getIdentity(),
+                    session.getQueryId(),
+                    session.getClientInfo(),
+                    session.getClientTags(),
+                    session.getSource(),
+                    getMetastoreHeaders(session),
+                    false,
+                    DEFAULT_COLUMN_CONVERTER_PROVIDER,
+                    session.getWarningCollector(),
+                    session.getRuntimeStats());
             PrincipalPrivileges principalPrivileges = testingPrincipalPrivilege(session);
             Table oldTable = transaction.getMetastore().getTable(metastoreContext, schemaName, tableName).get();
             HiveTypeTranslator hiveTypeTranslator = new HiveTypeTranslator();
@@ -1517,12 +1665,12 @@ public abstract class AbstractTestHiveClient
         assertInstanceOf(expectedTableLayoutHandle, HiveTableLayoutHandle.class);
         HiveTableLayoutHandle actual = (HiveTableLayoutHandle) actualTableLayoutHandle;
         HiveTableLayoutHandle expected = (HiveTableLayoutHandle) expectedTableLayoutHandle;
-        assertExpectedPartitions(actual.getPartitions().get(), expected.getPartitions().get());
+        assertExpectedPartitions(actual.getPartitions().map(PartitionSet::getFullyLoadedPartitions).get(), expected.getPartitions().get());
     }
 
     protected void assertExpectedPartitions(List<HivePartition> actualPartitions, Iterable<HivePartition> expectedPartitions)
     {
-        Map<String, ?> actualById = uniqueIndex(actualPartitions, HivePartition::getPartitionId);
+        Map<PartitionNameWithVersion, ?> actualById = uniqueIndex(actualPartitions, HivePartition::getPartitionId);
         for (Object expected : expectedPartitions) {
             assertInstanceOf(expected, HivePartition.class);
             HivePartition expectedPartition = (HivePartition) expected;
@@ -1560,7 +1708,6 @@ public abstract class AbstractTestHiveClient
         }
     }
 
-    @SuppressWarnings({"ValueOfIncrementOrDecrementUsed", "UnusedAssignment"})
     @Test
     public void testGetTableSchemaPartitionFormat()
     {
@@ -1753,7 +1900,7 @@ public abstract class AbstractTestHiveClient
                 ConnectorSplitSource splitSource = splitManager.getSplits(transaction.getTransactionHandle(), session, tableLayout.getHandle(), SPLIT_SCHEDULING_CONTEXT);
                 List<ConnectorSplit> allSplits = getAllSplits(splitSource);
 
-                assertTrue(allSplits.size() >= 1, "There should be atleast 1 split");
+                assertTrue(allSplits.size() >= 1, "There should be at least 1 split");
 
                 for (ConnectorSplit split : allSplits) {
                     HiveSplit hiveSplit = (HiveSplit) split;
@@ -1784,7 +1931,7 @@ public abstract class AbstractTestHiveClient
                 ConnectorSplitSource splitSource = splitManager.getSplits(transaction.getTransactionHandle(), session, tableLayout.getHandle(), SPLIT_SCHEDULING_CONTEXT);
                 List<ConnectorSplit> allSplits = getAllSplits(splitSource);
 
-                assertTrue(allSplits.size() >= 1, "There should be atleast 1 split");
+                assertTrue(allSplits.size() >= 1, "There should be at least 1 split");
 
                 for (ConnectorSplit split : allSplits) {
                     HiveSplit hiveSplit = (HiveSplit) split;
@@ -1958,7 +2105,6 @@ public abstract class AbstractTestHiveClient
         }
     }
 
-    @SuppressWarnings("ConstantConditions")
     @Test
     public void testBucketedTableBigintBoolean()
             throws Exception
@@ -2061,38 +2207,27 @@ public abstract class AbstractTestHiveClient
         // Alter the bucket count to 16
         alterBucketProperty(tableName, Optional.of(new HiveBucketProperty(ImmutableList.of("id"), bucketCount, ImmutableList.of(), HIVE_COMPATIBLE, Optional.empty())));
 
-        MaterializedResult result;
         try (Transaction transaction = newTransaction()) {
             ConnectorMetadata metadata = transaction.getMetadata();
             ConnectorSession session = newSession();
 
             ConnectorTableHandle hiveTableHandle = getTableHandle(metadata, tableName);
 
-            // read entire table
-            List<ColumnHandle> columnHandles = ImmutableList.<ColumnHandle>builder()
-                    .addAll(metadata.getColumnHandles(session, hiveTableHandle).values())
-                    .build();
+            // select all columns in table, including synthetic columns such as $path, except for $row_id.
+            // $row_id will throw some exceptions if there's a not a real metastore running to supply
+            // the row ID partition components.
+            List<ColumnHandle> columnHandles = metadata.getColumnHandles(session, hiveTableHandle).values()
+                    .stream()
+                    .map(e -> (HiveColumnHandle) e)
+                    .filter(e -> !HiveColumnHandle.isRowIdColumnHandle(e))
+                    .collect(Collectors.toList());
 
             HiveTableLayoutHandle layoutHandle = (HiveTableLayoutHandle) getTableLayout(session, transaction.getMetadata(), hiveTableHandle, Constraint.alwaysTrue(), transaction).getHandle();
             HiveBucketHandle bucketHandle = layoutHandle.getBucketHandle().get();
 
-            HiveTableLayoutHandle modifiedReadBucketCountLayoutHandle = new HiveTableLayoutHandle(
-                    layoutHandle.getSchemaTableName(),
-                    layoutHandle.getTablePath(),
-                    layoutHandle.getPartitionColumns(),
-                    layoutHandle.getDataColumns(),
-                    layoutHandle.getTableParameters(),
-                    layoutHandle.getPartitions().get(),
-                    layoutHandle.getDomainPredicate(),
-                    layoutHandle.getRemainingPredicate(),
-                    layoutHandle.getPredicateColumns(),
-                    layoutHandle.getPartitionColumnPredicate(),
-                    Optional.of(new HiveBucketHandle(bucketHandle.getColumns(), bucketHandle.getTableBucketCount(), 2)),
-                    layoutHandle.getBucketFilter(),
-                    false,
-                    "layout",
-                    Optional.empty(),
-                    false);
+            HiveTableLayoutHandle modifiedReadBucketCountLayoutHandle = layoutHandle.builder()
+                    .setBucketHandle(Optional.of(new HiveBucketHandle(bucketHandle.getColumns(), bucketHandle.getTableBucketCount(), 2)))
+                    .build();
 
             List<ConnectorSplit> splits = getAllSplits(session, transaction, modifiedReadBucketCountLayoutHandle);
             assertEquals(splits.size(), 16);
@@ -2101,12 +2236,12 @@ public abstract class AbstractTestHiveClient
 
             ImmutableList.Builder<MaterializedRow> allRows = ImmutableList.builder();
             for (ConnectorSplit split : splits) {
-                try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, split, tableHandle.getLayout().get(), columnHandles, NON_CACHEABLE)) {
+                try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, split, tableHandle.getLayout().get(), columnHandles, NON_CACHEABLE, new RuntimeStats())) {
                     MaterializedResult intermediateResult = materializeSourceDataStream(session, pageSource, getTypes(columnHandles));
                     allRows.addAll(intermediateResult.getMaterializedRows());
                 }
             }
-            result = new MaterializedResult(allRows.build(), getTypes(columnHandles));
+            MaterializedResult result = new MaterializedResult(allRows.build(), getTypes(columnHandles));
 
             assertEquals(result.getRowCount(), rowCount);
 
@@ -2173,10 +2308,15 @@ public abstract class AbstractTestHiveClient
             ConnectorSession session = newSession();
 
             ConnectorTableHandle tableHandle = getTableHandle(metadata, tableName);
-            // read entire table
-            List<ColumnHandle> columnHandles = ImmutableList.<ColumnHandle>builder()
-                    .addAll(metadata.getColumnHandles(session, tableHandle).values())
-                    .build();
+            // select all columns in table, including synthetic columns such as $path, except for $row_id.
+            // $row_id will throw some exceptions if there's a not a real metastore running to supply
+            // the row ID partition components.
+            List<ColumnHandle> columnHandles = metadata.getColumnHandles(session, tableHandle).values()
+                    .stream()
+                    .map(e -> (HiveColumnHandle) e)
+                    .filter(e -> !HiveColumnHandle.isRowIdColumnHandle(e))
+                    .collect(Collectors.toList());
+
             MaterializedResult result = readTable(
                     transaction,
                     tableHandle,
@@ -2208,7 +2348,7 @@ public abstract class AbstractTestHiveClient
                         Optional.empty()).getLayout().getHandle();
             }
             else {
-                layoutHandle = getOnlyElement(metadata.getTableLayouts(session, tableHandle, new Constraint<>(TupleDomain.fromFixedValues(ImmutableMap.of(bucketColumnHandle(), singleBucket))), Optional.empty())).getTableLayout().getHandle();
+                layoutHandle = metadata.getTableLayoutForConstraint(session, tableHandle, new Constraint<>(TupleDomain.fromFixedValues(ImmutableMap.of(bucketColumnHandle(), singleBucket))), Optional.empty()).getTableLayout().getHandle();
             }
 
             result = readTable(
@@ -2221,22 +2361,50 @@ public abstract class AbstractTestHiveClient
                     Optional.empty());
             assertBucketTableEvolutionResult(result, columnHandles, ImmutableSet.of(6), rowCount);
 
-            // read single bucket, without selecting the bucketing column (i.e. id column)
-            columnHandles = ImmutableList.<ColumnHandle>builder()
+            // read single bucket, without selecting the bucketing column (i.e. id column) or the $row_id column
+            ImmutableList<ColumnHandle> nonBucketColumnHandles = ImmutableList.<ColumnHandle>builder()
                     .addAll(metadata.getColumnHandles(session, tableHandle).values().stream()
                             .filter(columnHandle -> !"id".equals(((HiveColumnHandle) columnHandle).getName()))
+                            .filter(columnHandle -> !HiveColumnHandle.isRowIdColumnHandle((HiveColumnHandle) columnHandle))
                             .collect(toImmutableList()))
                     .build();
+
             result = readTable(
                     transaction,
                     tableHandle,
                     layoutHandle,
-                    columnHandles,
+                    nonBucketColumnHandles,
                     session,
                     OptionalInt.empty(),
                     Optional.empty());
-            assertBucketTableEvolutionResult(result, columnHandles, ImmutableSet.of(6), rowCount);
+            assertBucketTableEvolutionResult(result, nonBucketColumnHandles, ImmutableSet.of(6), rowCount);
         }
+    }
+
+    private static ConnectorPushdownFilterResult pushdownFilter(
+            ConnectorSession session,
+            ConnectorMetadata metadata,
+            SemiTransactionalHiveMetastore metastore,
+            RowExpressionService rowExpressionService,
+            StandardFunctionResolution functionResolution,
+            HivePartitionManager partitionManager,
+            FunctionMetadataManager functionMetadataManager,
+            ConnectorTableHandle connectorTableHandle,
+            RowExpression filter,
+            Optional<ConnectorTableLayoutHandle> currentLayoutHandle)
+    {
+        HiveTransactionManager hiveTransactionManager = new HiveTransactionManager();
+        SubfieldExtractionRewriter filterPushdown = new SubfieldExtractionRewriter(
+                session,
+                new PlanNodeIdAllocator(),
+                rowExpressionService,
+                functionResolution,
+                functionMetadataManager,
+                hiveTransactionManager,
+                partitionManager,
+                tableHandle -> HiveFilterPushdown.getConnectorMetadata(hiveTransactionManager, tableHandle));
+
+        return filterPushdown.pushdownFilter(session, metadata, connectorTableHandle, filter, currentLayoutHandle);
     }
 
     private static void assertBucketTableEvolutionResult(MaterializedResult result, List<ColumnHandle> columnHandles, Set<Integer> bucketIds, int rowCount)
@@ -2274,14 +2442,14 @@ public abstract class AbstractTestHiveClient
 
     private void assertTableIsBucketed(Transaction transaction, ConnectorTableHandle tableHandle)
     {
-        // the bucketed test tables should have exactly 32 splits
+        // the bucketed test tables should have ~32 splits
         List<ConnectorSplit> splits = getAllSplits(transaction, tableHandle, TupleDomain.all());
-        assertEquals(splits.size(), 32);
+        assertThat(splits.size()).as("splits.size()").isBetween(31, 32);
 
         // verify all paths are unique
         Set<String> paths = new HashSet<>();
         for (ConnectorSplit split : splits) {
-            assertTrue(paths.add(((HiveSplit) split).getPath()));
+            assertTrue(paths.add(((HiveSplit) split).getFileSplit().getPath()));
         }
     }
 
@@ -2313,7 +2481,7 @@ public abstract class AbstractTestHiveClient
 
                 long rowNumber = 0;
                 long completedBytes = 0;
-                try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, hiveSplit, layoutHandle, columnHandles, NON_CACHEABLE)) {
+                try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, hiveSplit, layoutHandle, columnHandles, NON_CACHEABLE, new RuntimeStats())) {
                     MaterializedResult result = materializeSourceDataStream(session, pageSource, getTypes(columnHandles));
 
                     assertPageSourceType(pageSource, fileType);
@@ -2367,11 +2535,11 @@ public abstract class AbstractTestHiveClient
 
                         long newCompletedBytes = pageSource.getCompletedBytes();
                         assertTrue(newCompletedBytes >= completedBytes);
-                        assertTrue(newCompletedBytes <= hiveSplit.getLength());
+                        assertTrue(newCompletedBytes <= hiveSplit.getFileSplit().getLength());
                         completedBytes = newCompletedBytes;
                     }
 
-                    assertTrue(completedBytes <= hiveSplit.getLength());
+                    assertTrue(completedBytes <= hiveSplit.getFileSplit().getLength());
                     assertEquals(rowNumber, 100);
                 }
             }
@@ -2404,7 +2572,7 @@ public abstract class AbstractTestHiveClient
                 int dummyPartition = Integer.parseInt(partitionKeys.get(2).getValue().orElse(null));
 
                 long rowNumber = 0;
-                try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, hiveSplit, layoutHandle, columnHandles, NON_CACHEABLE)) {
+                try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, hiveSplit, layoutHandle, columnHandles, NON_CACHEABLE, new RuntimeStats())) {
                     assertPageSourceType(pageSource, fileType);
                     MaterializedResult result = materializeSourceDataStream(session, pageSource, getTypes(columnHandles));
                     for (MaterializedRow row : result) {
@@ -2443,7 +2611,7 @@ public abstract class AbstractTestHiveClient
                 assertEquals(hiveSplit.getPartitionKeys(), ImmutableList.of());
 
                 long rowNumber = 0;
-                try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, split, layoutHandle, columnHandles, NON_CACHEABLE)) {
+                try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, split, layoutHandle, columnHandles, NON_CACHEABLE, new RuntimeStats())) {
                     assertPageSourceType(pageSource, TEXTFILE);
                     MaterializedResult result = materializeSourceDataStream(session, pageSource, getTypes(columnHandles));
 
@@ -2511,7 +2679,7 @@ public abstract class AbstractTestHiveClient
             ConnectorSplit split = getOnlyElement(getAllSplits(splitSource));
 
             ImmutableList<ColumnHandle> columnHandles = ImmutableList.of(column);
-            try (ConnectorPageSource ignored = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, split, layoutHandle, columnHandles, NON_CACHEABLE)) {
+            try (ConnectorPageSource ignored = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, split, layoutHandle, columnHandles, NON_CACHEABLE, new RuntimeStats())) {
                 fail("expected exception");
             }
             catch (PrestoException e) {
@@ -2538,8 +2706,8 @@ public abstract class AbstractTestHiveClient
                     Optional.empty()).getLayout();
         }
 
-        List<ConnectorTableLayoutResult> tableLayoutResults = metadata.getTableLayouts(session, tableHandle, constraint, Optional.empty());
-        return getOnlyElement(tableLayoutResults).getTableLayout();
+        ConnectorTableLayoutResult tableLayoutResult = metadata.getTableLayoutForConstraint(session, tableHandle, constraint, Optional.empty());
+        return tableLayoutResult.getTableLayout();
     }
 
     @Test
@@ -2599,7 +2767,7 @@ public abstract class AbstractTestHiveClient
         }
     }
 
-    @Test(expectedExceptions = PrestoException.class, expectedExceptionsMessageRegExp = "Error opening Hive split .*SequenceFile.*EOFException")
+    @Test(expectedExceptions = PrestoException.class, expectedExceptionsMessageRegExp = "Error opening Hive split .*SequenceFile")
     public void testEmptySequenceFile()
             throws Exception
     {
@@ -2654,7 +2822,7 @@ public abstract class AbstractTestHiveClient
                 ConnectorTableHandle tableHandle = getTableHandle(metadata, tableName);
                 List<ColumnHandle> columnHandles = filterNonHiddenColumnHandles(metadata.getColumnHandles(session, tableHandle).values());
 
-                MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+                MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
                 Table table = transaction.getMetastore()
                         .getTable(metastoreContext, tableName.getSchemaName(), tableName.getTableName())
                         .orElseThrow(AssertionError::new);
@@ -2745,7 +2913,7 @@ public abstract class AbstractTestHiveClient
             SchemaTableName temporaryCreateTableForPageSinkCommit = temporaryTable("create_table_page_sink_commit");
             try {
                 doCreateTable(temporaryCreateTable, storageFormat, TEST_HIVE_PAGE_SINK_CONTEXT);
-                doCreateTable(temporaryCreateTableForPageSinkCommit, storageFormat, PageSinkContext.builder().setCommitRequired(true).setConnectorMetadataUpdater(new HiveMetadataUpdater(EXECUTOR)).build());
+                doCreateTable(temporaryCreateTableForPageSinkCommit, storageFormat, PageSinkContext.builder().setCommitRequired(true).build());
             }
             finally {
                 dropTable(temporaryCreateTable);
@@ -2827,8 +2995,8 @@ public abstract class AbstractTestHiveClient
                 targetPath = locationService.getQueryWriteInfo(locationHandle).getTargetPath();
                 Table table = createSimpleTable(schemaTableName, columns, session, targetPath, "q1");
                 transaction.getMetastore()
-                        .createTable(session, table, privileges, Optional.empty(), false, EMPTY_TABLE_STATISTICS);
-                MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+                        .createTable(session, table, privileges, Optional.empty(), false, EMPTY_TABLE_STATISTICS, emptyList());
+                MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
                 Optional<Table> tableHandle = transaction.getMetastore().getTable(metastoreContext, schemaName, tableName);
                 assertTrue(tableHandle.isPresent());
                 transaction.commit();
@@ -2838,7 +3006,7 @@ public abstract class AbstractTestHiveClient
             try (Transaction transaction = newTransaction()) {
                 Table table = createSimpleTable(schemaTableName, columns, session, targetPath.suffix("_2"), "q2");
                 transaction.getMetastore()
-                        .createTable(session, table, privileges, Optional.empty(), false, EMPTY_TABLE_STATISTICS);
+                        .createTable(session, table, privileges, Optional.empty(), false, EMPTY_TABLE_STATISTICS, emptyList());
                 transaction.commit();
                 fail("Expected exception");
             }
@@ -2850,7 +3018,7 @@ public abstract class AbstractTestHiveClient
             try (Transaction transaction = newTransaction()) {
                 Table table = createSimpleTable(schemaTableName, columns, session, targetPath.suffix("_3"), "q3");
                 transaction.getMetastore()
-                        .createTable(session, table, privileges, Optional.empty(), true, EMPTY_TABLE_STATISTICS);
+                        .createTable(session, table, privileges, Optional.empty(), true, EMPTY_TABLE_STATISTICS, emptyList());
                 transaction.commit();
             }
 
@@ -2859,7 +3027,7 @@ public abstract class AbstractTestHiveClient
             try (Transaction transaction = newTransaction()) {
                 Table table = createSimpleTable(schemaTableName, columns, session, targetPath.suffix("_4"), "q4");
                 transaction.getMetastore()
-                        .createTable(session, table, privileges, Optional.empty(), true, EMPTY_TABLE_STATISTICS);
+                        .createTable(session, table, privileges, Optional.empty(), true, EMPTY_TABLE_STATISTICS, emptyList());
                 transaction.commit();
                 fail("Expected exception");
             }
@@ -2899,13 +3067,23 @@ public abstract class AbstractTestHiveClient
             throws Exception
     {
         SchemaTableName table = temporaryTable("create_sorted");
-        SchemaTableName tableWithTempPath = temporaryTable("create_sorted_with_temp_path");
         try {
             doTestBucketSortedTables(table, false, ORC);
-            doTestBucketSortedTables(tableWithTempPath, true, ORC);
         }
         finally {
             dropTable(table);
+        }
+    }
+
+    @Test
+    public void testBucketSortedTablesTempPath()
+            throws Exception
+    {
+        SchemaTableName tableWithTempPath = temporaryTable("create_sorted_with_temp_path");
+        try {
+            doTestBucketSortedTables(tableWithTempPath, true, ORC);
+        }
+        finally {
             dropTable(tableWithTempPath);
         }
     }
@@ -2924,10 +3102,10 @@ public abstract class AbstractTestHiveClient
             ConnectorTableMetadata tableMetadata = new ConnectorTableMetadata(
                     table,
                     ImmutableList.<ColumnMetadata>builder()
-                            .add(new ColumnMetadata("id", VARCHAR))
-                            .add(new ColumnMetadata("value_asc", VARCHAR))
-                            .add(new ColumnMetadata("value_desc", BIGINT))
-                            .add(new ColumnMetadata("ds", VARCHAR))
+                            .add(ColumnMetadata.builder().setName("id").setType(VARCHAR).build())
+                            .add(ColumnMetadata.builder().setName("value_asc").setType(VARCHAR).build())
+                            .add(ColumnMetadata.builder().setName("value_desc").setType(BIGINT).build())
+                            .add(ColumnMetadata.builder().setName("ds").setType(VARCHAR).build())
                             .build(),
                     ImmutableMap.<String, Object>builder()
                             .put(STORAGE_FORMAT_PROPERTY, storageFormat)
@@ -2969,10 +3147,9 @@ public abstract class AbstractTestHiveClient
                     table.getTableName(),
                     outputHandle.getLocationHandle().getTargetPath().toString(),
                     true);
-            Set<String> files = listAllDataFiles(context, path);
             assertThat(listAllDataFiles(context, path))
                     .filteredOn(file -> file.contains(".tmp-sort"))
-                    .size().isGreaterThan(bucketCount * getHiveClientConfig().getMaxOpenSortFiles() * 2);
+                    .size().isGreaterThan(bucketCount * getSortingFileWriterConfig().getMaxOpenSortFiles() * 2);
 
             // finish the write
             Collection<Slice> fragments = getFutureValue(sink.finish());
@@ -2984,6 +3161,9 @@ public abstract class AbstractTestHiveClient
 
             // finish creating table
             metadata.finishCreateTable(session, outputHandle, fragments, ImmutableList.of());
+            // TODO: problem: in normal usage creating the table sends this to Metastore and we get it back later,
+            // but here it seems we somehow use it again without calling Metastore? so the row ID partition component
+            // isn't set?
 
             transaction.commit();
         }
@@ -2994,7 +3174,14 @@ public abstract class AbstractTestHiveClient
             ConnectorSession session = newSession(ImmutableMap.of(SORTED_WRITE_TO_TEMP_PATH_ENABLED, useTempPath));
 
             ConnectorTableHandle hiveTableHandle = getTableHandle(metadata, table);
-            List<ColumnHandle> columnHandles = ImmutableList.copyOf(metadata.getColumnHandles(session, hiveTableHandle).values());
+            // select all columns in table, including synthetic columns such as $path, except for $row_id.
+            // $row_id will throw some exceptions if there's a not a real metastore running to supply
+            // the row ID partition components.
+            List<ColumnHandle> columnHandles = metadata.getColumnHandles(session, hiveTableHandle).values()
+                    .stream()
+                    .map(e -> (HiveColumnHandle) e)
+                    .filter(e -> !HiveColumnHandle.isRowIdColumnHandle(e))
+                    .collect(Collectors.toList());
 
             ConnectorTableLayoutHandle layoutHandle = getLayout(session, transaction, hiveTableHandle, TupleDomain.all());
             List<ConnectorSplit> splits = getAllSplits(session, transaction, layoutHandle);
@@ -3002,7 +3189,7 @@ public abstract class AbstractTestHiveClient
 
             int actualRowCount = 0;
             for (ConnectorSplit split : splits) {
-                try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, split, layoutHandle, columnHandles, NON_CACHEABLE)) {
+                try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, split, layoutHandle, columnHandles, NON_CACHEABLE, new RuntimeStats())) {
                     String lastValueAsc = null;
                     long lastValueDesc = -1;
 
@@ -3059,7 +3246,7 @@ public abstract class AbstractTestHiveClient
             SchemaTableName temporaryInsertTableForPageSinkCommit = temporaryTable("insert_table_page_sink_commit");
             try {
                 doInsert(storageFormat, temporaryInsertTable, TEST_HIVE_PAGE_SINK_CONTEXT);
-                doInsert(storageFormat, temporaryInsertTableForPageSinkCommit, PageSinkContext.builder().setCommitRequired(true).setConnectorMetadataUpdater(new HiveMetadataUpdater(EXECUTOR)).build());
+                doInsert(storageFormat, temporaryInsertTableForPageSinkCommit, PageSinkContext.builder().setCommitRequired(true).build());
             }
             finally {
                 dropTable(temporaryInsertTable);
@@ -3077,7 +3264,7 @@ public abstract class AbstractTestHiveClient
             SchemaTableName temporaryInsertIntoNewPartitionTableForPageSinkCommit = temporaryTable("insert_new_partitioned_page_sink_commit");
             try {
                 doInsertIntoNewPartition(storageFormat, temporaryInsertIntoNewPartitionTable, TEST_HIVE_PAGE_SINK_CONTEXT);
-                doInsertIntoNewPartition(storageFormat, temporaryInsertIntoNewPartitionTableForPageSinkCommit, PageSinkContext.builder().setCommitRequired(true).setConnectorMetadataUpdater(new HiveMetadataUpdater(EXECUTOR)).build());
+                doInsertIntoNewPartition(storageFormat, temporaryInsertIntoNewPartitionTableForPageSinkCommit, PageSinkContext.builder().setCommitRequired(true).build());
             }
             finally {
                 dropTable(temporaryInsertIntoNewPartitionTable);
@@ -3095,7 +3282,7 @@ public abstract class AbstractTestHiveClient
             SchemaTableName temporaryInsertIntoExistingPartitionTableForPageSinkCommit = temporaryTable("insert_existing_partitioned_page_sink_commit");
             try {
                 doInsertIntoExistingPartition(storageFormat, temporaryInsertIntoExistingPartitionTable, TEST_HIVE_PAGE_SINK_CONTEXT);
-                doInsertIntoExistingPartition(storageFormat, temporaryInsertIntoExistingPartitionTableForPageSinkCommit, PageSinkContext.builder().setCommitRequired(true).setConnectorMetadataUpdater(new HiveMetadataUpdater(EXECUTOR)).build());
+                doInsertIntoExistingPartition(storageFormat, temporaryInsertIntoExistingPartitionTableForPageSinkCommit, PageSinkContext.builder().setCommitRequired(true).build());
             }
             finally {
                 dropTable(temporaryInsertIntoExistingPartitionTable);
@@ -3188,7 +3375,10 @@ public abstract class AbstractTestHiveClient
             try (Transaction transaction = newTransaction()) {
                 ConnectorSession session = newSession();
                 ConnectorMetadata metadata = transaction.getMetadata();
-                List<ColumnMetadata> columns = ImmutableList.of(new ColumnMetadata("dummy", HYPER_LOG_LOG));
+                List<ColumnMetadata> columns = ImmutableList.of(ColumnMetadata.builder()
+                        .setName("dummy")
+                        .setType(HYPER_LOG_LOG)
+                        .build());
                 ConnectorTableMetadata tableMetadata = new ConnectorTableMetadata(invalidTable, columns, createTableProperties(storageFormat));
                 metadata.beginCreateTable(session, tableMetadata, Optional.empty());
                 fail("create table with unsupported type should fail for storage format " + storageFormat);
@@ -3536,7 +3726,7 @@ public abstract class AbstractTestHiveClient
                             .setStorageFormat(StorageFormat.createNullable(null, null, null))
                             .setSerdeParameters(ImmutableMap.of()));
             PrincipalPrivileges principalPrivileges = testingPrincipalPrivilege(tableOwner, session.getUser());
-            transaction.getMetastore().createTable(session, tableBuilder.build(), principalPrivileges, Optional.empty(), true, EMPTY_TABLE_STATISTICS);
+            transaction.getMetastore().createTable(session, tableBuilder.build(), principalPrivileges, Optional.empty(), true, EMPTY_TABLE_STATISTICS, emptyList());
             transaction.commit();
         }
 
@@ -3558,7 +3748,10 @@ public abstract class AbstractTestHiveClient
             ConnectorSession session = newSession();
             ConnectorMetadata metadata = transaction.getMetadata();
 
-            List<ColumnMetadata> columns = ImmutableList.of(new ColumnMetadata("dummy", createUnboundedVarcharType()));
+            List<ColumnMetadata> columns = ImmutableList.of(ColumnMetadata.builder()
+                    .setName("dummy")
+                    .setType(createUnboundedVarcharType())
+                    .build());
             ConnectorTableMetadata tableMetadata = new ConnectorTableMetadata(tableName, columns, createTableProperties(TEXTFILE));
             ConnectorOutputTableHandle handle = metadata.beginCreateTable(session, tableMetadata, Optional.empty());
             metadata.finishCreateTable(session, handle, ImmutableList.of(), ImmutableList.of());
@@ -3739,11 +3932,14 @@ public abstract class AbstractTestHiveClient
 
     protected Partition createDummyPartition(Table table, String partitionName, Optional<HiveBucketProperty> bucketProperty)
     {
+        byte[] rowIdPartitionComponent = {98, 45};
         return Partition.builder()
+                .setCatalogName(table.getCatalogName())
                 .setDatabaseName(table.getDatabaseName())
                 .setTableName(table.getTableName())
                 .setColumns(table.getDataColumns())
                 .setValues(toPartitionValues(partitionName))
+                .setRowIdPartitionComponent(Optional.of(rowIdPartitionComponent))
                 .withStorage(storage -> storage
                         .setStorageFormat(fromHiveStorageFormat(HiveStorageFormat.ORC))
                         .setLocation(partitionTargetPath(new SchemaTableName(table.getDatabaseName(), table.getTableName()), partitionName))
@@ -3760,7 +3956,7 @@ public abstract class AbstractTestHiveClient
             ConnectorSession session = newSession();
             SemiTransactionalHiveMetastore metastore = transaction.getMetastore();
             LocationService locationService = getLocationService();
-            Table table = metastore.getTable(new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER), schemaTableName.getSchemaName(), schemaTableName.getTableName()).get();
+            Table table = metastore.getTable(new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats()), schemaTableName.getSchemaName(), schemaTableName.getTableName()).get();
             LocationHandle handle = locationService.forExistingTable(metastore, session, table, false);
             return locationService.getPartitionWriteInfo(handle, Optional.empty(), partitionName).getTargetPath().toString();
         }
@@ -3791,14 +3987,14 @@ public abstract class AbstractTestHiveClient
     {
         SchemaTableName tableName = temporaryTable("test_drop_column");
         try {
-            doCreateEmptyTable(tableName, ORC, CREATE_TABLE_COLUMNS);
+            doCreateEmptyTable(tableName, ORC, CREATE_TABLE_COLUMNS_FOR_DROP);
             ExtendedHiveMetastore metastoreClient = getMetastoreClient();
-            metastoreClient.dropColumn(METASTORE_CONTEXT, tableName.getSchemaName(), tableName.getTableName(), CREATE_TABLE_COLUMNS.get(0).getName());
+            metastoreClient.dropColumn(METASTORE_CONTEXT, tableName.getSchemaName(), tableName.getTableName(), CREATE_TABLE_COLUMNS_FOR_DROP.get(0).getName());
             Optional<Table> table = metastoreClient.getTable(METASTORE_CONTEXT, tableName.getSchemaName(), tableName.getTableName());
             assertTrue(table.isPresent());
             List<Column> columns = table.get().getDataColumns();
-            assertEquals(columns.get(0).getName(), CREATE_TABLE_COLUMNS.get(1).getName());
-            assertFalse(columns.stream().map(Column::getName).anyMatch(colName -> colName.equals(CREATE_TABLE_COLUMNS.get(0).getName())));
+            assertEquals(columns.get(0).getName(), CREATE_TABLE_COLUMNS_FOR_DROP.get(1).getName());
+            assertFalse(columns.stream().map(Column::getName).anyMatch(colName -> colName.equals(CREATE_TABLE_COLUMNS_FOR_DROP.get(0).getName())));
         }
         finally {
             dropTable(tableName);
@@ -3845,11 +4041,7 @@ public abstract class AbstractTestHiveClient
 
     private ConnectorSession sampleSize(int sampleSize)
     {
-        return newSession(new HiveSessionProperties(
-                getHiveClientConfig().setPartitionStatisticsSampleSize(sampleSize),
-                new OrcFileWriterConfig(),
-                new ParquetFileWriterConfig(),
-                new CacheConfig()));
+        return newSession(getHiveClientConfig().setPartitionStatisticsSampleSize(sampleSize), getHiveCommonClientConfig());
     }
 
     private void verifyViewCreation(SchemaTableName temporaryCreateView)
@@ -3902,7 +4094,7 @@ public abstract class AbstractTestHiveClient
         try (Transaction transaction = newTransaction()) {
             ConnectorTableMetadata viewMetadata1 = new ConnectorTableMetadata(
                     viewName,
-                    ImmutableList.of(new ColumnMetadata("a", BIGINT)));
+                    ImmutableList.of(ColumnMetadata.builder().setName("a").setType(BIGINT).build()));
             transaction.getMetadata().createView(newSession(), viewMetadata1, viewData, replace);
             transaction.commit();
         }
@@ -3961,7 +4153,7 @@ public abstract class AbstractTestHiveClient
         try (Transaction transaction = newTransaction()) {
             ConnectorSession session = newSession();
             ConnectorMetadata metadata = transaction.getMetadata();
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
 
             // load the new table
             ConnectorTableHandle tableHandle = getTableHandle(metadata, tableName);
@@ -3993,10 +4185,16 @@ public abstract class AbstractTestHiveClient
             throws Exception
     {
         List<String> partitionedBy = createTableColumns.stream()
-                .filter(column -> column.getName().equals("ds"))
                 .map(ColumnMetadata::getName)
+                .filter(PARTITION_COLUMN_FILTER)
                 .collect(toList());
 
+        doCreateEmptyTable(tableName, storageFormat, createTableColumns, partitionedBy);
+    }
+
+    protected void doCreateEmptyTable(SchemaTableName tableName, HiveStorageFormat storageFormat, List<ColumnMetadata> createTableColumns, List<String> partitionedBy)
+            throws Exception
+    {
         String queryId;
         try (Transaction transaction = newTransaction()) {
             ConnectorSession session = newSession();
@@ -4011,7 +4209,7 @@ public abstract class AbstractTestHiveClient
         try (Transaction transaction = newTransaction()) {
             ConnectorSession session = newSession();
             ConnectorMetadata metadata = transaction.getMetadata();
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
 
             // load the new table
             ConnectorTableHandle tableHandle = getTableHandle(metadata, tableName);
@@ -4020,12 +4218,13 @@ public abstract class AbstractTestHiveClient
             ConnectorTableMetadata tableMetadata = metadata.getTableMetadata(session, getTableHandle(metadata, tableName));
 
             List<ColumnMetadata> expectedColumns = createTableColumns.stream()
-                    .map(column -> new ColumnMetadata(
-                            column.getName(),
-                            column.getType(),
-                            column.getComment(),
-                            columnExtraInfo(partitionedBy.contains(column.getName())),
-                            false))
+                    .map(column -> ColumnMetadata.builder()
+                            .setName(column.getName())
+                            .setType(column.getType())
+                            .setComment(column.getComment().orElse(null))
+                            .setExtraInfo(columnExtraInfo(partitionedBy.contains(column.getName())))
+                            .setHidden(false)
+                            .build())
                     .collect(toList());
             assertEquals(filterNonHiddenColumnMetadata(tableMetadata.getColumns()), expectedColumns);
 
@@ -4071,7 +4270,7 @@ public abstract class AbstractTestHiveClient
             try (Transaction transaction = newTransaction()) {
                 ConnectorSession session = newSession();
                 ConnectorMetadata metadata = transaction.getMetadata();
-                MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+                MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
 
                 // load the new table
                 ConnectorTableHandle tableHandle = getTableHandle(metadata, tableName);
@@ -4098,7 +4297,7 @@ public abstract class AbstractTestHiveClient
         Set<String> existingFiles;
         try (Transaction transaction = newTransaction()) {
             ConnectorSession session = newSession();
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
             existingFiles = listAllDataFiles(metastoreContext, transaction, tableName.getSchemaName(), tableName.getTableName());
             assertFalse(existingFiles.isEmpty());
         }
@@ -4110,7 +4309,17 @@ public abstract class AbstractTestHiveClient
 
             ConnectorTableHandle tableHandle = getTableHandle(metadata, tableName);
 
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(
+                    session.getIdentity(),
+                    session.getQueryId(),
+                    session.getClientInfo(),
+                    session.getClientTags(),
+                    session.getSource(),
+                    getMetastoreHeaders(session),
+                    false,
+                    DEFAULT_COLUMN_CONVERTER_PROVIDER,
+                    session.getWarningCollector(),
+                    session.getRuntimeStats());
 
             // "stage" insert data
             HiveInsertTableHandle insertTableHandle = (HiveInsertTableHandle) metadata.beginInsert(session, tableHandle);
@@ -4147,7 +4356,7 @@ public abstract class AbstractTestHiveClient
             // verify all temp files start with the unique prefix
             stagingPathRoot = getStagingPathRoot(insertTableHandle);
             Set<String> tempFiles = listAllDataFiles(context, stagingPathRoot);
-            assertTrue(!tempFiles.isEmpty());
+            assertFalse(tempFiles.isEmpty());
             for (String filePath : tempFiles) {
                 assertTrue(new Path(filePath).getName().startsWith(session.getQueryId()));
             }
@@ -4164,7 +4373,17 @@ public abstract class AbstractTestHiveClient
         try (Transaction transaction = newTransaction()) {
             ConnectorSession session = newSession();
             ConnectorMetadata metadata = transaction.getMetadata();
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(
+                    session.getIdentity(),
+                    session.getQueryId(),
+                    session.getClientInfo(),
+                    session.getClientTags(),
+                    session.getSource(),
+                    getMetastoreHeaders(session),
+                    false,
+                    DEFAULT_COLUMN_CONVERTER_PROVIDER,
+                    session.getWarningCollector(),
+                    session.getRuntimeStats());
 
             ConnectorTableHandle tableHandle = getTableHandle(metadata, tableName);
             List<ColumnHandle> columnHandles = filterNonHiddenColumnHandles(metadata.getColumnHandles(session, tableHandle).values());
@@ -4178,7 +4397,17 @@ public abstract class AbstractTestHiveClient
         // verify statistics unchanged
         try (Transaction transaction = newTransaction()) {
             ConnectorSession session = newSession();
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(
+                    session.getIdentity(),
+                    session.getQueryId(),
+                    session.getClientInfo(),
+                    session.getClientTags(),
+                    session.getSource(),
+                    getMetastoreHeaders(session),
+                    false,
+                    DEFAULT_COLUMN_CONVERTER_PROVIDER,
+                    session.getWarningCollector(),
+                    session.getRuntimeStats());
             HiveBasicStatistics statistics = getBasicStatisticsForTable(metastoreContext, transaction, tableName);
             assertEquals(statistics.getRowCount().getAsLong(), CREATE_TABLE_DATA.getRowCount() * 3L);
             assertEquals(statistics.getFileCount().getAsLong(), 3L);
@@ -4243,7 +4472,7 @@ public abstract class AbstractTestHiveClient
             locations.add(table.getStorage().getLocation());
         }
 
-        Optional<List<String>> partitionNames = metastore.getPartitionNames(metastoreContext, schemaName, tableName);
+        Optional<List<PartitionNameWithVersion>> partitionNames = metastore.getPartitionNames(metastoreContext, schemaName, tableName);
         if (partitionNames.isPresent()) {
             metastore.getPartitionsByNames(metastoreContext, schemaName, tableName, partitionNames.get()).values().stream()
                     .map(Optional::get)
@@ -4288,19 +4517,19 @@ public abstract class AbstractTestHiveClient
         Set<String> existingFiles;
         try (Transaction transaction = newTransaction()) {
             ConnectorSession session = newSession();
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
             // verify partitions were created
-            List<String> partitionNames = transaction.getMetastore().getPartitionNames(metastoreContext, tableName.getSchemaName(), tableName.getTableName())
+            List<PartitionNameWithVersion> partitionNamesWithVersion = transaction.getMetastore().getPartitionNames(metastoreContext, tableName.getSchemaName(), tableName.getTableName())
                     .orElseThrow(() -> new AssertionError("Table does not exist: " + tableName));
-            assertEqualsIgnoreOrder(partitionNames, CREATE_TABLE_PARTITIONED_DATA.getMaterializedRows().stream()
+            assertEqualsIgnoreOrder(getPartitionNames(partitionNamesWithVersion), CREATE_TABLE_PARTITIONED_DATA.getMaterializedRows().stream()
                     .map(row -> "ds=" + row.getField(CREATE_TABLE_PARTITIONED_DATA.getTypes().size() - 1))
                     .collect(toList()));
 
             // verify the node versions in partitions
-            Map<String, Optional<Partition>> partitions = getMetastoreClient().getPartitionsByNames(metastoreContext, tableName.getSchemaName(), tableName.getTableName(), partitionNames);
-            assertEquals(partitions.size(), partitionNames.size());
-            for (String partitionName : partitionNames) {
-                Partition partition = partitions.get(partitionName).get();
+            Map<String, Optional<Partition>> partitions = getMetastoreClient().getPartitionsByNames(metastoreContext, tableName.getSchemaName(), tableName.getTableName(), partitionNamesWithVersion);
+            assertEquals(partitions.size(), partitionNamesWithVersion.size());
+            for (PartitionNameWithVersion partitionNameWithVersion : partitionNamesWithVersion) {
+                Partition partition = partitions.get(partitionNameWithVersion.getPartitionName()).get();
                 assertEquals(partition.getParameters().get(PRESTO_VERSION_NAME), TEST_SERVER_VERSION);
                 assertEquals(partition.getParameters().get(PRESTO_QUERY_ID_NAME), queryId);
             }
@@ -4319,8 +4548,8 @@ public abstract class AbstractTestHiveClient
             assertFalse(existingFiles.isEmpty());
 
             // test statistics
-            for (String partitionName : partitionNames) {
-                HiveBasicStatistics partitionStatistics = getBasicStatisticsForPartition(metastoreContext, transaction, tableName, partitionName);
+            for (PartitionNameWithVersion partitionNameWithVersion : partitionNamesWithVersion) {
+                HiveBasicStatistics partitionStatistics = getBasicStatisticsForPartition(metastoreContext, transaction, tableName, partitionNameWithVersion.getPartitionName());
                 assertEquals(partitionStatistics.getRowCount().getAsLong(), 1L);
                 assertEquals(partitionStatistics.getFileCount().getAsLong(), 1L);
                 assertGreaterThan(partitionStatistics.getInMemoryDataSizeInBytes().getAsLong(), 0L);
@@ -4354,7 +4583,7 @@ public abstract class AbstractTestHiveClient
                     insertTableHandle.getLocationHandle().getTargetPath().toString(),
                     false);
             Set<String> tempFiles = listAllDataFiles(context, getStagingPathRoot(insertTableHandle));
-            assertTrue(!tempFiles.isEmpty());
+            assertFalse(tempFiles.isEmpty());
             for (String filePath : tempFiles) {
                 assertTrue(new Path(filePath).getName().startsWith(session.getQueryId()));
             }
@@ -4374,7 +4603,7 @@ public abstract class AbstractTestHiveClient
             assertEqualsIgnoreOrder(result.getMaterializedRows(), CREATE_TABLE_PARTITIONED_DATA.getMaterializedRows());
 
             // verify we did not modify the table directory
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
             assertEquals(listAllDataFiles(metastoreContext, transaction, tableName.getSchemaName(), tableName.getTableName()), existingFiles);
 
             // verify temp directory is empty
@@ -4419,12 +4648,12 @@ public abstract class AbstractTestHiveClient
                 ConnectorSession session = newSession();
                 ConnectorMetadata metadata = transaction.getMetadata();
                 ConnectorTableHandle tableHandle = getTableHandle(metadata, tableName);
-                MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+                MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
 
                 // verify partitions were created
-                List<String> partitionNames = transaction.getMetastore().getPartitionNames(metastoreContext, tableName.getSchemaName(), tableName.getTableName())
+                List<PartitionNameWithVersion> partitionsNameWithVersion = transaction.getMetastore().getPartitionNames(metastoreContext, tableName.getSchemaName(), tableName.getTableName())
                         .orElseThrow(() -> new AssertionError("Table does not exist: " + tableName));
-                assertEqualsIgnoreOrder(partitionNames, CREATE_TABLE_PARTITIONED_DATA.getMaterializedRows().stream()
+                assertEqualsIgnoreOrder(getPartitionNames(partitionsNameWithVersion), CREATE_TABLE_PARTITIONED_DATA.getMaterializedRows().stream()
                         .map(row -> "ds=" + row.getField(CREATE_TABLE_PARTITIONED_DATA.getTypes().size() - 1))
                         .collect(toList()));
 
@@ -4437,8 +4666,8 @@ public abstract class AbstractTestHiveClient
                 assertEqualsIgnoreOrder(result.getMaterializedRows(), resultBuilder.build().getMaterializedRows());
 
                 // test statistics
-                for (String partitionName : partitionNames) {
-                    HiveBasicStatistics statistics = getBasicStatisticsForPartition(metastoreContext, transaction, tableName, partitionName);
+                for (PartitionNameWithVersion partitionNameWithVersion : partitionsNameWithVersion) {
+                    HiveBasicStatistics statistics = getBasicStatisticsForPartition(metastoreContext, transaction, tableName, partitionNameWithVersion.getPartitionName());
                     assertEquals(statistics.getRowCount().getAsLong(), i + 1L);
                     assertEquals(statistics.getFileCount().getAsLong(), i + 1L);
                     assertGreaterThan(statistics.getInMemoryDataSizeInBytes().getAsLong(), 0L);
@@ -4454,7 +4683,7 @@ public abstract class AbstractTestHiveClient
             ConnectorMetadata metadata = transaction.getMetadata();
             ConnectorSession session = newSession();
 
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
 
             existingFiles = listAllDataFiles(metastoreContext, transaction, tableName.getSchemaName(), tableName.getTableName());
             assertFalse(existingFiles.isEmpty());
@@ -4482,16 +4711,16 @@ public abstract class AbstractTestHiveClient
                     insertTableHandle.getLocationHandle().getTargetPath().toString(),
                     false);
             Set<String> tempFiles = listAllDataFiles(context, getStagingPathRoot(insertTableHandle));
-            assertTrue(!tempFiles.isEmpty());
+            assertFalse(tempFiles.isEmpty());
             for (String filePath : tempFiles) {
                 assertTrue(new Path(filePath).getName().startsWith(session.getQueryId()));
             }
 
             // verify statistics are visible from within of the current transaction
-            List<String> partitionNames = transaction.getMetastore().getPartitionNames(metastoreContext, tableName.getSchemaName(), tableName.getTableName())
+            List<PartitionNameWithVersion> partitionNamesWithVersion = transaction.getMetastore().getPartitionNames(metastoreContext, tableName.getSchemaName(), tableName.getTableName())
                     .orElseThrow(() -> new AssertionError("Table does not exist: " + tableName));
-            for (String partitionName : partitionNames) {
-                HiveBasicStatistics partitionStatistics = getBasicStatisticsForPartition(metastoreContext, transaction, tableName, partitionName);
+            for (PartitionNameWithVersion partitionNameWithVersion : partitionNamesWithVersion) {
+                HiveBasicStatistics partitionStatistics = getBasicStatisticsForPartition(metastoreContext, transaction, tableName, partitionNameWithVersion.getPartitionName());
                 assertEquals(partitionStatistics.getRowCount().getAsLong(), 5L);
             }
 
@@ -4504,7 +4733,7 @@ public abstract class AbstractTestHiveClient
             ConnectorSession session = newSession();
             ConnectorTableHandle tableHandle = getTableHandle(metadata, tableName);
             List<ColumnHandle> columnHandles = filterNonHiddenColumnHandles(metadata.getColumnHandles(session, tableHandle).values());
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
 
             // verify the data is unchanged
             MaterializedResult result = readTable(transaction, tableHandle, columnHandles, newSession(), TupleDomain.all(), OptionalInt.empty(), Optional.empty());
@@ -4518,10 +4747,10 @@ public abstract class AbstractTestHiveClient
             assertTrue(listAllDataFiles(context, stagingPathRoot).isEmpty());
 
             // verify statistics have been rolled back
-            List<String> partitionNames = transaction.getMetastore().getPartitionNames(metastoreContext, tableName.getSchemaName(), tableName.getTableName())
+            List<PartitionNameWithVersion> partitionNamesWithVersion = transaction.getMetastore().getPartitionNames(metastoreContext, tableName.getSchemaName(), tableName.getTableName())
                     .orElseThrow(() -> new AssertionError("Table does not exist: " + tableName));
-            for (String partitionName : partitionNames) {
-                HiveBasicStatistics partitionStatistics = getBasicStatisticsForPartition(metastoreContext, transaction, tableName, partitionName);
+            for (PartitionNameWithVersion partitionNameWithVersion : partitionNamesWithVersion) {
+                HiveBasicStatistics partitionStatistics = getBasicStatisticsForPartition(metastoreContext, transaction, tableName, partitionNameWithVersion.getPartitionName());
                 assertEquals(partitionStatistics.getRowCount().getAsLong(), 3L);
             }
         }
@@ -4548,11 +4777,11 @@ public abstract class AbstractTestHiveClient
         insertData(tableName, CREATE_TABLE_PARTITIONED_DATA);
         ConnectorSession session = newSession();
         try (Transaction transaction = newTransaction()) {
-            List<String> partitionNames = transaction.getMetastore().getPartitionNames(new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER), tableName.getSchemaName(), tableName.getTableName())
+            List<PartitionNameWithVersion> partitionNamesWithVersion = transaction.getMetastore().getPartitionNames(new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats()), tableName.getSchemaName(), tableName.getTableName())
                     .orElseThrow(() -> new AssertionError("Table does not exist: " + tableName));
 
-            for (String partitionName : partitionNames) {
-                HiveBasicStatistics statistics = getBasicStatisticsForPartition(new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER), transaction, tableName, partitionName);
+            for (PartitionNameWithVersion partitionNameWithVersion : partitionNamesWithVersion) {
+                HiveBasicStatistics statistics = getBasicStatisticsForPartition(new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats()), transaction, tableName, partitionNameWithVersion.getPartitionName());
                 assertThat(statistics.getRowCount()).isNotPresent();
                 assertThat(statistics.getInMemoryDataSizeInBytes()).isNotPresent();
                 // fileCount and rawSize statistics are computed on the fly by the metastore, thus cannot be erased
@@ -4587,7 +4816,7 @@ public abstract class AbstractTestHiveClient
                 .map(Column::getName)
                 .collect(toImmutableList());
         if (!table.getPartitionColumns().isEmpty()) {
-            List<String> partitionNames = metastoreClient.getPartitionNames(METASTORE_CONTEXT, schemaTableName.getSchemaName(), schemaTableName.getTableName())
+            List<PartitionNameWithVersion> partitionNames = metastoreClient.getPartitionNames(METASTORE_CONTEXT, schemaTableName.getSchemaName(), schemaTableName.getTableName())
                     .orElse(ImmutableList.of());
             List<Partition> partitions = metastoreClient
                     .getPartitionsByNames(METASTORE_CONTEXT, schemaTableName.getSchemaName(), schemaTableName.getTableName(), partitionNames)
@@ -4611,7 +4840,13 @@ public abstract class AbstractTestHiveClient
     /**
      * @return query id
      */
-    private String insertData(SchemaTableName tableName, MaterializedResult data)
+    protected String insertData(SchemaTableName tableName, MaterializedResult data)
+            throws Exception
+    {
+        return insertData(tableName, data, newSession());
+    }
+
+    protected String insertData(SchemaTableName tableName, MaterializedResult data, ConnectorSession session)
             throws Exception
     {
         Path writePath;
@@ -4619,7 +4854,6 @@ public abstract class AbstractTestHiveClient
         String queryId;
         try (Transaction transaction = newTransaction()) {
             ConnectorMetadata metadata = transaction.getMetadata();
-            ConnectorSession session = newSession();
             ConnectorTableHandle tableHandle = getTableHandle(metadata, tableName);
             HiveInsertTableHandle insertTableHandle = (HiveInsertTableHandle) metadata.beginInsert(session, tableHandle);
             queryId = session.getQueryId();
@@ -4666,12 +4900,12 @@ public abstract class AbstractTestHiveClient
         try (Transaction transaction = newTransaction()) {
             ConnectorSession session = newSession();
             ConnectorMetadata metadata = transaction.getMetadata();
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
 
             // verify partitions were created
-            List<String> partitionNames = transaction.getMetastore().getPartitionNames(metastoreContext, tableName.getSchemaName(), tableName.getTableName())
+            List<PartitionNameWithVersion> partitionNamesWithVersion = transaction.getMetastore().getPartitionNames(metastoreContext, tableName.getSchemaName(), tableName.getTableName())
                     .orElseThrow(() -> new AssertionError("Table does not exist: " + tableName));
-            assertEqualsIgnoreOrder(partitionNames, CREATE_TABLE_PARTITIONED_DATA.getMaterializedRows().stream()
+            assertEqualsIgnoreOrder(getPartitionNames(partitionNamesWithVersion), CREATE_TABLE_PARTITIONED_DATA.getMaterializedRows().stream()
                     .map(row -> "ds=" + row.getField(CREATE_TABLE_PARTITIONED_DATA.getTypes().size() - 1))
                     .collect(toList()));
 
@@ -4750,7 +4984,7 @@ public abstract class AbstractTestHiveClient
             assertEqualsIgnoreOrder(actualAfterDelete2.getMaterializedRows(), ImmutableList.of());
 
             // verify table directory is empty
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
             Set<String> filesAfterDelete = listAllDataFiles(metastoreContext, transaction, tableName.getSchemaName(), tableName.getTableName());
             assertTrue(filesAfterDelete.isEmpty());
         }
@@ -4785,7 +5019,7 @@ public abstract class AbstractTestHiveClient
 
             List<ColumnHandle> columnHandles = ImmutableList.copyOf(metadata.getColumnHandles(session, tableHandle).values());
 
-            ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, hiveSplit, layoutHandle, columnHandles, NON_CACHEABLE);
+            ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, hiveSplit, layoutHandle, columnHandles, NON_CACHEABLE, new RuntimeStats());
             assertGetRecords(hiveStorageFormat, tableMetadata, hiveSplit, pageSource, columnHandles);
         }
     }
@@ -4996,11 +5230,11 @@ public abstract class AbstractTestHiveClient
 
                 long newCompletedBytes = pageSource.getCompletedBytes();
                 assertTrue(newCompletedBytes >= completedBytes);
-                assertTrue(newCompletedBytes <= hiveSplit.getLength() + initialPageSourceCompletedBytes);
+                assertTrue(newCompletedBytes <= hiveSplit.getFileSplit().getLength() + initialPageSourceCompletedBytes);
                 completedBytes = newCompletedBytes;
             }
 
-            assertTrue(completedBytes <= hiveSplit.getLength() + initialPageSourceCompletedBytes);
+            assertTrue(completedBytes <= hiveSplit.getFileSplit().getLength() + initialPageSourceCompletedBytes);
             assertEquals(rowNumber, 100);
         }
         finally {
@@ -5042,7 +5276,7 @@ public abstract class AbstractTestHiveClient
         return handle;
     }
 
-    private MaterializedResult readTable(
+    protected MaterializedResult readTable(
             Transaction transaction,
             ConnectorTableHandle hiveTableHandle,
             List<ColumnHandle> columnHandles,
@@ -5056,7 +5290,7 @@ public abstract class AbstractTestHiveClient
         return readTable(transaction, hiveTableHandle, layoutHandle, columnHandles, session, expectedSplitCount, expectedStorageFormat);
     }
 
-    private MaterializedResult readTable(
+    protected MaterializedResult readTable(
             Transaction transaction,
             ConnectorTableHandle hiveTableHandle,
             ConnectorTableLayoutHandle hiveTableLayoutHandle,
@@ -5075,7 +5309,7 @@ public abstract class AbstractTestHiveClient
 
         ImmutableList.Builder<MaterializedRow> allRows = ImmutableList.builder();
         for (ConnectorSplit split : splits) {
-            try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, split, tableHandle.getLayout().get(), columnHandles, NON_CACHEABLE)) {
+            try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, split, tableHandle.getLayout().get(), columnHandles, NON_CACHEABLE, new RuntimeStats())) {
                 expectedStorageFormat.ifPresent(format -> assertPageSourceType(pageSource, format));
                 MaterializedResult result = materializeSourceDataStream(session, pageSource, getTypes(columnHandles));
                 allRows.addAll(result.getMaterializedRows());
@@ -5112,7 +5346,8 @@ public abstract class AbstractTestHiveClient
 
     private List<ConnectorSplit> getAllSplits(ConnectorSession session, Transaction transaction, ConnectorTableLayoutHandle layoutHandle)
     {
-        return getAllSplits(splitManager.getSplits(transaction.getTransactionHandle(), session, layoutHandle, SPLIT_SCHEDULING_CONTEXT));
+        ConnectorSplitSource splits = splitManager.getSplits(transaction.getTransactionHandle(), session, layoutHandle, SPLIT_SCHEDULING_CONTEXT);
+        return getAllSplits(splits);
     }
 
     private ConnectorTableLayoutHandle getLayout(ConnectorSession session, Transaction transaction, ConnectorTableHandle tableHandle, TupleDomain<ColumnHandle> tupleDomain)
@@ -5125,7 +5360,10 @@ public abstract class AbstractTestHiveClient
     {
         ImmutableList.Builder<ConnectorSplit> splits = ImmutableList.builder();
         while (!splitSource.isFinished()) {
-            splits.addAll(getFutureValue(splitSource.getNextBatch(NOT_PARTITIONED, 1000)).getSplits());
+            CompletableFuture<ConnectorSplitSource.ConnectorSplitBatch> nextBatch = splitSource.getNextBatch(NOT_PARTITIONED, 1000);
+            ConnectorSplitSource.ConnectorSplitBatch futureValue = getFutureValue(nextBatch);
+            List<ConnectorSplit> splits1 = futureValue.getSplits();
+            splits.addAll(splits1);
         }
         return splits.build();
     }
@@ -5133,12 +5371,13 @@ public abstract class AbstractTestHiveClient
     protected List<?> getAllPartitions(ConnectorTableLayoutHandle layoutHandle)
     {
         return ((HiveTableLayoutHandle) layoutHandle).getPartitions()
+                .map(PartitionSet::getFullyLoadedPartitions)
                 .orElseThrow(() -> new AssertionError("layout has no partitions"));
     }
 
     protected String getPartitionId(Object partition)
     {
-        return ((HivePartition) partition).getPartitionId();
+        return ((HivePartition) partition).getPartitionId().getPartitionName();
     }
 
     private static void assertPageSourceType(ConnectorPageSource pageSource, HiveStorageFormat hiveStorageFormat)
@@ -5242,7 +5481,7 @@ public abstract class AbstractTestHiveClient
         assertTrue(map.containsKey(name));
         ColumnMetadata column = map.get(name);
         assertEquals(column.getType(), type, name);
-        assertEquals(column.getExtraInfo(), columnExtraInfo(partitionKey));
+        assertEquals(column.getExtraInfo().orElse(null), columnExtraInfo(partitionKey));
     }
 
     protected static ImmutableMap<String, Integer> indexColumns(List<ColumnHandle> columnHandles)
@@ -5284,11 +5523,11 @@ public abstract class AbstractTestHiveClient
         return createTableProperties(storageFormat, ImmutableList.of());
     }
 
-    private static Map<String, Object> createTableProperties(HiveStorageFormat storageFormat, Iterable<String> parititonedBy)
+    private static Map<String, Object> createTableProperties(HiveStorageFormat storageFormat, Iterable<String> partitionedBy)
     {
         return ImmutableMap.<String, Object>builder()
                 .put(STORAGE_FORMAT_PROPERTY, storageFormat)
-                .put(PARTITIONED_BY_PROPERTY, ImmutableList.copyOf(parititonedBy))
+                .put(PARTITIONED_BY_PROPERTY, ImmutableList.copyOf(partitionedBy))
                 .put(BUCKETED_BY_PROPERTY, ImmutableList.of())
                 .put(BUCKET_COUNT_PROPERTY, 0)
                 .put(SORTED_BY_PROPERTY, ImmutableList.of())
@@ -5357,7 +5596,7 @@ public abstract class AbstractTestHiveClient
                     .setSerdeParameters(ImmutableMap.of());
 
             PrincipalPrivileges principalPrivileges = testingPrincipalPrivilege(tableOwner, session.getUser());
-            transaction.getMetastore().createTable(session, tableBuilder.build(), principalPrivileges, Optional.empty(), true, EMPTY_TABLE_STATISTICS);
+            transaction.getMetastore().createTable(session, tableBuilder.build(), principalPrivileges, Optional.empty(), true, EMPTY_TABLE_STATISTICS, emptyList());
 
             transaction.commit();
         }
@@ -5368,7 +5607,7 @@ public abstract class AbstractTestHiveClient
 
         try (Transaction transaction = newTransaction()) {
             ConnectorSession session = newSession();
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
             return transaction.getMetastore().getTable(metastoreContext, schemaTableName.getSchemaName(), schemaTableName.getTableName()).get();
         }
     }
@@ -5381,7 +5620,7 @@ public abstract class AbstractTestHiveClient
             String tableOwner = session.getUser();
             String schemaName = schemaTableName.getSchemaName();
             String tableName = schemaTableName.getTableName();
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
             Optional<Table> table = transaction.getMetastore().getTable(metastoreContext, schemaName, tableName);
             Table.Builder tableBuilder = Table.builder(table.get());
             tableBuilder.getStorageBuilder().setBucketProperty(bucketProperty);
@@ -5462,8 +5701,8 @@ public abstract class AbstractTestHiveClient
                         .row(620L, "f", "insert3")
                         .build();
         Domain domainToDrop = Domain.create(ValueSet.of(
-                createUnboundedVarcharType(),
-                utf8Slice("alter1"), utf8Slice("alter2"), utf8Slice("alter3"), utf8Slice("drop1"), utf8Slice("drop2"), utf8Slice("drop3")),
+                        createUnboundedVarcharType(),
+                        utf8Slice("alter1"), utf8Slice("alter2"), utf8Slice("alter3"), utf8Slice("drop1"), utf8Slice("drop2"), utf8Slice("drop3")),
                 false);
         List<MaterializedRow> extraRowsForInsertExisting = ImmutableList.of();
         if (allowInsertExisting) {
@@ -5507,7 +5746,7 @@ public abstract class AbstractTestHiveClient
                             temporaryDeleteInsert,
                             domainToDrop,
                             insertData,
-                            testCase.isExpectCommitedData() ? afterData : beforeData,
+                            testCase.isExpectCommittedData() ? afterData : beforeData,
                             testCase.getTag(),
                             testCase.isExpectQuerySucceed(),
                             testCase.getConflictTrigger());
@@ -5602,13 +5841,13 @@ public abstract class AbstractTestHiveClient
 
         try (Transaction transaction = newTransaction()) {
             ConnectorSession session = newSession();
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
             // verify partitions
-            List<String> partitionNames = transaction.getMetastore()
+            List<PartitionNameWithVersion> partitionNamesWithVersion = transaction.getMetastore()
                     .getPartitionNames(metastoreContext, tableName.getSchemaName(), tableName.getTableName())
                     .orElseThrow(() -> new AssertionError("Table does not exist: " + tableName));
             assertEqualsIgnoreOrder(
-                    partitionNames,
+                    getPartitionNames(partitionNamesWithVersion),
                     expectedData.getMaterializedRows().stream()
                             .map(row -> format("pk1=%s/pk2=%s", row.getField(1), row.getField(2)))
                             .distinct()
@@ -5622,6 +5861,51 @@ public abstract class AbstractTestHiveClient
             // verify the data
             MaterializedResult result = readTable(transaction, tableHandle, columnHandles, session, TupleDomain.all(), OptionalInt.empty(), Optional.of(storageFormat));
             assertEqualsIgnoreOrder(result.getMaterializedRows(), expectedData.getMaterializedRows());
+        }
+    }
+
+    @Test
+    public void testTableConstraints()
+    {
+        for (SchemaTableName table : constraintsTableList) {
+            List<TableConstraint<String>> tableConstraints = getTableConstraints(table);
+            List<TableConstraint<String>> expectedConstraints = tableConstraintsMap.get(table);
+            compareTableConstraints(tableConstraints, expectedConstraints);
+        }
+    }
+
+    protected Set<HiveStorageFormat> getSupportedCreateTableHiveStorageFormats()
+    {
+        return difference(
+                ImmutableSet.copyOf(HiveStorageFormat.values()),
+                // exclude formats that change table schema with serde
+                // exclude ALPHA because it does not support DML yet
+                ImmutableSet.of(AVRO, CSV, ALPHA));
+    }
+
+    private List<TableConstraint<String>> getTableConstraints(SchemaTableName tableName)
+    {
+        ConnectorSession session = newSession();
+        MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), Optional.empty(), false, HiveColumnConverterProvider.DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
+        return metastoreClient.getTableConstraints(metastoreContext, tableName.getSchemaName(), tableName.getTableName());
+    }
+
+    private void compareTableConstraints(List<TableConstraint<String>> tableConstraints, List<TableConstraint<String>> expectedConstraints)
+    {
+        assertEquals(tableConstraints.size(), expectedConstraints.size());
+
+        for (int i = 0; i < tableConstraints.size(); i++) {
+            TableConstraint<String> constraint = tableConstraints.get(i);
+            TableConstraint<String> expectedConstraint = expectedConstraints.get(i);
+            // Hive primary key name is auto-generated, hence explicit comparison of members excluding name
+            if (constraint instanceof PrimaryKeyConstraint) {
+                assertEquals(constraint.getColumns(), expectedConstraint.getColumns());
+                assertEquals(constraint.isEnabled(), expectedConstraint.isEnabled());
+                assertEquals(constraint.isRely(), expectedConstraint.isRely());
+            }
+            else {
+                assertEquals(constraint, expectedConstraint);
+            }
         }
     }
 
@@ -5639,22 +5923,22 @@ public abstract class AbstractTestHiveClient
 
     protected static class TransactionDeleteInsertTestCase
     {
-        private final boolean expectCommitedData;
+        private final boolean expectCommittedData;
         private final boolean expectQuerySucceed;
         private final TransactionDeleteInsertTestTag tag;
         private final Optional<ConflictTrigger> conflictTrigger;
 
-        public TransactionDeleteInsertTestCase(boolean expectCommitedData, boolean expectQuerySucceed, TransactionDeleteInsertTestTag tag, Optional<ConflictTrigger> conflictTrigger)
+        public TransactionDeleteInsertTestCase(boolean expectCommittedData, boolean expectQuerySucceed, TransactionDeleteInsertTestTag tag, Optional<ConflictTrigger> conflictTrigger)
         {
-            this.expectCommitedData = expectCommitedData;
+            this.expectCommittedData = expectCommittedData;
             this.expectQuerySucceed = expectQuerySucceed;
             this.tag = tag;
             this.conflictTrigger = conflictTrigger;
         }
 
-        public boolean isExpectCommitedData()
+        public boolean isExpectCommittedData()
         {
-            return expectCommitedData;
+            return expectCommittedData;
         }
 
         public boolean isExpectQuerySucceed()
@@ -5678,7 +5962,7 @@ public abstract class AbstractTestHiveClient
             return toStringHelper(this)
                     .add("tag", tag)
                     .add("conflictTrigger", conflictTrigger.map(conflictTrigger -> conflictTrigger.getClass().getName()))
-                    .add("expectCommitedData", expectCommitedData)
+                    .add("expectCommittedData", expectCommittedData)
                     .add("expectQuerySucceed", expectQuerySucceed)
                     .toString();
         }
@@ -5717,7 +6001,7 @@ public abstract class AbstractTestHiveClient
             // This method bypasses transaction interface because this method is inherently hacky and doesn't work well with the transaction abstraction.
             // Additionally, this method is not part of a test. Its purpose is to set up an environment for another test.
             ExtendedHiveMetastore metastoreClient = getMetastoreClient();
-            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER);
+            MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getClientTags(), session.getSource(), getMetastoreHeaders(session), false, DEFAULT_COLUMN_CONVERTER_PROVIDER, session.getWarningCollector(), session.getRuntimeStats());
             Optional<Partition> partition = metastoreClient.getPartition(metastoreContext, tableName.getSchemaName(), tableName.getTableName(), copyPartitionFrom);
             conflictPartition = Partition.builder(partition.get())
                     .setValues(toPartitionValues(partitionNameToConflict))

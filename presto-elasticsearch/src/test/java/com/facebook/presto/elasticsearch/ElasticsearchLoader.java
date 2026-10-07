@@ -13,22 +13,23 @@
  */
 package com.facebook.presto.elasticsearch;
 
+import co.elastic.clients.transport.rest5_client.low_level.Request;
+import co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
 import com.facebook.presto.Session;
 import com.facebook.presto.client.Column;
 import com.facebook.presto.client.QueryData;
 import com.facebook.presto.client.QueryStatusInfo;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.server.testing.TestingPrestoServer;
+import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.PrestoWarning;
 import com.facebook.presto.tests.AbstractTestingPrestoClient;
 import com.facebook.presto.tests.ResultsSession;
-import org.elasticsearch.action.bulk.BulkRequest;
-import org.elasticsearch.action.index.IndexRequest;
-import org.elasticsearch.client.Client;
-import org.elasticsearch.common.xcontent.XContentBuilder;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -40,19 +41,18 @@ import static com.facebook.presto.common.type.DateType.DATE;
 import static com.facebook.presto.common.type.DoubleType.DOUBLE;
 import static com.facebook.presto.common.type.IntegerType.INTEGER;
 import static com.facebook.presto.common.type.Varchars.isVarcharType;
+import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
-import static org.elasticsearch.client.Requests.flushRequest;
-import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
 
 public class ElasticsearchLoader
         extends AbstractTestingPrestoClient<Void>
 {
     private final String tableName;
-    private final Client client;
+    Rest5Client restClient;
 
     public ElasticsearchLoader(
-            Client client,
+            Rest5Client client,
             String tableName,
             TestingPrestoServer prestoServer,
             Session defaultSession)
@@ -60,7 +60,7 @@ public class ElasticsearchLoader
         super(prestoServer, defaultSession);
 
         this.tableName = requireNonNull(tableName, "tableName is null");
-        this.client = requireNonNull(client, "client is null");
+        this.restClient = requireNonNull(client, "client is null");
     }
 
     @Override
@@ -74,11 +74,14 @@ public class ElasticsearchLoader
             implements ResultsSession<Void>
     {
         private final AtomicReference<List<Type>> types = new AtomicReference<>();
+        private static final ObjectMapper mapper = new ObjectMapper();
 
         private ElasticsearchLoadingSession() {}
 
         @Override
-        public void setWarnings(List<PrestoWarning> warnings) {}
+        public void setWarnings(List<PrestoWarning> warnings)
+        {
+        }
 
         @Override
         public void addResults(QueryStatusInfo statusInfo, QueryData data)
@@ -90,30 +93,43 @@ public class ElasticsearchLoader
             if (data.getData() == null) {
                 return;
             }
+
             checkState(types.get() != null, "Type information is missing");
             List<Column> columns = statusInfo.getColumns();
-            BulkRequest request = new BulkRequest();
+
+            StringBuilder bulkPayload = new StringBuilder();
+
             for (List<Object> fields : data.getData()) {
-                try {
-                    XContentBuilder dataBuilder = jsonBuilder().startObject();
-                    for (int i = 0; i < fields.size(); i++) {
-                        Type type = types.get().get(i);
-                        Object value = convertValue(fields.get(i), type);
-                        dataBuilder.field(columns.get(i).getName(), value);
-                    }
-                    dataBuilder.endObject();
-                    request.add(new IndexRequest(tableName, "doc").source(dataBuilder));
+                Map<String, Object> doc = new HashMap<>();
+                for (int i = 0; i < fields.size(); i++) {
+                    Type type = types.get().get(i);
+                    Object value = convertValue(fields.get(i), type);
+                    doc.put(columns.get(i).getName(), value);
                 }
-                catch (IOException e) {
-                    throw new UncheckedIOException("Error loading data into Elasticsearch index: " + tableName, e);
+
+                bulkPayload.append("{\"index\":{\"_index\":\"").append(tableName).append("\"}}\n");
+                try {
+                    bulkPayload.append(mapper.writeValueAsString(doc)).append("\n");
+                }
+                catch (JsonProcessingException e) {
+                    throw new PrestoException(GENERIC_INTERNAL_ERROR, e.getMessage());
                 }
             }
-            client.bulk(request).actionGet();
-            client.admin().indices().flush(flushRequest(tableName)).actionGet();
+
+            Request request = new Request("POST", "/_bulk");
+            request.setJsonEntity(bulkPayload.toString());
+            request.addParameter("refresh", "true");
+
+            try {
+                restClient.performRequest(request);
+            }
+            catch (IOException e) {
+                throw new PrestoException(GENERIC_INTERNAL_ERROR, "Error loading data into Elasticsearch index: " + tableName, e);
+            }
         }
 
         @Override
-        public Void build(Map<String, String> setSessionProperties, Set<String> resetSessionProperties)
+        public Void build(Map<String, String> setSessionProperties, Set<String> resetSessionProperties, String startTransactionId, boolean clearTransactionId)
         {
             return null;
         }
@@ -133,7 +149,7 @@ public class ElasticsearchLoader
             if (type == INTEGER) {
                 return ((Number) value).intValue();
             }
-            if (type == DOUBLE) {
+            if (type.equals(DOUBLE)) {
                 return ((Number) value).doubleValue();
             }
             throw new IllegalArgumentException("Unhandled type: " + type);

@@ -45,7 +45,9 @@ import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.common.type.IntegerType.INTEGER;
 import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.iceberg.IcebergErrorCode.ICEBERG_INCOMPATIBLE_VERSION;
 import static com.facebook.presto.iceberg.IcebergErrorCode.ICEBERG_INVALID_METADATA;
+import static com.facebook.presto.iceberg.IcebergUtil.MAX_FORMAT_VERSION_FOR_METADATA_TABLES;
 import static java.lang.String.format;
 import static java.util.Arrays.asList;
 import static java.util.Objects.requireNonNull;
@@ -64,17 +66,17 @@ public class ManifestsTable
         tableMetadata = new ConnectorTableMetadata(
                 tableName,
                 ImmutableList.<ColumnMetadata>builder()
-                        .add(new ColumnMetadata("path", VARCHAR))
-                        .add(new ColumnMetadata("length", BIGINT))
-                        .add(new ColumnMetadata("partition_spec_id", INTEGER))
-                        .add(new ColumnMetadata("added_snapshot_id", BIGINT))
-                        .add(new ColumnMetadata("added_data_files_count", INTEGER))
-                        .add(new ColumnMetadata("existing_data_files_count", INTEGER))
-                        .add(new ColumnMetadata("deleted_data_files_count", INTEGER))
-                        .add(new ColumnMetadata("partitions", new ArrayType(RowType.from(asList(
+                        .add(ColumnMetadata.builder().setName("path").setType(VARCHAR).build())
+                        .add(ColumnMetadata.builder().setName("length").setType(BIGINT).build())
+                        .add(ColumnMetadata.builder().setName("partition_spec_id").setType(INTEGER).build())
+                        .add(ColumnMetadata.builder().setName("added_snapshot_id").setType(BIGINT).build())
+                        .add(ColumnMetadata.builder().setName("added_data_files_count").setType(INTEGER).build())
+                        .add(ColumnMetadata.builder().setName("existing_data_files_count").setType(INTEGER).build())
+                        .add(ColumnMetadata.builder().setName("deleted_data_files_count").setType(INTEGER).build())
+                        .add(ColumnMetadata.builder().setName("partitions").setType(new ArrayType(RowType.from(asList(
                                 RowType.field("contains_null", BOOLEAN),
                                 RowType.field("lower_bound", VARCHAR),
-                                RowType.field("upper_bound", VARCHAR))))))
+                                RowType.field("upper_bound", VARCHAR))))).build())
                         .build());
         this.snapshotId = requireNonNull(snapshotId, "snapshotId is null");
     }
@@ -102,6 +104,13 @@ public class ManifestsTable
 
     private static List<Page> buildPages(ConnectorTableMetadata tableMetadata, Table icebergTable, long snapshotId)
     {
+        int formatVersion = ((org.apache.iceberg.BaseTable) icebergTable).operations().current().formatVersion();
+        if (formatVersion > MAX_FORMAT_VERSION_FOR_METADATA_TABLES) {
+            throw new PrestoException(ICEBERG_INCOMPATIBLE_VERSION,
+                    format("Cannot read Iceberg manifest files for table format version %d (max supported: %d). Upgrade Presto to read this table.",
+                            formatVersion, MAX_FORMAT_VERSION_FOR_METADATA_TABLES));
+        }
+
         PageListBuilder pagesBuilder = PageListBuilder.forTable(tableMetadata);
 
         Snapshot snapshot = icebergTable.snapshot(snapshotId);
@@ -111,7 +120,7 @@ public class ManifestsTable
 
         Map<Integer, PartitionSpec> partitionSpecsById = icebergTable.specs();
 
-        snapshot.allManifests().forEach(file -> {
+        snapshot.allManifests(icebergTable.io()).forEach(file -> {
             pagesBuilder.beginRow();
             pagesBuilder.appendVarchar(file.path());
             pagesBuilder.appendBigint(file.length());
@@ -138,9 +147,9 @@ public class ManifestsTable
             BlockBuilder rowBuilder = singleArrayWriter.beginBlockEntry();
             BOOLEAN.writeBoolean(rowBuilder, summary.containsNull());
             VARCHAR.writeString(rowBuilder, field.transform().toHumanString(
-                    Conversions.fromByteBuffer(nestedType, summary.lowerBound())));
+                    nestedType, Conversions.fromByteBuffer(nestedType, summary.lowerBound())));
             VARCHAR.writeString(rowBuilder, field.transform().toHumanString(
-                    Conversions.fromByteBuffer(nestedType, summary.upperBound())));
+                    nestedType, Conversions.fromByteBuffer(nestedType, summary.upperBound())));
             singleArrayWriter.closeEntry();
         }
         arrayBlockBuilder.closeEntry();

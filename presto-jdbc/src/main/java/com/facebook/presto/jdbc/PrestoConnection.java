@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.jdbc;
 
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.client.ClientSession;
 import com.facebook.presto.client.ServerInfo;
 import com.facebook.presto.client.StatementClient;
@@ -23,7 +24,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.primitives.Ints;
-import io.airlift.units.Duration;
 
 import java.net.URI;
 import java.nio.charset.CharsetEncoder;
@@ -50,7 +50,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
-import java.util.TimeZone;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -71,6 +70,7 @@ import static java.util.concurrent.TimeUnit.MINUTES;
 public class PrestoConnection
         implements Connection
 {
+    private static final String VALIDATION_QUERY = "/* Presto JDBC driver connection validation */ SELECT 1";
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean autoCommit = new AtomicBoolean(true);
     private final AtomicInteger isolationLevel = new AtomicInteger(TRANSACTION_READ_UNCOMMITTED);
@@ -99,6 +99,7 @@ public class PrestoConnection
     private final QueryExecutor queryExecutor;
     private final WarningsManager warningsManager = new WarningsManager();
     private final List<QueryInterceptor> queryInterceptorInstances;
+    private final boolean validateNextUriSource;
 
     PrestoConnection(PrestoDriverUri uri, QueryExecutor queryExecutor)
             throws SQLException
@@ -117,12 +118,57 @@ public class PrestoConnection
         this.sessionProperties = new ConcurrentHashMap<>(uri.getSessionProperties());
         this.connectionProperties = uri.getProperties();
         this.queryExecutor = requireNonNull(queryExecutor, "queryExecutor is null");
+        this.validateNextUriSource = uri.validateNextUriSource();
+        uri.getClientTags().ifPresent(tags -> clientInfo.put("ClientTags", tags));
 
-        timeZoneId.set(TimeZone.getDefault().getID());
+        timeZoneId.set(uri.getTimeZoneId());
         locale.set(Locale.getDefault());
 
         this.queryInterceptorInstances = ImmutableList.copyOf(uri.getQueryInterceptors());
         initializeQueryInterceptors();
+
+        // Validate connection if requested
+        if (uri.shouldValidateConnection()) {
+            validateConnection();
+        }
+    }
+
+    private void validateConnection()
+            throws SQLException
+    {
+        try (Statement statement = createStatement();
+                ResultSet rs = statement.executeQuery(VALIDATION_QUERY)) {
+            if (!rs.next()) {
+                throw new SQLException("Connection validation failed: query returned no results");
+            }
+        }
+        catch (SQLException e) {
+            String message = "Connection validation failed: " + e.getMessage();
+            throw new SQLException(message, e.getSQLState(), e.getErrorCode(), e);
+        }
+    }
+
+    public static PrestoConnection newConnectionWithSessionProperties(PrestoConnection connectionWithSessionProperties, Properties connectionProperties)
+            throws SQLException
+    {
+        requireNonNull(connectionWithSessionProperties, "connectionWithSessionProperties is null");
+
+        URI connectionWithSessionPropertiesURI = connectionWithSessionProperties.getURI();
+        String prestoUrl = format("%s://%s:%s%s", connectionWithSessionPropertiesURI.getScheme(), connectionWithSessionPropertiesURI.getHost(), connectionWithSessionPropertiesURI.getPort(), connectionWithSessionPropertiesURI.getPath());
+        PrestoDriverUri uri = new PrestoDriverUri(prestoUrl, connectionProperties);
+        PrestoConnection prestoConnection = new PrestoConnection(uri, connectionWithSessionProperties.queryExecutor);
+        copySessionProperties(connectionWithSessionProperties, prestoConnection);
+
+        return prestoConnection;
+    }
+
+    public static void copySessionProperties(PrestoConnection src, PrestoConnection dst)
+    {
+        requireNonNull(src, "src is null");
+        requireNonNull(dst, "dst is null");
+
+        Map<String, String> map = src.getSessionProperties();
+        map.forEach(dst::setSessionProperty);
     }
 
     @Override
@@ -162,10 +208,11 @@ public class PrestoConnection
             throws SQLException
     {
         checkOpen();
-        boolean wasAutoCommit = this.autoCommit.getAndSet(autoCommit);
+        boolean wasAutoCommit = this.autoCommit.get();
         if (autoCommit && !wasAutoCommit) {
             commit();
         }
+        this.autoCommit.set(autoCommit);
     }
 
     @Override
@@ -184,6 +231,9 @@ public class PrestoConnection
         if (getAutoCommit()) {
             throw new SQLException("Connection is in auto-commit mode");
         }
+        if (transactionId.get() == null) {
+            return;
+        }
         try (PrestoStatement statement = new PrestoStatement(this)) {
             statement.internalExecute("COMMIT");
         }
@@ -196,6 +246,9 @@ public class PrestoConnection
         checkOpen();
         if (getAutoCommit()) {
             throw new SQLException("Connection is in auto-commit mode");
+        }
+        if (transactionId.get() == null) {
+            return;
         }
         try (PrestoStatement statement = new PrestoStatement(this)) {
             statement.internalExecute("ROLLBACK");
@@ -763,7 +816,8 @@ public class PrestoConnection
                 timeout,
                 compressionDisabled,
                 ImmutableMap.of(),
-                customHeaders);
+                customHeaders,
+                validateNextUriSource);
 
         return queryExecutor.startQuery(session, sql);
     }

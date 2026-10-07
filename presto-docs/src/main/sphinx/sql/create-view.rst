@@ -16,7 +16,7 @@ Description
 
 Create a new view of a :doc:`select` query. The view is a logical table
 that can be referenced by future queries. Views do not contain any data.
-Instead, the query stored by the view is executed everytime the view is
+Instead, the query stored by the view is executed every time the view is
 referenced by another query.
 
 The optional ``OR REPLACE`` clause causes the view to be replaced if it
@@ -37,6 +37,9 @@ based on the user currently accessing the view.
 In the ``INVOKER`` security mode, tables referenced in the view are
 accessed using the permissions of the query user (the *invoker* of the
 view). A view created in this mode is simply a stored query.
+
+The ``default-view-security-mode`` can be used to configure the default
+security mode for view creation.
 
 Examples
 --------
@@ -59,6 +62,10 @@ Create a view that replaces an existing view::
     CREATE OR REPLACE VIEW test AS
     SELECT orderkey, orderstatus, totalprice / 4 AS quarter
     FROM orders
+
+Set the default view security mode to ``INVOKER``::
+
+    SET SESSION default_view_security_mode='INVOKER'
 
 See Also
 --------

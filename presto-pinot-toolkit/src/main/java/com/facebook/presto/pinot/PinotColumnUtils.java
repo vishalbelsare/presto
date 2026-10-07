@@ -17,6 +17,7 @@ import com.facebook.presto.common.type.ArrayType;
 import com.facebook.presto.common.type.BigintType;
 import com.facebook.presto.common.type.BooleanType;
 import com.facebook.presto.common.type.DateType;
+import com.facebook.presto.common.type.DecimalType;
 import com.facebook.presto.common.type.DoubleType;
 import com.facebook.presto.common.type.IntegerType;
 import com.facebook.presto.common.type.JsonType;
@@ -32,6 +33,7 @@ import org.apache.pinot.spi.data.TimeFieldSpec;
 import org.apache.pinot.spi.data.TimeGranularitySpec;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
 import static com.facebook.presto.pinot.PinotErrorCode.PINOT_UNSUPPORTED_COLUMN_TYPE;
@@ -51,12 +53,22 @@ public class PinotColumnUtils
 
     public static List<PinotColumn> getPinotColumnsForPinotSchema(Schema pinotTableSchema, boolean inferDateType, boolean inferTimestampType)
     {
+        return getPinotColumnsForPinotSchema(pinotTableSchema, inferDateType, inferTimestampType, false, false);
+    }
+
+    public static List<PinotColumn> getPinotColumnsForPinotSchema(
+            Schema pinotTableSchema,
+            boolean inferDateType,
+            boolean inferTimestampType,
+            boolean nullHandlingEnabled,
+            boolean isCaseSensitiveNameMatchingEnabled)
+    {
         return pinotTableSchema.getColumnNames().stream()
-                .filter(columnName -> !columnName.startsWith("$")) // Hidden columns starts with "$", ignore them as we can't use them in PQL
+                .filter(columnName -> !columnName.startsWith("$")) // Hidden columns starts with "$", ignore them as we can't use them in SQL
                 .map(columnName -> new PinotColumn(
-                        columnName,
+                        isCaseSensitiveNameMatchingEnabled ? columnName : columnName.toLowerCase(Locale.ROOT),
                         getPrestoTypeFromPinotType(pinotTableSchema.getFieldSpecFor(columnName), inferDateType, inferTimestampType),
-                        isNullableColumnFromPinotType(pinotTableSchema.getFieldSpecFor(columnName)),
+                        isNullableColumnFromPinotType(pinotTableSchema.getFieldSpecFor(columnName), nullHandlingEnabled),
                         getCommentFromPinotType(pinotTableSchema.getFieldSpecFor(columnName))))
                 .collect(toImmutableList());
     }
@@ -66,9 +78,9 @@ public class PinotColumnUtils
         return field.getFieldType().name();
     }
 
-    private static boolean isNullableColumnFromPinotType(FieldSpec field)
+    private static boolean isNullableColumnFromPinotType(FieldSpec field, boolean nullHandlingEnabled)
     {
-        return false;
+        return nullHandlingEnabled;
     }
 
     public static Type getPrestoTypeFromPinotType(FieldSpec field, boolean inferDateType, boolean inferTimestampType)
@@ -133,6 +145,8 @@ public class PinotColumnUtils
                 return TimestampType.TIMESTAMP;
             case JSON:
                 return JsonType.JSON;
+            case BIG_DECIMAL:
+                return DecimalType.createDecimalType();
             default:
                 break;
         }

@@ -14,15 +14,20 @@
 package com.facebook.presto.hive.metastore;
 
 import com.facebook.airlift.configuration.testing.ConfigAssertions;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.hive.MetastoreClientConfig;
-import com.facebook.presto.hive.metastore.CachingHiveMetastore.MetastoreCacheScope;
+import com.facebook.presto.hive.MetastoreClientConfig.HiveMetastoreAuthenticationType;
+import com.facebook.presto.hive.metastore.AbstractCachingHiveMetastore.MetastoreCacheScope;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.net.HostAndPort;
-import io.airlift.units.Duration;
+import com.google.inject.ConfigurationException;
 import org.testng.annotations.Test;
 
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.expectThrows;
 
 public class TestMetastoreClientConfig
 {
@@ -34,8 +39,12 @@ public class TestMetastoreClientConfig
                 .setMetastoreTimeout(new Duration(10, TimeUnit.SECONDS))
                 .setVerifyChecksum(true)
                 .setRequireHadoopNative(true)
-                .setMetastoreCacheTtl(new Duration(0, TimeUnit.SECONDS))
-                .setMetastoreRefreshInterval(new Duration(0, TimeUnit.SECONDS))
+                .setEnabledCaches(null)
+                .setDisabledCaches(null)
+                .setDefaultMetastoreCacheTtl(new Duration(0, TimeUnit.SECONDS))
+                .setDefaultMetastoreCacheRefreshInterval(new Duration(0, TimeUnit.SECONDS))
+                .setMetastoreCacheTtlByType(null)
+                .setMetastoreCacheRefreshIntervalByType(null)
                 .setMetastoreCacheMaximumSize(10000)
                 .setPerTransactionMetastoreCacheMaximumSize(1000)
                 .setMaxMetastoreRefreshThreads(100)
@@ -45,7 +54,11 @@ public class TestMetastoreClientConfig
                 .setPartitionVersioningEnabled(false)
                 .setMetastoreCacheScope(MetastoreCacheScope.ALL)
                 .setMetastoreImpersonationEnabled(false)
-                .setPartitionCacheValidationPercentage(0));
+                .setPartitionCacheValidationPercentage(0)
+                .setPartitionCacheColumnCountLimit(500)
+                .setHiveMetastoreAuthenticationType(HiveMetastoreAuthenticationType.NONE)
+                .setDeleteFilesOnTableDrop(false)
+                .setInvalidateMetastoreCacheProcedureEnabled(false));
     }
 
     @Test
@@ -56,8 +69,12 @@ public class TestMetastoreClientConfig
                 .put("hive.metastore-timeout", "20s")
                 .put("hive.dfs.verify-checksum", "false")
                 .put("hive.dfs.require-hadoop-native", "false")
-                .put("hive.metastore-cache-ttl", "2h")
-                .put("hive.metastore-refresh-interval", "30m")
+                .put("hive.metastore.cache.enabled-caches", "TABLE,TABLE_NAMES")
+                .put("hive.metastore.cache.disabled-caches", "TABLE,TABLE_NAMES")
+                .put("hive.metastore.cache.ttl.default", "2h")
+                .put("hive.metastore.cache.refresh-interval.default", "30m")
+                .put("hive.metastore.cache.ttl-by-type", "TABLE:10m")
+                .put("hive.metastore.cache.refresh-interval-by-type", "TABLE:5m")
                 .put("hive.metastore-cache-maximum-size", "5000")
                 .put("hive.per-transaction-metastore-cache-maximum-size", "500")
                 .put("hive.metastore-refresh-max-threads", "2500")
@@ -68,6 +85,10 @@ public class TestMetastoreClientConfig
                 .put("hive.metastore-cache-scope", "PARTITION")
                 .put("hive.metastore-impersonation-enabled", "true")
                 .put("hive.partition-cache-validation-percentage", "60.0")
+                .put("hive.partition-cache-column-count-limit", "50")
+                .put("hive.metastore.authentication.type", "KERBEROS")
+                .put("hive.metastore.thrift.delete-files-on-table-drop", "true")
+                .put("hive.invalidate-metastore-cache-procedure-enabled", "true")
                 .build();
 
         MetastoreClientConfig expected = new MetastoreClientConfig()
@@ -75,8 +96,12 @@ public class TestMetastoreClientConfig
                 .setMetastoreTimeout(new Duration(20, TimeUnit.SECONDS))
                 .setVerifyChecksum(false)
                 .setRequireHadoopNative(false)
-                .setMetastoreCacheTtl(new Duration(2, TimeUnit.HOURS))
-                .setMetastoreRefreshInterval(new Duration(30, TimeUnit.MINUTES))
+                .setEnabledCaches("TABLE,TABLE_NAMES")
+                .setDisabledCaches("TABLE,TABLE_NAMES")
+                .setDefaultMetastoreCacheTtl(new Duration(2, TimeUnit.HOURS))
+                .setDefaultMetastoreCacheRefreshInterval(new Duration(30, TimeUnit.MINUTES))
+                .setMetastoreCacheTtlByType("TABLE:10m")
+                .setMetastoreCacheRefreshIntervalByType("TABLE:5m")
                 .setMetastoreCacheMaximumSize(5000)
                 .setPerTransactionMetastoreCacheMaximumSize(500)
                 .setMaxMetastoreRefreshThreads(2500)
@@ -86,8 +111,28 @@ public class TestMetastoreClientConfig
                 .setPartitionVersioningEnabled(true)
                 .setMetastoreCacheScope(MetastoreCacheScope.PARTITION)
                 .setMetastoreImpersonationEnabled(true)
-                .setPartitionCacheValidationPercentage(60.0);
+                .setPartitionCacheValidationPercentage(60.0)
+                .setPartitionCacheColumnCountLimit(50)
+                .setHiveMetastoreAuthenticationType(HiveMetastoreAuthenticationType.KERBEROS)
+                .setDeleteFilesOnTableDrop(true)
+                .setInvalidateMetastoreCacheProcedureEnabled(true);
 
         ConfigAssertions.assertFullMapping(properties, expected);
+    }
+
+    @Test
+    public void testInvalidConfiguration()
+    {
+        MetastoreClientConfig config = new MetastoreClientConfig();
+        config.setEnabledCaches("TABLE,TABLE_NAMES");
+        config.setDisabledCaches("TABLE,TABLE_NAMES");
+
+        ConfigurationException exception = expectThrows(
+                ConfigurationException.class,
+                config::isBothEnabledAndDisabledConfigured);
+
+        assertEquals(exception.getErrorMessages().iterator().next().getMessage(),
+                "Only one of 'hive.metastore.cache.enabled-caches' or 'hive.metastore.cache.disabled-caches' can be set. " +
+                        "These configs are mutually exclusive.");
     }
 }

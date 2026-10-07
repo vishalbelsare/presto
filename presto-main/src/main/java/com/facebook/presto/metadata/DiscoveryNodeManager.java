@@ -27,7 +27,10 @@ import com.facebook.presto.server.InternalCommunicationConfig;
 import com.facebook.presto.server.InternalCommunicationConfig.CommunicationProtocol;
 import com.facebook.presto.server.thrift.ThriftServerInfoClient;
 import com.facebook.presto.spi.ConnectorId;
+import com.facebook.presto.spi.NodeLoadMetrics;
+import com.facebook.presto.spi.NodePoolType;
 import com.facebook.presto.spi.NodeState;
+import com.facebook.presto.spi.NodeStats;
 import com.facebook.presto.statusservice.NodeStatusService;
 import com.google.common.base.Splitter;
 import com.google.common.collect.HashMultimap;
@@ -39,13 +42,12 @@ import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.SetMultimap;
 import com.google.common.collect.Sets;
 import com.google.common.collect.Sets.SetView;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import jakarta.inject.Inject;
 import org.weakref.jmx.Managed;
-
-import javax.annotation.PostConstruct;
-import javax.annotation.PreDestroy;
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.ThreadSafe;
-import javax.inject.Inject;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -61,11 +63,15 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 import static com.facebook.airlift.concurrent.Threads.threadsNamed;
 import static com.facebook.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
+import static com.facebook.presto.failureDetector.HeartbeatFailureDetector.convertDiscoveryDescriptor;
 import static com.facebook.presto.metadata.InternalNode.NodeStatus.ALIVE;
 import static com.facebook.presto.metadata.InternalNode.NodeStatus.DEAD;
+import static com.facebook.presto.server.ServerConfig.POOL_TYPE;
+import static com.facebook.presto.spi.NodePoolType.DEFAULT;
 import static com.facebook.presto.spi.NodeState.ACTIVE;
 import static com.facebook.presto.spi.NodeState.INACTIVE;
 import static com.facebook.presto.spi.NodeState.SHUTTING_DOWN;
@@ -89,7 +95,7 @@ public final class DiscoveryNodeManager
     private final FailureDetector failureDetector;
     private final Optional<NodeStatusService> nodeStatusService;
     private final NodeVersion expectedNodeVersion;
-    private final ConcurrentHashMap<String, RemoteNodeState> nodeStates = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, RemoteNodeStats> nodeStats = new ConcurrentHashMap<>();
     private final HttpClient httpClient;
     private final DriftClient<ThriftServerInfoClient> driftClient;
     private final ScheduledExecutorService nodeStateUpdateExecutor;
@@ -98,6 +104,7 @@ public final class DiscoveryNodeManager
     private final InternalNode currentNode;
     private final CommunicationProtocol protocol;
     private final boolean isMemoizeDeadNodesEnabled;
+    private final InternalCommunicationConfig internalCommunicationConfig;
 
     @GuardedBy("this")
     private SetMultimap<ConnectorId, InternalNode> activeNodesByConnectorId;
@@ -119,6 +126,12 @@ public final class DiscoveryNodeManager
 
     @GuardedBy("this")
     private Set<InternalNode> resourceManagers;
+
+    @GuardedBy("this")
+    private Set<InternalNode> catalogServers;
+
+    @GuardedBy("this")
+    private Set<InternalNode> coordinatorSidecar;
 
     @GuardedBy("this")
     private final List<Consumer<AllNodes>> listeners = new ArrayList<>();
@@ -143,6 +156,7 @@ public final class DiscoveryNodeManager
         this.nodeStateUpdateExecutor = newSingleThreadScheduledExecutor(threadsNamed("node-state-poller-%s"));
         this.nodeStateEventExecutor = newCachedThreadPool(threadsNamed("node-state-events-%s"));
         this.httpsRequired = internalCommunicationConfig.isHttpsRequired();
+        this.internalCommunicationConfig = requireNonNull(internalCommunicationConfig, "internalCommunicationConfig is null");
 
         this.currentNode = findCurrentNode(
                 serviceSelector.selectAllServices(),
@@ -161,8 +175,21 @@ public final class DiscoveryNodeManager
             URI uri = getHttpUri(service, httpsRequired);
             OptionalInt thriftPort = getThriftServerPort(service);
             NodeVersion nodeVersion = getNodeVersion(service);
+            OptionalInt raftPort = getRaftPort(service);
             if (uri != null && nodeVersion != null) {
-                InternalNode node = new InternalNode(service.getNodeId(), uri, thriftPort, nodeVersion, isCoordinator(service), isResourceManager(service), ALIVE);
+                NodePoolType poolType = getPoolType(service);
+                InternalNode node = new InternalNode(
+                        service.getNodeId(),
+                        uri,
+                        thriftPort,
+                        nodeVersion,
+                        isCoordinator(service),
+                        isResourceManager(service),
+                        isCatalogServer(service),
+                        isCoordinatorSidecar(service),
+                        ALIVE,
+                        raftPort,
+                        poolType);
 
                 if (node.getNodeIdentifier().equals(currentNodeId)) {
                     checkState(
@@ -177,9 +204,18 @@ public final class DiscoveryNodeManager
         throw new IllegalStateException("INVARIANT: current node not returned from service selector");
     }
 
+    private static NodePoolType getPoolType(ServiceDescriptor service)
+    {
+        if (!service.getProperties().containsKey(POOL_TYPE)) {
+            return DEFAULT;
+        }
+        return NodePoolType.valueOf(service.getProperties().get(POOL_TYPE));
+    }
+
     @PostConstruct
     public void startPollingNodeStates()
     {
+        long pollingIntervalMillis = internalCommunicationConfig.getNodeDiscoveryPollingIntervalMillis();
         nodeStateUpdateExecutor.scheduleWithFixedDelay(() -> {
             try {
                 pollWorkers();
@@ -187,7 +223,7 @@ public final class DiscoveryNodeManager
             catch (Exception e) {
                 log.error(e, "Error polling state of nodes");
             }
-        }, 5, 5, TimeUnit.SECONDS);
+        }, pollingIntervalMillis, pollingIntervalMillis, TimeUnit.MILLISECONDS);
         pollWorkers();
     }
 
@@ -205,20 +241,20 @@ public final class DiscoveryNodeManager
 
         // Remove nodes that don't exist anymore
         // Make a copy to materialize the set difference
-        Set<String> deadNodes = difference(nodeStates.keySet(), aliveNodeIds).immutableCopy();
-        nodeStates.keySet().removeAll(deadNodes);
+        Set<String> deadNodes = difference(nodeStats.keySet(), aliveNodeIds).immutableCopy();
+        nodeStats.keySet().removeAll(deadNodes);
 
         // Add new nodes
         for (InternalNode node : aliveNodes) {
             switch (protocol) {
                 case HTTP:
-                    nodeStates.putIfAbsent(node.getNodeIdentifier(),
-                            new HttpRemoteNodeState(httpClient, uriBuilderFrom(node.getInternalUri()).appendPath("/v1/info/state").build()));
+                    nodeStats.putIfAbsent(node.getNodeIdentifier(),
+                            new HttpRemoteNodeStats(httpClient, uriBuilderFrom(node.getInternalUri()).appendPath("/v1/info/stats").build(), internalCommunicationConfig.getNodeStatsRefreshIntervalMillis()));
                     break;
                 case THRIFT:
                     if (node.getThriftPort().isPresent()) {
-                        nodeStates.put(node.getNodeIdentifier(),
-                                new ThriftRemoteNodeState(driftClient, uriBuilderFrom(node.getInternalUri()).scheme("thrift").port(node.getThriftPort().getAsInt()).build()));
+                        nodeStats.put(node.getNodeIdentifier(),
+                                new ThriftRemoteNodeStats(driftClient, uriBuilderFrom(node.getInternalUri()).scheme("thrift").port(node.getThriftPort().getAsInt()).build(), internalCommunicationConfig.getNodeStatsRefreshIntervalMillis()));
                     }
                     else {
                         // thrift port has not yet been populated; ignore the node for now
@@ -228,7 +264,7 @@ public final class DiscoveryNodeManager
         }
 
         // Schedule refresh
-        nodeStates.values().forEach(RemoteNodeState::asyncRefresh);
+        nodeStats.values().forEach(RemoteNodeStats::asyncRefresh);
 
         // update indexes
         refreshNodesInternal();
@@ -238,6 +274,7 @@ public final class DiscoveryNodeManager
     public void stop()
     {
         nodeStateUpdateExecutor.shutdownNow();
+        nodeStateEventExecutor.shutdownNow();
     }
 
     @Override
@@ -250,10 +287,10 @@ public final class DiscoveryNodeManager
     {
         // This is currently a blacklist.
         // TODO: make it a whitelist (a failure-detecting service selector) and maybe build in support for injecting this in airlift
+        Set<com.facebook.presto.failureDetector.ServiceDescriptor> failed = failureDetector.getFailed();
         Set<ServiceDescriptor> services = serviceSelector.selectAllServices().stream()
-                .filter(service -> !failureDetector.getFailed().contains(service))
-                // Allowing coordinator node in the list of services, even if it's not allowed by nodeStatusService with currentNode check
-                .filter(service -> !nodeStatusService.isPresent() || nodeStatusService.get().isAllowed(service.getLocation()) || isCoordinator(service) || isResourceManager(service))
+                .filter(service -> !failed.contains(convertDiscoveryDescriptor(service)))
+                .filter(filterRelevantNodes())
                 .collect(toImmutableSet());
 
         ImmutableSet.Builder<InternalNode> activeNodesBuilder = ImmutableSortedSet.orderedBy(comparing(InternalNode::getNodeIdentifier));
@@ -261,6 +298,8 @@ public final class DiscoveryNodeManager
         ImmutableSet.Builder<InternalNode> shuttingDownNodesBuilder = ImmutableSet.builder();
         ImmutableSet.Builder<InternalNode> coordinatorsBuilder = ImmutableSet.builder();
         ImmutableSet.Builder<InternalNode> resourceManagersBuilder = ImmutableSet.builder();
+        ImmutableSet.Builder<InternalNode> catalogServersBuilder = ImmutableSet.builder();
+        ImmutableSet.Builder<InternalNode> coordinatorSidecarBuilder = ImmutableSet.builder();
         ImmutableSetMultimap.Builder<ConnectorId, InternalNode> byConnectorIdBuilder = ImmutableSetMultimap.builder();
         Map<String, InternalNode> nodes = new HashMap<>();
         SetMultimap<String, ConnectorId> connectorIdsByNodeId = HashMultimap.create();
@@ -283,10 +322,12 @@ public final class DiscoveryNodeManager
             // take the form of a coordinator, hence these flags are not exclusive.
             boolean coordinator = isCoordinator(service);
             boolean resourceManager = isResourceManager(service);
+            boolean catalogServer = isCatalogServer(service);
+            boolean coordinatorSidecar = isCoordinatorSidecar(service);
+            OptionalInt raftPort = getRaftPort(service);
             if (uri != null && nodeVersion != null) {
-                InternalNode node = new InternalNode(service.getNodeId(), uri, thriftPort, nodeVersion, coordinator, resourceManager, ALIVE);
+                InternalNode node = new InternalNode(service.getNodeId(), uri, thriftPort, nodeVersion, coordinator, resourceManager, catalogServer, coordinatorSidecar, ALIVE, raftPort, getPoolType(service));
                 NodeState nodeState = getNodeState(node);
-
                 switch (nodeState) {
                     case ACTIVE:
                         activeNodesBuilder.add(node);
@@ -295,6 +336,12 @@ public final class DiscoveryNodeManager
                         }
                         if (resourceManager) {
                             resourceManagersBuilder.add(node);
+                        }
+                        if (catalogServer) {
+                            catalogServersBuilder.add(node);
+                        }
+                        if (coordinatorSidecar) {
+                            coordinatorSidecarBuilder.add(node);
                         }
 
                         nodes.put(node.getNodeIdentifier(), node);
@@ -348,7 +395,7 @@ public final class DiscoveryNodeManager
                 InternalNode deadNode = nodes.get(nodeId);
                 Set<ConnectorId> deadNodeConnectorIds = connectorIdsByNodeId.get(nodeId);
                 for (ConnectorId id : deadNodeConnectorIds) {
-                    byConnectorIdBuilder.put(id, new InternalNode(deadNode.getNodeIdentifier(), deadNode.getInternalUri(), deadNode.getThriftPort(), deadNode.getNodeVersion(), deadNode.isCoordinator(), deadNode.isResourceManager(), DEAD));
+                    byConnectorIdBuilder.put(id, new InternalNode(deadNode.getNodeIdentifier(), deadNode.getInternalUri(), deadNode.getThriftPort(), deadNode.getNodeVersion(), deadNode.isCoordinator(), deadNode.isResourceManager(), deadNode.isCatalogServer(), deadNode.isCoordinatorSidecar(), DEAD, deadNode.getRaftPort(), deadNode.getPoolType()));
                 }
             }
         }
@@ -356,13 +403,22 @@ public final class DiscoveryNodeManager
         this.nodesByConnectorId = byConnectorIdBuilder.build();
         this.connectorIdsByNodeId = ImmutableSetMultimap.copyOf(connectorIdsByNodeId);
 
-        AllNodes allNodes = new AllNodes(activeNodesBuilder.build(), inactiveNodesBuilder.build(), shuttingDownNodesBuilder.build(), coordinatorsBuilder.build(), resourceManagersBuilder.build());
+        AllNodes allNodes = new AllNodes(
+                activeNodesBuilder.build(),
+                inactiveNodesBuilder.build(),
+                shuttingDownNodesBuilder.build(),
+                coordinatorsBuilder.build(),
+                resourceManagersBuilder.build(),
+                catalogServersBuilder.build(),
+                coordinatorSidecarBuilder.build());
         // only update if all nodes actually changed (note: this does not include the connectors registered with the nodes)
         if (!allNodes.equals(this.allNodes)) {
             // assign allNodes to a local variable for use in the callback below
             this.allNodes = allNodes;
             coordinators = coordinatorsBuilder.build();
             resourceManagers = resourceManagersBuilder.build();
+            catalogServers = catalogServersBuilder.build();
+            coordinatorSidecar = coordinatorSidecarBuilder.build();
 
             // notify listeners
             List<Consumer<AllNodes>> listeners = ImmutableList.copyOf(this.listeners);
@@ -387,10 +443,19 @@ public final class DiscoveryNodeManager
 
     private boolean isNodeShuttingDown(String nodeId)
     {
-        Optional<NodeState> remoteNodeState = nodeStates.containsKey(nodeId)
-                ? nodeStates.get(nodeId).getNodeState()
+        Optional<NodeStats> remoteNodeStats = nodeStats.containsKey(nodeId)
+                ? nodeStats.get(nodeId).getNodeStats()
                 : Optional.empty();
-        return remoteNodeState.isPresent() && remoteNodeState.get() == SHUTTING_DOWN;
+        return remoteNodeStats.isPresent() && remoteNodeStats.get().getNodeState() == SHUTTING_DOWN;
+    }
+
+    @Override
+    public Optional<NodeLoadMetrics> getNodeLoadMetrics(String nodeId)
+    {
+        Optional<NodeStats> remoteNodeStats = nodeStats.containsKey(nodeId)
+                ? nodeStats.get(nodeId).getNodeStats()
+                : Optional.empty();
+        return remoteNodeStats.flatMap(NodeStats::getLoadMetrics);
     }
 
     @Override
@@ -415,6 +480,18 @@ public final class DiscoveryNodeManager
     public int getShuttingDownNodeCount()
     {
         return getAllNodes().getShuttingDownNodes().size();
+    }
+
+    @Managed
+    public int getActiveResourceManagerCount()
+    {
+        return getAllNodes().getActiveResourceManagers().size();
+    }
+
+    @Managed
+    public int getActiveCoordinatorCount()
+    {
+        return getAllNodes().getActiveCoordinators().size();
     }
 
     @Override
@@ -468,6 +545,18 @@ public final class DiscoveryNodeManager
     }
 
     @Override
+    public synchronized Set<InternalNode> getCatalogServers()
+    {
+        return catalogServers;
+    }
+
+    @Override
+    public synchronized Set<InternalNode> getCoordinatorSidecars()
+    {
+        return coordinatorSidecar;
+    }
+
+    @Override
     public synchronized void addNodeChangeListener(Consumer<AllNodes> listener)
     {
         listeners.add(requireNonNull(listener, "listener is null"));
@@ -507,6 +596,20 @@ public final class DiscoveryNodeManager
         return OptionalInt.empty();
     }
 
+    private static OptionalInt getRaftPort(ServiceDescriptor descriptor)
+    {
+        String port = descriptor.getProperties().get("raftPort");
+        if (port != null) {
+            try {
+                return OptionalInt.of(Integer.parseInt(port));
+            }
+            catch (IllegalArgumentException exception) {
+                log.error("Error getting raft port %s", port);
+            }
+        }
+        return OptionalInt.empty();
+    }
+
     private static NodeVersion getNodeVersion(ServiceDescriptor descriptor)
     {
         String nodeVersion = descriptor.getProperties().get("node_version");
@@ -521,5 +624,35 @@ public final class DiscoveryNodeManager
     private static boolean isResourceManager(ServiceDescriptor service)
     {
         return Boolean.parseBoolean(service.getProperties().get("resource_manager"));
+    }
+
+    private static boolean isCatalogServer(ServiceDescriptor service)
+    {
+        return Boolean.parseBoolean(service.getProperties().get("catalog_server"));
+    }
+
+    private static boolean isCoordinatorSidecar(ServiceDescriptor service)
+    {
+        return Boolean.parseBoolean(service.getProperties().get("sidecar"));
+    }
+
+    /**
+     * The predicate filters out the services to allow selecting relevant nodes
+     * for discovery and sending heart beat.
+     * Coordinator      -> All Nodes
+     * Resource Manager -> All Nodes
+     * Catalog Server   -> All Nodes
+     * Worker           -> Resource Managers or Catalog Servers
+     * Sidecar          -> Resource Managers or Catalog Servers
+     *
+     * @return Predicate to filter Service Descriptor for Nodes
+     */
+    private Predicate<ServiceDescriptor> filterRelevantNodes()
+    {
+        if (currentNode.isCoordinator() || currentNode.isResourceManager() || currentNode.isCatalogServer()) {
+            return service -> !nodeStatusService.isPresent() || nodeStatusService.get().isAllowed(service.getLocation());
+        }
+
+        return service -> isResourceManager(service) || isCatalogServer(service);
     }
 }

@@ -14,12 +14,17 @@
 package com.facebook.presto.spi.security;
 
 import java.security.Principal;
+import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
+import static java.util.Collections.emptyList;
 import static java.util.Collections.emptyMap;
+import static java.util.Collections.unmodifiableList;
 import static java.util.Collections.unmodifiableMap;
 import static java.util.Objects.requireNonNull;
 
@@ -29,6 +34,9 @@ public class Identity
     private final Optional<Principal> principal;
     private final Map<String, SelectedRole> roles;
     private final Map<String, String> extraCredentials;
+    private final Optional<String> selectedUser;
+    private final Optional<String> reasonForSelect;
+    private final List<X509Certificate> certificates;
 
     /**
      * extraAuthenticators is used when short-lived access token has to be refreshed periodically.
@@ -38,9 +46,26 @@ public class Identity
      */
     private final Map<String, TokenAuthenticator> extraAuthenticators;
 
+    public Identity(Identity other)
+    {
+        this.user = other.user;
+        this.principal = other.principal;
+        this.roles = other.roles;
+        this.extraCredentials = other.extraCredentials;
+        this.extraAuthenticators = other.extraAuthenticators;
+        this.selectedUser = other.selectedUser;
+        this.reasonForSelect = other.reasonForSelect;
+        this.certificates = other.certificates;
+    }
+
     public Identity(String user, Optional<Principal> principal)
     {
-        this(user, principal, emptyMap(), emptyMap(), emptyMap());
+        this(user, principal, emptyMap(), emptyMap(), emptyMap(), Optional.empty(), Optional.empty(), emptyList());
+    }
+
+    public Identity(String user, Optional<Principal> principal, Map<String, String> extraCredentials)
+    {
+        this(user, principal, emptyMap(), extraCredentials, emptyMap(), Optional.empty(), Optional.empty(), emptyList());
     }
 
     public Identity(
@@ -48,13 +73,31 @@ public class Identity
             Optional<Principal> principal,
             Map<String, SelectedRole> roles,
             Map<String, String> extraCredentials,
-            Map<String, TokenAuthenticator> extraAuthenticators)
+            Map<String, TokenAuthenticator> extraAuthenticators,
+            Optional<String> selectedUser,
+            Optional<String> reasonForSelect)
+    {
+        this(user, principal, roles, extraCredentials, extraAuthenticators, selectedUser, reasonForSelect, emptyList());
+    }
+
+    public Identity(
+            String user,
+            Optional<Principal> principal,
+            Map<String, SelectedRole> roles,
+            Map<String, String> extraCredentials,
+            Map<String, TokenAuthenticator> extraAuthenticators,
+            Optional<String> selectedUser,
+            Optional<String> reasonForSelect,
+            List<X509Certificate> certificates)
     {
         this.user = requireNonNull(user, "user is null");
         this.principal = requireNonNull(principal, "principal is null");
         this.roles = unmodifiableMap(requireNonNull(roles, "roles is null"));
         this.extraCredentials = unmodifiableMap(new HashMap<>(requireNonNull(extraCredentials, "extraCredentials is null")));
         this.extraAuthenticators = unmodifiableMap(new HashMap<>(requireNonNull(extraAuthenticators, "extraAuthenticators is null")));
+        this.selectedUser = requireNonNull(selectedUser, "selectedUser is null");
+        this.reasonForSelect = requireNonNull(reasonForSelect, "reasonForSelect is null");
+        this.certificates = unmodifiableList(new ArrayList<>(requireNonNull(certificates, "certificates is null")));
     }
 
     public String getUser()
@@ -82,6 +125,21 @@ public class Identity
         return extraAuthenticators;
     }
 
+    public Optional<String> getSelectedUser()
+    {
+        return selectedUser;
+    }
+
+    public Optional<String> getReasonForSelect()
+    {
+        return reasonForSelect;
+    }
+
+    public List<X509Certificate> getCertificates()
+    {
+        return certificates;
+    }
+
     public ConnectorIdentity toConnectorIdentity()
     {
         return new ConnectorIdentity(
@@ -89,7 +147,10 @@ public class Identity
                 principal,
                 Optional.empty(),
                 extraCredentials,
-                extraAuthenticators);
+                extraAuthenticators,
+                selectedUser,
+                reasonForSelect,
+                certificates);
     }
 
     public ConnectorIdentity toConnectorIdentity(String catalog)
@@ -100,7 +161,10 @@ public class Identity
                 principal,
                 Optional.ofNullable(roles.get(catalog)),
                 extraCredentials,
-                extraAuthenticators);
+                extraAuthenticators,
+                selectedUser,
+                reasonForSelect,
+                certificates);
     }
 
     @Override
@@ -131,6 +195,9 @@ public class Identity
         sb.append(", roles=").append(roles);
         sb.append(", extraCredentials=").append(extraCredentials.keySet());
         sb.append(", extraAuthenticators=").append(extraAuthenticators.keySet());
+        selectedUser.ifPresent(user -> sb.append(", selectedUser=").append(user));
+        reasonForSelect.ifPresent(
+                reason -> sb.append(", reasonForSelect=").append(reason));
         sb.append('}');
         return sb.toString();
     }

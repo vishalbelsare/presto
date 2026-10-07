@@ -2,12 +2,15 @@
 Functions
 =========
 
+Functions in Presto can be implemented at Plugin and the Connector level.
+The following two sections describe how to implement them.
+
 Plugin Implementation
 ---------------------
 
 The function framework is used to implement SQL functions. Presto includes a
 number of built-in functions. In order to implement new functions, you can
-write a plugin that returns one more more functions from ``getFunctions()``:
+write a plugin that returns one or more functions from ``getFunctions()``:
 
 .. code-block:: java
 
@@ -31,9 +34,43 @@ Note that the ``ImmutableSet`` class is a utility class from Guava.
 The ``getFunctions()`` method contains all of the classes for the functions
 that we will implement below in this tutorial.
 
+Functions registered using this method are available in the default
+namespace ``presto.default``.
+
 For a full example in the codebase, see either the ``presto-ml`` module for machine
 learning functions or the ``presto-teradata-functions`` module for Teradata-compatible
 functions, both in the root of the Presto source.
+
+Connector Functions Implementation
+----------------------------------
+
+To implement new functions at the connector level, in your
+connector implementation, override the ``getSystemFunctions()`` method that returns one
+or more functions:
+
+.. code-block:: java
+
+    public class ExampleFunctionsConnector
+            implements Connector
+    {
+        @Override
+        public Set<Class<?>> getSystemFunctions()
+        {
+            return ImmutableSet.<Class<?>>builder()
+                    .add(ExampleNullFunction.class)
+                    .add(IsNullFunction.class)
+                    .add(IsEqualOrNullFunction.class)
+                    .add(ExampleStringFunction.class)
+                    .add(ExampleAverageFunction.class)
+                    .build();
+        }
+    }
+
+Functions registered using this interface are available in the namespace
+``<catalog-name>.system`` where ``<catalog-name>`` is the catalog name used
+in the Presto deployment for this connector type.
+
+At present, connector level functions do not support Window functions and Scalar operators.
 
 Scalar Function Implementation
 ------------------------------
@@ -76,7 +113,7 @@ a wrapper around ``byte[]``, rather than ``String`` for its native container typ
   ``@SqlNullable`` if it can return ``NULL`` when the arguments are non-null.
 
 Parametric Scalar Functions
----------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Scalar functions that have type parameters have some additional complexity.
 To make our previous example work with any type we need the following:
@@ -150,7 +187,7 @@ To make our previous example work with any type we need the following:
     }
 
 Another Scalar Function Example
--------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The ``lowercaser`` function takes a single ``VARCHAR`` argument and returns a
 ``VARCHAR``, which is the argument converted to lower case:
@@ -177,7 +214,7 @@ has no ``@SqlNullable`` annotations, meaning that if the argument is ``NULL``,
 the result will automatically be ``NULL`` (the function will not be called).
 
 Codegen Scalar Function Implementation
---------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Scalar functions can also be implemented in bytecode, allowing us to specialize
 and optimize functions according to the ``@TypeParameter``
@@ -226,7 +263,7 @@ a bit more complex.
   you want, and the framework will generate all the implementations and
   serializers for you. If you need a more complex state object, you will need
   to implement ``AccumulatorStateFactory`` and ``AccumulatorStateSerializer``
-  and provide these via the ``AccumulatorStateMetadata`` annotation.
+  and provide these through the ``AccumulatorStateMetadata`` annotation.
 
 The following code implements the aggregation function ``avg_double`` which computes the
 average of a ``DOUBLE`` column:
@@ -297,8 +334,8 @@ function follows:
   you must annotate the arguments with ``@SqlType``.  Note that, unlike in the above
   scalar example where ``Slice`` is used to hold ``VARCHAR``, the primitive
   ``double`` type is used for the argument to input. In this example, the input
-  function simply keeps track of the running count of rows (via ``setLong()``)
-  and the running sum (via ``setDouble()``).
+  function simply keeps track of the running count of rows (through ``setLong()``)
+  and the running sum (through ``setDouble()``).
 
 * ``@CombineFunction``:
 
@@ -321,3 +358,68 @@ function follows:
   is used when performing a ``GROUP BY`` aggregation, and an implementation
   will be automatically generated for you, if you don't specify a
   ``AccumulatorStateFactory``
+
+
+Advanced Use Cases
+------------------
+
+Raw Block Inputs
+^^^^^^^^^^^^^^^^
+
+Both scalar and aggregation function annotations allow you to define methods
+which operate on native types. In Java, these native types are ``boolean``,
+``Slice``, and ``long``. For parameterized implementations or parametric types,
+the standard Java types can't be used as they aren't able to represent the input
+data.
+
+To define a method handle which can accept *any* types, use ``@BlockPosition``
+in conjunction with the ``@BlockIndex`` parameters. Similar to the
+``@SqlNullable`` annotation, use the ``@NullablePosition`` annotation to denote
+that the function should be called when the block position is ``NULL``.
+
+This works for both scalar and aggregation function implementations.
+
+.. code-block:: java
+
+    @ScalarFunction("example")
+    public static Block exampleFunction(
+            @BlockPosition @NullablePosition @SqlType("array(int)") Block block,
+            @BlockIndex int index) { /* ...implementation */ }
+
+Applying Generic Types with ``@BlockPosition``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Function signatures that use the ``@BlockPosition`` syntax are able to operate
+over generic types when the function is defined with a ``@TypeParameter``
+annotation. Augment the ``@BlockPosition`` argument with an additional
+``@SqlType("T")`` annotation to denote that it accepts an argument corresponding
+to the generic type. This works for both scalar and aggregation function
+implementations.
+
+.. code-block:: java
+
+    @ScalarFunction("example")
+    @TypeParameter("T")
+    public static Block exampleFunction(
+            @BlockPosition @SqlType("T") Block block,
+            @BlockIndex int index) { /* ...implementation */ }
+
+
+Retrieving the Generic Type with ``@TypeParameter``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Add the ``@TypeParameter`` annotation at the beginning of a function's argument
+list to allow the implementation to perform type-specific logic. Add a
+``Type``-typed argument annotated with ``@TypeParameter`` as the first argument
+of the function signature to get access to the ``Type``. This works for both
+scalar and aggregation functions.
+
+.. code-block:: java
+
+    @ScalarFunction("example")
+    @TypeParameter("T")
+    public static Block exampleFunction(
+            @TypeParameter("T") Type type,
+            @BlockPosition @SqlType("T") Block block,
+            @BlockIndex int index) { /* ...implementation */ }
+

@@ -14,8 +14,11 @@
 package com.facebook.presto.dispatcher;
 
 import com.facebook.airlift.log.Logger;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.Session;
+import com.facebook.presto.common.ErrorCode;
 import com.facebook.presto.event.QueryMonitor;
+import com.facebook.presto.eventlistener.EventListenerManager;
 import com.facebook.presto.execution.ClusterSizeMonitor;
 import com.facebook.presto.execution.ExecutionFailureInfo;
 import com.facebook.presto.execution.QueryExecution;
@@ -23,18 +26,15 @@ import com.facebook.presto.execution.QueryState;
 import com.facebook.presto.execution.QueryStateMachine;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
 import com.facebook.presto.server.BasicQueryInfo;
-import com.facebook.presto.spi.ErrorCode;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.spi.prerequisites.QueryPrerequisites;
 import com.facebook.presto.spi.prerequisites.QueryPrerequisitesContext;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupQueryLimits;
+import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
-import org.joda.time.DateTime;
 
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -51,7 +51,6 @@ import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static com.facebook.presto.spi.StandardErrorCode.USER_CANCELED;
 import static com.facebook.presto.util.Failures.toFailure;
 import static com.google.common.util.concurrent.Futures.nonCancellationPropagating;
-import static io.airlift.units.DataSize.Unit.BYTE;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
@@ -72,11 +71,31 @@ public class LocalDispatchQuery
     private final SettableFuture<?> submitted = SettableFuture.create();
     private final AtomicReference<Optional<ResourceGroupQueryLimits>> resourceGroupQueryLimits = new AtomicReference<>(Optional.empty());
 
+    // Tracks whether the query has been successfully submitted to SqlQueryManager
+    // for execution. Once true, SqlQueryManager's finalQueryInfoListener will fire
+    // queryCompletedEvent with real statistics, so LocalDispatchQuery must NOT fire
+    // queryImmediateFailureEvent (which emits zeroed stats and would produce a
+    // duplicate event that can overwrite the real data).
+    private volatile boolean sentForExecution;
+
     private final boolean retry;
 
     private final QueryPrerequisites queryPrerequisites;
     private final WarningCollector warningCollector;
 
+    /**
+     * Local dispatch query encapsulates QueryExecution and submit to the ResourceGroupManager waiting for resource to get executed.
+     *
+     * @param stateMachine the state machine to keep track of the state of the query
+     * @param queryMonitor the query monitor records information to the {@link EventListenerManager}
+     * @param queryExecutionFuture the query execution future
+     * @param clusterSizeMonitor the cluster size monitor provides a method to obtain a listener object when the minimum number of workers for the cluster has been met
+     * @param queryExecutor the query executor is used to start a future for query to get executed. This will trigger the query execution phase by involving {@code querySubmitter}
+     * @param queryQueuer the query queuer is used to register the query that is being queued while waiting for query prerequisites being returned
+     * @param querySubmitter the query submitter takes in query execution object. This will trigger query to start executed with {@link com.facebook.presto.execution.SqlQueryManager}
+     * @param retry if this is a retry query
+     * @param queryPrerequisites the query prerequisites are conditions when the query is ready to be queued for execution
+     */
     public LocalDispatchQuery(
             QueryStateMachine stateMachine,
             QueryMonitor queryMonitor,
@@ -171,21 +190,22 @@ public class LocalDispatchQuery
     public void startWaitingForResources()
     {
         if (stateMachine.transitionToWaitingForResources()) {
-            waitForMinimumWorkers();
+            waitForMinimumCoordinatorSidecarsAndWorkers();
         }
     }
 
-    private void waitForMinimumWorkers()
+    private void waitForMinimumCoordinatorSidecarsAndWorkers()
     {
-        ListenableFuture<?> minimumWorkerFuture = clusterSizeMonitor.waitForMinimumWorkers();
-        // when worker requirement is met, wait for query execution to finish construction and then start the execution
-        addSuccessCallback(minimumWorkerFuture, () -> {
+        ListenableFuture<?> minimumResourcesFuture = Futures.allAsList(
+                clusterSizeMonitor.waitForMinimumCoordinatorSidecars(),
+                clusterSizeMonitor.waitForMinimumWorkers());
+        // when worker and sidecar requirement is met, wait for query execution to finish construction and then start the execution
+        addSuccessCallback(minimumResourcesFuture, () -> {
             // It's the time to end waiting for resources
             boolean isDispatching = stateMachine.transitionToDispatching();
             addSuccessCallback(queryExecutionFuture, queryExecution -> startExecution(queryExecution, isDispatching));
         });
-
-        addExceptionCallback(minimumWorkerFuture, throwable -> queryExecutor.execute(() -> fail(throwable)));
+        addExceptionCallback(minimumResourcesFuture, throwable -> queryExecutor.execute(() -> fail(throwable)));
     }
 
     private void startExecution(QueryExecution queryExecution, boolean isDispatching)
@@ -195,6 +215,10 @@ public class LocalDispatchQuery
                 try {
                     resourceGroupQueryLimits.get().ifPresent(queryExecution::setResourceGroupQueryLimits);
                     querySubmitter.accept(queryExecution);
+                    // Mark only after successful submission. If querySubmitter throws,
+                    // SqlQueryManager won't have the query, so we still need
+                    // queryImmediateFailureEvent from fail() below.
+                    sentForExecution = true;
                 }
                 catch (Throwable t) {
                     // this should never happen but be safe
@@ -216,9 +240,9 @@ public class LocalDispatchQuery
     }
 
     @Override
-    public DateTime getLastHeartbeat()
+    public long getLastHeartbeatInMillis()
     {
-        return stateMachine.getLastHeartbeat();
+        return stateMachine.getLastHeartbeatInMillis();
     }
 
     @Override
@@ -240,7 +264,7 @@ public class LocalDispatchQuery
             return DispatchInfo.failed(failureInfo, queryInfo.getQueryStats().getElapsedTime(), queryInfo.getQueryStats().getWaitingForPrerequisitesTime(), queryInfo.getQueryStats().getQueuedTime());
         }
         if (dispatched) {
-            return DispatchInfo.dispatched(new LocalCoordinatorLocation(), queryInfo.getQueryStats().getElapsedTime(), queryInfo.getQueryStats().getWaitingForPrerequisitesTime(), queryInfo.getQueryStats().getQueuedTime());
+            return DispatchInfo.dispatched(queryInfo.getQueryStats().getElapsedTime(), queryInfo.getQueryStats().getWaitingForPrerequisitesTime(), queryInfo.getQueryStats().getQueuedTime());
         }
         if (queryInfo.getState() == QUEUED) {
             return DispatchInfo.queued(queryInfo.getQueryStats().getElapsedTime(), queryInfo.getQueryStats().getWaitingForPrerequisitesTime(), queryInfo.getQueryStats().getQueuedTime());
@@ -261,21 +285,27 @@ public class LocalDispatchQuery
     }
 
     @Override
-    public DateTime getCreateTime()
+    public long getCreateTimeInMillis()
     {
-        return stateMachine.getCreateTime();
+        return stateMachine.getCreateTimeInMillis();
     }
 
     @Override
-    public Optional<DateTime> getExecutionStartTime()
+    public Duration getQueuedTime()
     {
-        return stateMachine.getExecutionStartTime();
+        return stateMachine.getQueuedTime();
     }
 
     @Override
-    public Optional<DateTime> getEndTime()
+    public long getExecutionStartTimeInMillis()
     {
-        return stateMachine.getEndTime();
+        return stateMachine.getExecutionStartTimeInMillis();
+    }
+
+    @Override
+    public long getEndTimeInMillis()
+    {
+        return stateMachine.getEndTimeInMillis();
     }
 
     @Override
@@ -283,23 +313,28 @@ public class LocalDispatchQuery
     {
         return tryGetQueryExecution()
                 .map(QueryExecution::getTotalCpuTime)
-                .orElse(new Duration(0, MILLISECONDS));
+                .orElseGet(() -> new Duration(0, MILLISECONDS));
     }
 
     @Override
-    public DataSize getTotalMemoryReservation()
+    public long getTotalMemoryReservationInBytes()
     {
         return tryGetQueryExecution()
-                .map(QueryExecution::getTotalMemoryReservation)
-                .orElse(new DataSize(0, BYTE));
+                .map(QueryExecution::getTotalMemoryReservationInBytes)
+                .orElse(0L);
     }
 
     @Override
-    public DataSize getUserMemoryReservation()
+    public long getUserMemoryReservationInBytes()
     {
         return tryGetQueryExecution()
-                .map(QueryExecution::getUserMemoryReservation)
-                .orElse(new DataSize(0, BYTE));
+                .map(QueryExecution::getUserMemoryReservationInBytes)
+                .orElse(0L);
+    }
+
+    public int getRunningTaskCount()
+    {
+        return stateMachine.getCurrentRunningTaskCount();
     }
 
     @Override
@@ -307,7 +342,7 @@ public class LocalDispatchQuery
     {
         return tryGetQueryExecution()
                 .map(QueryExecution::getBasicQueryInfo)
-                .orElse(stateMachine.getBasicQueryInfo(Optional.empty()));
+                .orElseGet(() -> stateMachine.getBasicQueryInfo(Optional.empty()));
     }
 
     @Override
@@ -320,7 +355,14 @@ public class LocalDispatchQuery
     public void fail(Throwable throwable)
     {
         if (stateMachine.transitionToFailed(throwable)) {
-            queryMonitor.queryImmediateFailureEvent(stateMachine.getBasicQueryInfo(Optional.empty()), toFailure(throwable));
+            // Only emit the immediate failure event if the query was never sent to
+            // SqlQueryManager. Post-submission, SqlQueryManager's finalQueryInfoListener
+            // will emit queryCompletedEvent with real execution statistics. Emitting
+            // queryImmediateFailureEvent here as well would produce a duplicate event
+            // with all-zero stats that can overwrite the real data.
+            if (!sentForExecution) {
+                queryMonitor.queryImmediateFailureEvent(stateMachine.getBasicQueryInfo(Optional.empty()), toFailure(throwable));
+            }
         }
     }
 
@@ -328,17 +370,27 @@ public class LocalDispatchQuery
     public void cancel()
     {
         if (stateMachine.transitionToCanceled()) {
-            BasicQueryInfo queryInfo = stateMachine.getBasicQueryInfo(Optional.empty());
-            ExecutionFailureInfo failureInfo = queryInfo.getFailureInfo();
-            failureInfo = failureInfo != null ? failureInfo : toFailure(new PrestoException(USER_CANCELED, "Query was canceled"));
-            queryMonitor.queryImmediateFailureEvent(queryInfo, failureInfo);
+            // Same guard as fail(): avoid emitting zeroed-stats event when
+            // SqlQueryManager will handle the completion event with real stats.
+            if (!sentForExecution) {
+                BasicQueryInfo queryInfo = stateMachine.getBasicQueryInfo(Optional.empty());
+                ExecutionFailureInfo failureInfo = queryInfo.getFailureInfo();
+                failureInfo = failureInfo != null ? failureInfo : toFailure(new PrestoException(USER_CANCELED, "Query was canceled"));
+                queryMonitor.queryImmediateFailureEvent(queryInfo, failureInfo);
+            }
         }
     }
 
     @Override
-    public void pruneInfo()
+    public void pruneExpiredQueryInfo()
     {
-        stateMachine.pruneQueryInfo();
+        stateMachine.pruneQueryInfoExpired();
+    }
+
+    @Override
+    public void pruneFinishedQueryInfo()
+    {
+        stateMachine.pruneQueryInfoFinished();
     }
 
     @Override

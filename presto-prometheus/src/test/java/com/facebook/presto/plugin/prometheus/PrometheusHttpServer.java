@@ -25,11 +25,10 @@ import com.google.inject.Binder;
 import com.google.inject.Injector;
 import com.google.inject.Module;
 import com.google.inject.TypeLiteral;
-
-import javax.servlet.Servlet;
-import javax.servlet.http.HttpServlet;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
+import jakarta.servlet.Servlet;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
 import java.net.URI;
@@ -40,15 +39,22 @@ import static com.facebook.presto.plugin.prometheus.PrometheusClient.METRICS_END
 
 public class PrometheusHttpServer
 {
+    public static final String BEARER_TOKEN = "test-bearer-token";
+
     private final LifeCycleManager lifeCycleManager;
     private final URI baseUri;
 
     public PrometheusHttpServer()
     {
+        this(null);
+    }
+
+    public PrometheusHttpServer(String requiredBearerToken)
+    {
         Bootstrap app = new Bootstrap(
                 new TestingNodeModule(),
                 new TestingHttpServerModule(),
-                new PrometheusHttpServerModule());
+                new PrometheusHttpServerModule(requiredBearerToken));
 
         Injector injector = app
                 .noStrictConfig()
@@ -72,28 +78,54 @@ public class PrometheusHttpServer
     private static class PrometheusHttpServerModule
             implements Module
     {
+        private final String requiredBearerToken;
+
+        PrometheusHttpServerModule(String requiredBearerToken)
+        {
+            this.requiredBearerToken = requiredBearerToken;
+        }
+
         @Override
         public void configure(Binder binder)
         {
             binder.bind(new TypeLiteral<Map<String, String>>() {}).annotatedWith(TheServlet.class).toInstance(ImmutableMap.of());
-            binder.bind(Servlet.class).annotatedWith(TheServlet.class).toInstance(new PrometheusHttpServlet());
+            binder.bind(Servlet.class).annotatedWith(TheServlet.class).toInstance(new PrometheusHttpServlet(requiredBearerToken));
         }
     }
 
     private static class PrometheusHttpServlet
             extends HttpServlet
     {
+        private final String requiredBearerToken;
+
+        PrometheusHttpServlet(String requiredBearerToken)
+        {
+            this.requiredBearerToken = requiredBearerToken;
+        }
+
         @Override
         protected void doGet(HttpServletRequest request, HttpServletResponse response)
                 throws IOException
         {
+            if (requiredBearerToken != null) {
+                String authHeader = request.getHeader("Authorization");
+                if (!("Bearer " + requiredBearerToken).equals(authHeader)) {
+                    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                    response.getWriter().write("Unauthorized");
+                    return;
+                }
+            }
+            String pathInfo = request.getPathInfo();
+            if (pathInfo == null) {
+                pathInfo = "/";
+            }
             URL dataUrl;
             // allow for special response on Prometheus metrics endpoint
-            if (request.getPathInfo().contains(METRICS_ENDPOINT)) {
-                dataUrl = Resources.getResource(getClass(), request.getPathInfo().split(METRICS_ENDPOINT)[0]);
+            if (pathInfo.contains(METRICS_ENDPOINT)) {
+                dataUrl = Resources.getResource(getClass(), pathInfo.split(METRICS_ENDPOINT)[0]);
             }
             else {
-                dataUrl = Resources.getResource(getClass(), request.getPathInfo());
+                dataUrl = Resources.getResource(getClass(), pathInfo);
             }
             Resources.asByteSource(dataUrl).copyTo(response.getOutputStream());
         }

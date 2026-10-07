@@ -38,12 +38,11 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
-import org.joda.time.DateTimeZone;
+import jakarta.annotation.Nullable;
 import org.openjdk.jol.info.ClassLayout;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -55,7 +54,8 @@ import static com.facebook.presto.common.predicate.TupleDomainFilterUtils.toBigi
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.LENGTH;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.PRESENT;
 import static com.facebook.presto.orc.reader.SelectiveStreamReaders.initializeOutputPositions;
-import static com.facebook.presto.orc.stream.MissingInputStreamSource.missingStreamSource;
+import static com.facebook.presto.orc.stream.MissingInputStreamSource.getBooleanMissingStreamSource;
+import static com.facebook.presto.orc.stream.MissingInputStreamSource.getLongMissingStreamSource;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -70,7 +70,6 @@ public class MapDirectSelectiveStreamReader
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(MapDirectSelectiveStreamReader.class).instanceSize();
 
     private final StreamDescriptor streamDescriptor;
-    private final boolean legacyMapSubscript;
     private final boolean nullsAllowed;
     private final boolean nonNullsAllowed;
     private final boolean outputRequired;
@@ -85,11 +84,11 @@ public class MapDirectSelectiveStreamReader
     private int readOffset;
     private int nestedReadOffset;
 
-    private InputStreamSource<BooleanInputStream> presentStreamSource = missingStreamSource(BooleanInputStream.class);
+    private InputStreamSource<BooleanInputStream> presentStreamSource = getBooleanMissingStreamSource();
     @Nullable
     private BooleanInputStream presentStream;
 
-    private InputStreamSource<LongInputStream> lengthStreamSource = missingStreamSource(LongInputStream.class);
+    private InputStreamSource<LongInputStream> lengthStreamSource = getLongMissingStreamSource();
     @Nullable
     private LongInputStream lengthStream;
 
@@ -113,15 +112,13 @@ public class MapDirectSelectiveStreamReader
             Map<Subfield, TupleDomainFilter> filters,
             List<Subfield> requiredSubfields,
             Optional<Type> outputType,
-            DateTimeZone hiveStorageTimeZone,
             OrcRecordReaderOptions options,
-            boolean legacyMapSubscript,
-            OrcAggregatedMemoryContext systemMemoryContext)
+            OrcAggregatedMemoryContext systemMemoryContext,
+            boolean isLowMemory)
     {
         checkArgument(filters.keySet().stream().map(Subfield::getPath).allMatch(List::isEmpty), "filters on nested columns are not supported yet");
 
         this.streamDescriptor = requireNonNull(streamDescriptor, "streamDescriptor is null");
-        this.legacyMapSubscript = legacyMapSubscript;
         this.systemMemoryContext = requireNonNull(systemMemoryContext, "systemMemoryContext is null").newOrcLocalMemoryContext(MapDirectSelectiveStreamReader.class.getSimpleName());
         this.outputRequired = requireNonNull(outputType, "outputType is null").isPresent();
         this.outputType = outputType.map(MapType.class::cast).orElse(null);
@@ -148,8 +145,8 @@ public class MapDirectSelectiveStreamReader
                         .collect(toImmutableList());
             }
 
-            this.keyReader = SelectiveStreamReaders.createStreamReader(nestedStreams.get(0), keyFilter, keyOutputType, ImmutableList.of(), hiveStorageTimeZone, options, legacyMapSubscript, systemMemoryContext.newOrcAggregatedMemoryContext());
-            this.valueReader = SelectiveStreamReaders.createStreamReader(nestedStreams.get(1), ImmutableMap.of(), valueOutputType, elementRequiredSubfields, hiveStorageTimeZone, options, legacyMapSubscript, systemMemoryContext.newOrcAggregatedMemoryContext());
+            this.keyReader = SelectiveStreamReaders.createStreamReader(nestedStreams.get(0), keyFilter, keyOutputType, ImmutableList.of(), options, systemMemoryContext.newOrcAggregatedMemoryContext(), isLowMemory);
+            this.valueReader = SelectiveStreamReaders.createStreamReader(nestedStreams.get(1), ImmutableMap.of(), valueOutputType, elementRequiredSubfields, options, systemMemoryContext.newOrcAggregatedMemoryContext(), isLowMemory);
         }
         else {
             this.keyReader = null;
@@ -687,11 +684,11 @@ public class MapDirectSelectiveStreamReader
     }
 
     @Override
-    public void startStripe(Stripe stripe)
+    public void startStripe(ZoneId timezone, Stripe stripe)
             throws IOException
     {
-        presentStreamSource = missingStreamSource(BooleanInputStream.class);
-        lengthStreamSource = missingStreamSource(LongInputStream.class);
+        presentStreamSource = getBooleanMissingStreamSource();
+        lengthStreamSource = getLongMissingStreamSource();
 
         readOffset = 0;
         nestedReadOffset = 0;
@@ -702,8 +699,8 @@ public class MapDirectSelectiveStreamReader
         rowGroupOpen = false;
 
         if (outputRequired) {
-            keyReader.startStripe(stripe);
-            valueReader.startStripe(stripe);
+            keyReader.startStripe(timezone, stripe);
+            valueReader.startStripe(timezone, stripe);
         }
     }
 

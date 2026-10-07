@@ -35,12 +35,11 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
-import org.joda.time.DateTimeZone;
+import jakarta.annotation.Nullable;
 import org.openjdk.jol.info.ClassLayout;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -56,7 +55,7 @@ import static com.facebook.presto.common.predicate.TupleDomainFilter.IS_NOT_NULL
 import static com.facebook.presto.common.predicate.TupleDomainFilter.IS_NULL;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.PRESENT;
 import static com.facebook.presto.orc.reader.SelectiveStreamReaders.initializeOutputPositions;
-import static com.facebook.presto.orc.stream.MissingInputStreamSource.missingStreamSource;
+import static com.facebook.presto.orc.stream.MissingInputStreamSource.getBooleanMissingStreamSource;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -87,7 +86,7 @@ public class StructSelectiveStreamReader
     private int readOffset;
     private int nestedReadOffset;
 
-    private InputStreamSource<BooleanInputStream> presentStreamSource = missingStreamSource(BooleanInputStream.class);
+    private InputStreamSource<BooleanInputStream> presentStreamSource = getBooleanMissingStreamSource();
     @Nullable
     private BooleanInputStream presentStream;
 
@@ -107,10 +106,9 @@ public class StructSelectiveStreamReader
             Map<Subfield, TupleDomainFilter> filters,
             List<Subfield> requiredSubfields,
             Optional<Type> outputType,
-            DateTimeZone hiveStorageTimeZone,
             OrcRecordReaderOptions options,
-            boolean legacyMapSubscript,
-            OrcAggregatedMemoryContext systemMemoryContext)
+            OrcAggregatedMemoryContext systemMemoryContext,
+            boolean isLowMemory)
     {
         this.streamDescriptor = requireNonNull(streamDescriptor, "streamDescriptor is null");
         this.systemMemoryContext = requireNonNull(systemMemoryContext, "systemMemoryContext is null").newOrcLocalMemoryContext(StructSelectiveStreamReader.class.getSimpleName());
@@ -185,10 +183,9 @@ public class StructSelectiveStreamReader
                                 nestedFilters,
                                 fieldOutputType,
                                 nestedRequiredSubfields,
-                                hiveStorageTimeZone,
                                 options,
-                                legacyMapSubscript,
-                                systemMemoryContext.newOrcAggregatedMemoryContext());
+                                systemMemoryContext.newOrcAggregatedMemoryContext(),
+                                isLowMemory);
                         nestedReaders.put(fieldName, nestedReader);
                     }
                     else {
@@ -625,10 +622,10 @@ public class StructSelectiveStreamReader
     }
 
     @Override
-    public void startStripe(Stripe stripe)
+    public void startStripe(ZoneId timezone, Stripe stripe)
             throws IOException
     {
-        presentStreamSource = missingStreamSource(BooleanInputStream.class);
+        presentStreamSource = getBooleanMissingStreamSource();
 
         readOffset = 0;
         nestedReadOffset = 0;
@@ -638,7 +635,7 @@ public class StructSelectiveStreamReader
         rowGroupOpen = false;
 
         for (SelectiveStreamReader reader : nestedReaders.values()) {
-            reader.startStripe(stripe);
+            reader.startStripe(timezone, stripe);
         }
     }
 
@@ -663,10 +660,11 @@ public class StructSelectiveStreamReader
     @Override
     public long getRetainedSizeInBytes()
     {
-        return INSTANCE_SIZE + sizeOf(outputPositions) + sizeOf(nestedPositions) + sizeOf(nestedOutputPositions) + sizeOf(nulls) +
-                nestedReaders.values().stream()
-                        .mapToLong(SelectiveStreamReader::getRetainedSizeInBytes)
-                        .sum();
+        long size = INSTANCE_SIZE + sizeOf(outputPositions) + sizeOf(nestedPositions) + sizeOf(nestedOutputPositions) + sizeOf(nulls);
+        for (SelectiveStreamReader reader : nestedReaders.values()) {
+            size += reader.getRetainedSizeInBytes();
+        }
+        return size;
     }
 
     private static Optional<TupleDomainFilter> getTopLevelFilter(Map<Subfield, TupleDomainFilter> filters)
@@ -691,6 +689,9 @@ public class StructSelectiveStreamReader
         Map<String, List<Subfield>> fields = new HashMap<>();
         for (Subfield subfield : requiredSubfields) {
             List<Subfield.PathElement> path = subfield.getPath();
+            if (path.size() == 1 && path.get(0) instanceof Subfield.NoSubfield) {
+                continue;
+            }
             String name = ((Subfield.NestedField) path.get(0)).getName().toLowerCase(Locale.ENGLISH);
             fields.computeIfAbsent(name, k -> new ArrayList<>());
             if (path.size() > 1) {
@@ -766,7 +767,7 @@ public class StructSelectiveStreamReader
         }
 
         @Override
-        public void startStripe(Stripe stripe)
+        public void startStripe(ZoneId timezone, Stripe stripe)
         {
         }
 
@@ -836,7 +837,7 @@ public class StructSelectiveStreamReader
         }
 
         @Override
-        public void startStripe(Stripe stripe)
+        public void startStripe(ZoneId timezone, Stripe stripe)
         {
         }
 

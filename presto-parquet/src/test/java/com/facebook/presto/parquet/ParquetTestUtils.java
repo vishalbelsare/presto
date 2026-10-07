@@ -14,6 +14,7 @@
 
 package com.facebook.presto.parquet;
 
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.common.type.ArrayType;
 import com.facebook.presto.common.type.CharType;
 import com.facebook.presto.common.type.DateType;
@@ -28,20 +29,21 @@ import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.spi.PrestoException;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
-import io.airlift.units.DataSize;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
+import org.apache.hadoop.hive.common.type.Timestamp;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator.RecordWriter;
 import org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat;
 import org.apache.hadoop.hive.ql.io.parquet.convert.HiveSchemaConverter;
 import org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe;
 import org.apache.hadoop.hive.ql.io.parquet.write.DataWritableWriteSupport;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.Serializer;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.hive.serde2.io.HiveVarcharWritable;
-import org.apache.hadoop.hive.serde2.io.TimestampWritable;
+import org.apache.hadoop.hive.serde2.io.TimestampWritableV2;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory;
 import org.apache.hadoop.hive.serde2.objectinspector.SettableStructObjectInspector;
@@ -69,7 +71,6 @@ import org.apache.parquet.schema.Types;
 
 import java.io.File;
 import java.io.IOException;
-import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -77,6 +78,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Properties;
 
+import static com.facebook.airlift.units.DataSize.Unit.KILOBYTE;
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.common.type.DoubleType.DOUBLE;
@@ -84,8 +87,6 @@ import static com.facebook.presto.common.type.IntegerType.INTEGER;
 import static com.facebook.presto.common.type.RealType.REAL;
 import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static io.airlift.units.DataSize.Unit.KILOBYTE;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
@@ -134,6 +135,7 @@ public class ParquetTestUtils
         jobConf.setLong(ParquetOutputFormat.BLOCK_SIZE, new DataSize(256, MEGABYTE).toBytes());
         jobConf.setLong(ParquetOutputFormat.PAGE_SIZE, new DataSize(100, KILOBYTE).toBytes());
         jobConf.set(ParquetOutputFormat.COMPRESSION, "snappy");
+        jobConf.setBoolean(org.apache.parquet.hadoop.ParquetOutputFormat.ENABLE_DICTIONARY, false);
 
         Properties properties = new Properties();
         properties.setProperty("columns", columnName);
@@ -211,7 +213,7 @@ public class ParquetTestUtils
     {
         try {
             Serializer result = ParquetHiveSerDe.class.getConstructor().newInstance();
-            result.initialize(conf, properties);
+            ((AbstractSerDe) result).initialize(conf, properties, null);
             return result;
         }
         catch (Exception e) {
@@ -439,7 +441,8 @@ public class ParquetTestUtils
 
             if (primitiveType.getDecimalMetadata() != null) {
                 builder = (Types.PrimitiveBuilder<PrimitiveType>) builder.scale(primitiveType.getDecimalMetadata().getScale())
-                        .precision(primitiveType.getDecimalMetadata().getPrecision());
+                        .precision(primitiveType.getDecimalMetadata().getPrecision())
+                        .as(primitiveType.getOriginalType());
             }
 
             return builder.length(primitiveType.getTypeLength())
@@ -460,7 +463,7 @@ public class ParquetTestUtils
         }
 
         if (type.equals(TIMESTAMP)) {
-            return new Timestamp((Long) value);
+            return Timestamp.ofEpochMilli((Long) value);
         }
 
         if (type instanceof VarcharType) {
@@ -688,7 +691,7 @@ public class ParquetTestUtils
     private static class TimestampSetter
             extends Setter
     {
-        private final TimestampWritable writable = new TimestampWritable();
+        private final TimestampWritableV2 writable = new TimestampWritableV2();
 
         TimestampSetter(SettableStructObjectInspector tableObjectInspector, Object row, StructField structField)
         {
@@ -698,7 +701,7 @@ public class ParquetTestUtils
         @Override
         void set(Object value)
         {
-            writable.setTime((Long) value);
+            writable.set(Timestamp.ofEpochMilli((Long) value));
             tableObjectInspector.setStructFieldData(row, structField, writable);
         }
     }

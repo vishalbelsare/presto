@@ -14,8 +14,7 @@
 package com.facebook.presto.memory.context;
 
 import com.google.common.io.Closer;
-
-import javax.annotation.concurrent.ThreadSafe;
+import com.google.errorprone.annotations.ThreadSafe;
 
 import java.io.IOException;
 
@@ -97,11 +96,6 @@ public final class MemoryTrackingContext
         return revocableLocalMemoryContext;
     }
 
-    public LocalMemoryContext newUserMemoryContext(String allocationTag)
-    {
-        return userAggregateMemoryContext.newLocalMemoryContext(allocationTag);
-    }
-
     public LocalMemoryContext newSystemMemoryContext(String allocationTag)
     {
         return systemAggregateMemoryContext.newLocalMemoryContext(allocationTag);
@@ -117,9 +111,9 @@ public final class MemoryTrackingContext
         return revocableAggregateMemoryContext;
     }
 
-    public AggregatedMemoryContext newAggregateSystemMemoryContext()
+    public AggregatedMemoryContext aggregateSystemMemoryContext()
     {
-        return systemAggregateMemoryContext.newAggregatedMemoryContext();
+        return systemAggregateMemoryContext;
     }
 
     public long getUserMemory()

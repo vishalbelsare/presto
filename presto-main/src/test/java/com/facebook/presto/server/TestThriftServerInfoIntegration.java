@@ -35,11 +35,11 @@ import com.facebook.presto.execution.TaskSource;
 import com.facebook.presto.execution.TaskState;
 import com.facebook.presto.execution.TaskStatus;
 import com.facebook.presto.execution.buffer.BufferResult;
+import com.facebook.presto.execution.buffer.OutputBufferInfo;
 import com.facebook.presto.execution.buffer.OutputBuffers;
 import com.facebook.presto.execution.buffer.OutputBuffers.OutputBufferId;
 import com.facebook.presto.execution.scheduler.TableWriteInfo;
 import com.facebook.presto.memory.MemoryPoolAssignmentsRequest;
-import com.facebook.presto.metadata.MetadataUpdates;
 import com.facebook.presto.server.testing.TestingPrestoServer;
 import com.facebook.presto.server.thrift.ThriftServerInfoClient;
 import com.facebook.presto.server.thrift.ThriftServerInfoService;
@@ -54,12 +54,10 @@ import com.google.inject.Injector;
 import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
-import io.airlift.units.DataSize;
+import jakarta.inject.Singleton;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
-
-import javax.inject.Singleton;
 
 import java.util.List;
 import java.util.Optional;
@@ -69,6 +67,7 @@ import static com.facebook.drift.client.ExceptionClassifier.NORMAL_RESULT;
 import static com.facebook.drift.server.guice.DriftServerBinder.driftServerBinder;
 import static com.facebook.drift.transport.netty.client.DriftNettyMethodInvokerFactory.createStaticDriftNettyMethodInvokerFactory;
 import static com.facebook.presto.spi.NodeState.ACTIVE;
+import static io.netty.buffer.ByteBufAllocator.DEFAULT;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.fail;
 
@@ -109,7 +108,7 @@ public class TestThriftServerInfoIntegration
         AddressSelector<SimpleAddressSelector.SimpleAddress> addressSelector = new SimpleAddressSelector(
                 ImmutableSet.of(HostAndPort.fromParts("localhost", thriftServerPort)),
                 true);
-        try (DriftNettyMethodInvokerFactory<?> invokerFactory = createStaticDriftNettyMethodInvokerFactory(new DriftNettyClientConfig())) {
+        try (DriftNettyMethodInvokerFactory<?> invokerFactory = createStaticDriftNettyMethodInvokerFactory(new DriftNettyClientConfig(), DEFAULT)) {
             DriftClientFactory clientFactory = new DriftClientFactory(new ThriftCodecManager(), invokerFactory, addressSelector, NORMAL_RESULT);
             ThriftServerInfoClient client = clientFactory.createDriftClient(ThriftServerInfoClient.class).get();
 
@@ -136,6 +135,7 @@ public class TestThriftServerInfoIntegration
             configBinder(binder).bindConfig(ServerConfig.class);
             //Bind noop QueryManager similar to the binding done for TaskManager here
             binder.bind(QueryManager.class).to(NoOpQueryManager.class).in(Scopes.SINGLETON);
+            binder.bind(NodeStatusNotificationManager.class).in(Scopes.SINGLETON);
             binder.bind(GracefulShutdownHandler.class).in(Scopes.SINGLETON);
             binder.bind(ShutdownAction.class).to(TestingPrestoServer.TestShutdownAction.class).in(Scopes.SINGLETON);
 
@@ -210,7 +210,13 @@ public class TestThriftServerInfoIntegration
                 }
 
                 @Override
-                public ListenableFuture<BufferResult> getTaskResults(TaskId taskId, OutputBufferId bufferId, long startingSequenceId, DataSize maxSize)
+                public ListenableFuture<BufferResult> getTaskResults(TaskId taskId, OutputBufferId bufferId, long startingSequenceId, long maxSizeInBytes)
+                {
+                    throw new UnsupportedOperationException();
+                }
+
+                @Override
+                public OutputBufferInfo getOutputBufferInfo(TaskId taskId)
                 {
                     throw new UnsupportedOperationException();
                 }
@@ -235,12 +241,6 @@ public class TestThriftServerInfoIntegration
 
                 @Override
                 public void removeRemoteSource(TaskId taskId, TaskId remoteSourceTaskId)
-                {
-                    throw new UnsupportedOperationException();
-                }
-
-                @Override
-                public void updateMetadataResults(TaskId taskId, MetadataUpdates metadataUpdates)
                 {
                     throw new UnsupportedOperationException();
                 }

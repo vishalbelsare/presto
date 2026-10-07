@@ -14,12 +14,19 @@
 package com.facebook.presto.kafka;
 
 import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.configuration.ConfigDescription;
+import com.facebook.airlift.units.Duration;
+import com.facebook.airlift.units.MinDuration;
 import com.facebook.presto.kafka.schema.file.FileTableDescriptionSupplier;
 import com.facebook.presto.kafka.server.file.FileKafkaClusterMetadataSupplier;
-import io.airlift.units.Duration;
-import io.airlift.units.MinDuration;
+import com.google.common.base.Splitter;
+import com.google.common.collect.ImmutableList;
+import jakarta.validation.constraints.NotNull;
 
-import javax.validation.constraints.NotNull;
+import java.io.File;
+import java.util.List;
+
+import static com.google.common.collect.ImmutableList.toImmutableList;
 
 public class KafkaConnectorConfig
 {
@@ -57,6 +64,13 @@ public class KafkaConnectorConfig
      * The kafka cluster metadata supplier to use, default is FILE
      */
     private String clusterMetadataSupplier = FileKafkaClusterMetadataSupplier.NAME;
+
+    /**
+     * The resourceConfigFiles to use for additional properties, default is empty
+     */
+    private List<File> resourceConfigFiles = ImmutableList.of();
+
+    private boolean caseSensitiveNameMatching;
 
     @NotNull
     public String getDefaultSchema()
@@ -143,6 +157,36 @@ public class KafkaConnectorConfig
     public KafkaConnectorConfig setHideInternalColumns(boolean hideInternalColumns)
     {
         this.hideInternalColumns = hideInternalColumns;
+        return this;
+    }
+
+    @NotNull
+    public List<File> getResourceConfigFiles()
+    {
+        return resourceConfigFiles;
+    }
+
+    @Config("kafka.config.resources")
+    @ConfigDescription("Optional config files")
+    public KafkaConnectorConfig setResourceConfigFiles(String files)
+    {
+        this.resourceConfigFiles = Splitter.on(',').trimResults().omitEmptyStrings().splitToList(files).stream()
+                .map(File::new)
+                .collect(toImmutableList());
+        return this;
+    }
+
+    public boolean isCaseSensitiveNameMatching()
+    {
+        return caseSensitiveNameMatching;
+    }
+
+    @Config("case-sensitive-name-matching")
+    @ConfigDescription("Enable case-sensitive matching of schema, table names across the connector. " +
+            "When disabled, names are matched case-insensitively using lowercase normalization.")
+    public KafkaConnectorConfig setCaseSensitiveNameMatching(boolean caseSensitiveNameMatchingEnabled)
+    {
+        this.caseSensitiveNameMatching = caseSensitiveNameMatchingEnabled;
         return this;
     }
 }

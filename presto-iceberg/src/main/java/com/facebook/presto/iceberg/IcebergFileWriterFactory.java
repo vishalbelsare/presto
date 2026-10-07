@@ -20,27 +20,28 @@ import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.hive.FileFormatDataSourceStats;
 import com.facebook.presto.hive.HdfsContext;
 import com.facebook.presto.hive.HdfsEnvironment;
+import com.facebook.presto.hive.HiveClientConfig;
 import com.facebook.presto.hive.HiveDwrfEncryptionProvider;
-import com.facebook.presto.hive.HiveSessionProperties;
 import com.facebook.presto.hive.NodeVersion;
 import com.facebook.presto.hive.OrcFileWriterConfig;
 import com.facebook.presto.hive.orc.HdfsOrcDataSource;
+import com.facebook.presto.orc.DefaultOrcWriterFlushPolicy;
 import com.facebook.presto.orc.DwrfEncryptionProvider;
+import com.facebook.presto.orc.NoOpOrcWriterStats;
 import com.facebook.presto.orc.OrcDataSource;
 import com.facebook.presto.orc.OrcDataSourceId;
-import com.facebook.presto.orc.OrcWriterStats;
 import com.facebook.presto.parquet.writer.ParquetWriterOptions;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
 import com.google.common.collect.ImmutableMap;
+import jakarta.inject.Inject;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapred.JobConf;
-import org.apache.iceberg.FileFormat;
+import org.apache.iceberg.MetricsConfig;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.types.Types;
-
-import javax.inject.Inject;
+import org.joda.time.DateTimeZone;
 
 import java.io.IOException;
 import java.util.List;
@@ -49,27 +50,34 @@ import java.util.concurrent.Callable;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
-import static com.facebook.presto.hive.HiveMetadata.PRESTO_VERSION_NAME;
-import static com.facebook.presto.hive.HiveSessionProperties.getParquetWriterBlockSize;
-import static com.facebook.presto.hive.HiveSessionProperties.getParquetWriterPageSize;
+import static com.facebook.presto.hive.HiveCommonSessionProperties.getOrcMaxBufferSize;
+import static com.facebook.presto.hive.HiveCommonSessionProperties.getOrcMaxMergeDistance;
+import static com.facebook.presto.hive.HiveCommonSessionProperties.getOrcOptimizedWriterValidateMode;
+import static com.facebook.presto.hive.HiveCommonSessionProperties.getOrcStreamBufferSize;
+import static com.facebook.presto.hive.HiveCommonSessionProperties.isOrcOptimizedWriterValidate;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.PRESTO_QUERY_ID_NAME;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.PRESTO_VERSION_NAME;
 import static com.facebook.presto.iceberg.IcebergErrorCode.ICEBERG_WRITER_OPEN_ERROR;
 import static com.facebook.presto.iceberg.IcebergErrorCode.ICEBERG_WRITE_VALIDATION_FAILED;
 import static com.facebook.presto.iceberg.IcebergSessionProperties.getCompressionCodec;
-import static com.facebook.presto.iceberg.IcebergSessionProperties.getOrcMaxBufferSize;
-import static com.facebook.presto.iceberg.IcebergSessionProperties.getOrcMaxMergeDistance;
-import static com.facebook.presto.iceberg.IcebergSessionProperties.getOrcOptimizedWriterValidateMode;
-import static com.facebook.presto.iceberg.IcebergSessionProperties.getOrcStreamBufferSize;
-import static com.facebook.presto.iceberg.IcebergSessionProperties.isOrcOptimizedWriterValidate;
+import static com.facebook.presto.iceberg.IcebergSessionProperties.getOrcOptimizedWriterMaxDictionaryMemory;
+import static com.facebook.presto.iceberg.IcebergSessionProperties.getOrcOptimizedWriterMaxStripeRows;
+import static com.facebook.presto.iceberg.IcebergSessionProperties.getOrcOptimizedWriterMaxStripeSize;
+import static com.facebook.presto.iceberg.IcebergSessionProperties.getOrcOptimizedWriterMinStripeSize;
+import static com.facebook.presto.iceberg.IcebergSessionProperties.getOrcStringStatisticsLimit;
+import static com.facebook.presto.iceberg.IcebergSessionProperties.getParquetWriterBlockSize;
+import static com.facebook.presto.iceberg.IcebergSessionProperties.getParquetWriterPageSize;
+import static com.facebook.presto.iceberg.IcebergSessionProperties.getParquetWriterVersion;
 import static com.facebook.presto.iceberg.TypeConverter.toOrcType;
 import static com.facebook.presto.iceberg.TypeConverter.toPrestoType;
 import static com.facebook.presto.iceberg.util.PrimitiveTypeMapBuilder.makeTypeMap;
+import static com.facebook.presto.orc.NoOpOrcWriterStats.NOOP_WRITER_STATS;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.time.ZoneOffset.UTC;
 import static java.util.Objects.requireNonNull;
 import static org.apache.iceberg.parquet.ParquetSchemaUtil.convert;
-import static org.joda.time.DateTimeZone.UTC;
 
 public class IcebergFileWriterFactory
 {
@@ -77,9 +85,10 @@ public class IcebergFileWriterFactory
     private final TypeManager typeManager;
     private final FileFormatDataSourceStats readStats;
     private final NodeVersion nodeVersion;
-    private final OrcWriterStats orcWriterStats = new OrcWriterStats();
+    private final NoOpOrcWriterStats orcWriterStats = NOOP_WRITER_STATS;
     private final OrcFileWriterConfig orcFileWriterConfig;
     private final DwrfEncryptionProvider dwrfEncryptionProvider;
+    private final DateTimeZone writerTimezone;
 
     @Inject
     public IcebergFileWriterFactory(
@@ -88,7 +97,8 @@ public class IcebergFileWriterFactory
             FileFormatDataSourceStats readStats,
             NodeVersion nodeVersion,
             OrcFileWriterConfig orcFileWriterConfig,
-            HiveDwrfEncryptionProvider dwrfEncryptionProvider)
+            HiveDwrfEncryptionProvider dwrfEncryptionProvider,
+            HiveClientConfig hiveClientConfig)
     {
         this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
@@ -96,6 +106,7 @@ public class IcebergFileWriterFactory
         this.nodeVersion = requireNonNull(nodeVersion, "nodeVersion is null");
         this.orcFileWriterConfig = requireNonNull(orcFileWriterConfig, "orcFileWriterConfig is null");
         this.dwrfEncryptionProvider = requireNonNull(dwrfEncryptionProvider, "DwrfEncryptionProvider is null").toDwrfEncryptionProvider();
+        this.writerTimezone = requireNonNull(hiveClientConfig, "hiveClientConfig is null").getDateTimeZone();
     }
 
     public IcebergFileWriter createFileWriter(
@@ -104,12 +115,14 @@ public class IcebergFileWriterFactory
             JobConf jobConf,
             ConnectorSession session,
             HdfsContext hdfsContext,
-            FileFormat fileFormat)
+            FileFormat fileFormat,
+            MetricsConfig metricsConfig)
     {
         switch (fileFormat) {
             case PARQUET:
-                return createParquetWriter(outputPath, icebergSchema, jobConf, session, hdfsContext);
+                return createParquetWriter(outputPath, icebergSchema, jobConf, session, hdfsContext, metricsConfig);
             case ORC:
+            case DWRF:
                 return createOrcWriter(outputPath, icebergSchema, jobConf, session);
         }
         throw new PrestoException(NOT_SUPPORTED, "File format not supported for Iceberg: " + fileFormat);
@@ -120,7 +133,8 @@ public class IcebergFileWriterFactory
             Schema icebergSchema,
             JobConf jobConf,
             ConnectorSession session,
-            HdfsContext hdfsContext)
+            HdfsContext hdfsContext,
+            MetricsConfig metricsConfig)
     {
         List<String> fileColumnNames = icebergSchema.columns().stream()
                 .map(Types.NestedField::name)
@@ -139,7 +153,8 @@ public class IcebergFileWriterFactory
 
             ParquetWriterOptions parquetWriterOptions = ParquetWriterOptions.builder()
                     .setMaxPageSize(getParquetWriterPageSize(session))
-                    .setMaxPageSize(getParquetWriterBlockSize(session))
+                    .setMaxBlockSize(getParquetWriterBlockSize(session))
+                    .setWriterVersion(getParquetWriterVersion(session))
                     .build();
 
             return new IcebergParquetFileWriter(
@@ -151,10 +166,13 @@ public class IcebergFileWriterFactory
                     makeTypeMap(fileColumnTypes, fileColumnNames),
                     parquetWriterOptions,
                     IntStream.range(0, fileColumnNames.size()).toArray(),
-                    getCompressionCodec(session).getParquetCompressionCodec().get(),
+                    getCompressionCodec(session).getParquetCompressionCodec(),
                     outputPath,
                     hdfsEnvironment,
-                    hdfsContext);
+                    hdfsContext,
+                    metricsConfig,
+                    writerTimezone,
+                    nodeVersion.toString());
         }
         catch (IOException e) {
             throw new PrestoException(ICEBERG_WRITER_OPEN_ERROR, "Error creating Parquet file", e);
@@ -215,11 +233,13 @@ public class IcebergFileWriterFactory
                     getCompressionCodec(session).getOrcCompressionKind(),
                     orcFileWriterConfig
                             .toOrcWriterOptionsBuilder()
-                            .withStripeMinSize(HiveSessionProperties.getOrcOptimizedWriterMinStripeSize(session))
-                            .withStripeMaxSize(HiveSessionProperties.getOrcOptimizedWriterMaxStripeSize(session))
-                            .withStripeMaxRowCount(HiveSessionProperties.getOrcOptimizedWriterMaxStripeRows(session))
-                            .withDictionaryMaxMemory(HiveSessionProperties.getOrcOptimizedWriterMaxDictionaryMemory(session))
-                            .withMaxStringStatisticsLimit(HiveSessionProperties.getOrcStringStatisticsLimit(session))
+                            .withFlushPolicy(DefaultOrcWriterFlushPolicy.builder()
+                                    .withStripeMinSize(getOrcOptimizedWriterMinStripeSize(session))
+                                    .withStripeMaxSize(getOrcOptimizedWriterMaxStripeSize(session))
+                                    .withStripeMaxRowCount(getOrcOptimizedWriterMaxStripeRows(session))
+                                    .build())
+                            .withDictionaryMaxMemory(getOrcOptimizedWriterMaxDictionaryMemory(session))
+                            .withMaxStringStatisticsLimit(getOrcStringStatisticsLimit(session))
                             .build(),
                     IntStream.range(0, fileColumnNames.size()).toArray(),
                     ImmutableMap.<String, String>builder()

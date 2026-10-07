@@ -15,14 +15,14 @@ package com.facebook.presto.plugin.prometheus;
 
 import com.facebook.airlift.configuration.Config;
 import com.facebook.airlift.configuration.ConfigDescription;
+import com.facebook.airlift.configuration.ConfigSecuritySensitive;
+import com.facebook.airlift.units.Duration;
+import com.facebook.airlift.units.MinDuration;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.ConfigurationException;
 import com.google.inject.spi.Message;
-import io.airlift.units.Duration;
-import io.airlift.units.MinDuration;
-
-import javax.annotation.PostConstruct;
-import javax.validation.constraints.NotNull;
+import jakarta.annotation.PostConstruct;
+import jakarta.validation.constraints.NotNull;
 
 import java.io.File;
 import java.net.URI;
@@ -36,6 +36,13 @@ public class PrometheusConnectorConfig
     private Duration maxQueryRangeDuration = new Duration(1, TimeUnit.HOURS);
     private Duration cacheDuration = new Duration(30, TimeUnit.SECONDS);
     private File bearerTokenFile;
+    private String basicAuthUser;
+    private String basicAuthPassword;
+    private boolean tlsEnabled;
+    private String trustStorePath;
+    private String truststorePassword;
+    private boolean verifyHostName;
+    private boolean caseSensitiveNameMatchingEnabled;
 
     @NotNull
     public URI getPrometheusURI()
@@ -106,6 +113,33 @@ public class PrometheusConnectorConfig
         return this;
     }
 
+    public Optional<String> getBasicAuthUser()
+    {
+        return Optional.ofNullable(basicAuthUser);
+    }
+
+    @Config("prometheus.auth.user")
+    @ConfigDescription("Username for Basic authentication when connecting to Prometheus")
+    public PrometheusConnectorConfig setBasicAuthUser(String basicAuthUser)
+    {
+        this.basicAuthUser = basicAuthUser;
+        return this;
+    }
+
+    public Optional<String> getBasicAuthPassword()
+    {
+        return Optional.ofNullable(basicAuthPassword);
+    }
+
+    @Config("prometheus.auth.password")
+    @ConfigDescription("Password for Basic authentication when connecting to Prometheus")
+    @ConfigSecuritySensitive
+    public PrometheusConnectorConfig setBasicAuthPassword(String basicAuthPassword)
+    {
+        this.basicAuthPassword = basicAuthPassword;
+        return this;
+    }
+
     @PostConstruct
     public void checkConfig()
     {
@@ -114,5 +148,76 @@ public class PrometheusConnectorConfig
         if (maxQueryRangeDuration < queryChunkSizeDuration) {
             throw new ConfigurationException(ImmutableList.of(new Message("prometheus.max-query-duration must be greater than prometheus.query-chunk-duration")));
         }
+        if (getBearerTokenFile().isPresent() && (getBasicAuthUser().isPresent() || getBasicAuthPassword().isPresent())) {
+            throw new ConfigurationException(ImmutableList.of(new Message("prometheus.bearer-token-file and prometheus.auth.user/prometheus.auth.password cannot be used together")));
+        }
+        if (getBasicAuthUser().isPresent() != getBasicAuthPassword().isPresent()) {
+            throw new ConfigurationException(ImmutableList.of(new Message("Both prometheus.auth.user and prometheus.auth.password must be set for Basic Auth")));
+        }
+        if (getBasicAuthUser().isPresent() && getBasicAuthUser().get().contains(":")) {
+            throw new ConfigurationException(ImmutableList.of(new Message("Illegal character ':' found in prometheus.auth.user")));
+        }
+    }
+
+    public boolean isTlsEnabled()
+    {
+        return tlsEnabled;
+    }
+
+    @Config("prometheus.tls.enabled")
+    public PrometheusConnectorConfig setTlsEnabled(boolean tlsEnabled)
+    {
+        this.tlsEnabled = tlsEnabled;
+        return this;
+    }
+
+    public String getTrustStorePath()
+    {
+        return trustStorePath;
+    }
+
+    @Config("prometheus.tls.truststore-path")
+    public PrometheusConnectorConfig setTrustStorePath(String path)
+    {
+        this.trustStorePath = path;
+        return this;
+    }
+
+    public String getTruststorePassword()
+    {
+        return truststorePassword;
+    }
+
+    @Config("prometheus.tls.truststore-password")
+    @ConfigSecuritySensitive
+    public PrometheusConnectorConfig setTruststorePassword(String password)
+    {
+        this.truststorePassword = password;
+        return this;
+    }
+
+    public boolean getVerifyHostName()
+    {
+        return verifyHostName;
+    }
+
+    @Config("verify-host-name")
+    public PrometheusConnectorConfig setVerifyHostName(boolean val)
+    {
+        this.verifyHostName = val;
+        return this;
+    }
+
+    public boolean isCaseSensitiveNameMatchingEnabled()
+    {
+        return caseSensitiveNameMatchingEnabled;
+    }
+
+    @Config("case-sensitive-name-matching")
+    @ConfigDescription("Enable or disable case-sensitive matching for table names")
+    public PrometheusConnectorConfig setCaseSensitiveNameMatchingEnabled(boolean caseSensitiveNameMatchingEnabled)
+    {
+        this.caseSensitiveNameMatchingEnabled = caseSensitiveNameMatchingEnabled;
+        return this;
     }
 }

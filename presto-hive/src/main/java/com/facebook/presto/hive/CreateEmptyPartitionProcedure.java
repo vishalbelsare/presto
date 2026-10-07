@@ -26,9 +26,9 @@ import com.facebook.presto.spi.procedure.Procedure;
 import com.facebook.presto.spi.procedure.Procedure.Argument;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slices;
+import jakarta.inject.Inject;
 import org.apache.hadoop.hive.common.FileUtils;
 
-import javax.inject.Inject;
 import javax.inject.Provider;
 
 import java.lang.invoke.MethodHandle;
@@ -119,7 +119,20 @@ public class CreateEmptyPartitionProcedure
                 .map(String.class::cast)
                 .collect(toImmutableList());
 
-        if (metastore.getPartition(new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), false, HiveColumnConverterProvider.DEFAULT_COLUMN_CONVERTER_PROVIDER), schema, table, partitionStringValues).isPresent()) {
+        if (metastore.getPartition(new MetastoreContext(
+                        session.getIdentity(),
+                        session.getQueryId(),
+                        session.getClientInfo(),
+                        session.getClientTags(),
+                        session.getSource(),
+                        getMetastoreHeaders(session),
+                        false,
+                        HiveColumnConverterProvider.DEFAULT_COLUMN_CONVERTER_PROVIDER,
+                        session.getWarningCollector(),
+                        session.getRuntimeStats()),
+                schema,
+                table,
+                partitionStringValues).isPresent()) {
             throw new PrestoException(ALREADY_EXISTS, "Partition already exists");
         }
         String partitionName = FileUtils.makePartName(actualPartitionColumnNames, partitionStringValues);

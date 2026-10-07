@@ -14,6 +14,7 @@
 package com.facebook.presto.jdbc;
 
 import com.facebook.airlift.log.Logging;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.common.type.ArrayType;
 import com.facebook.presto.common.type.BigintType;
 import com.facebook.presto.common.type.BooleanType;
@@ -42,7 +43,6 @@ import com.facebook.presto.type.ColorType;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import io.airlift.units.Duration;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.testng.annotations.AfterClass;
@@ -81,6 +81,7 @@ import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.airlift.testing.Assertions.assertContains;
 import static com.facebook.airlift.testing.Assertions.assertInstanceOf;
 import static com.facebook.airlift.testing.Assertions.assertLessThan;
+import static com.facebook.airlift.units.Duration.nanosSince;
 import static com.facebook.presto.common.type.CharType.createCharType;
 import static com.facebook.presto.common.type.DecimalType.createDecimalType;
 import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
@@ -90,7 +91,6 @@ import static com.facebook.presto.execution.QueryState.RUNNING;
 import static com.facebook.presto.testing.TestingSession.TESTING_CATALOG;
 import static com.facebook.presto.testing.TestingSession.createBogusTestingCatalog;
 import static com.facebook.presto.tests.AbstractTestQueries.TEST_CATALOG_PROPERTIES;
-import static io.airlift.units.Duration.nanosSince;
 import static java.lang.Float.POSITIVE_INFINITY;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -1680,6 +1680,22 @@ public class TestPrestoDriver
         assertTrue(isValidSessionValue);
     }
 
+    @Test
+    public void testTimeZoneIdParameter()
+            throws Exception
+    {
+        String sql = "SELECT current_timezone() zone, TIMESTAMP '2001-02-03 3:04:05' ts";
+
+        try (Connection connection = createConnectionWithParameter("timeZoneId=UTC")) {
+            try (Statement statement = connection.createStatement();
+                    ResultSet rs = statement.executeQuery(sql)) {
+                assertTrue(rs.next());
+                assertEquals(rs.getString("zone"), "UTC");
+                assertEquals(rs.getTimestamp("ts"), new Timestamp(new DateTime(2001, 2, 3, 3, 4, 5, DateTimeZone.UTC).getMillis()));
+            }
+        }
+    }
+
     private QueryState getQueryState(String queryId)
             throws SQLException
     {
@@ -1726,6 +1742,13 @@ public class TestPrestoDriver
             throws SQLException
     {
         String url = format("jdbc:presto://%s/%s/%s", server.getAddress(), catalog, schema);
+        return DriverManager.getConnection(url, "test", null);
+    }
+
+    private Connection createConnectionWithParameter(String parameter)
+            throws SQLException
+    {
+        String url = format("jdbc:presto://%s?%s", server.getAddress(), parameter);
         return DriverManager.getConnection(url, "test", null);
     }
 

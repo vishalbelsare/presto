@@ -24,6 +24,7 @@ import com.facebook.presto.spi.function.FunctionNamespaceManagerContext;
 import com.facebook.presto.spi.function.FunctionNamespaceManagerFactory;
 import com.facebook.presto.spi.function.SqlFunctionHandle;
 import com.google.inject.Injector;
+import io.netty.buffer.PooledByteBufAllocator;
 
 import java.util.Map;
 
@@ -34,7 +35,7 @@ public class H2FunctionNamespaceManagerFactory
 {
     public static final String NAME = "h2";
 
-    private static final SqlFunctionHandle.Resolver HANDLE_RESOLVER = new SqlFunctionHandle.Resolver();
+    private static final SqlFunctionHandle.Resolver HANDLE_RESOLVER = SqlFunctionHandle.Resolver.getInstance();
 
     @Override
     public String getName()
@@ -53,7 +54,7 @@ public class H2FunctionNamespaceManagerFactory
     {
         try {
             Bootstrap app = new Bootstrap(
-                    new DriftNettyClientModule(),
+                    new DriftNettyClientModule(PooledByteBufAllocator.DEFAULT),
                     new MySqlFunctionNamespaceManagerModule(catalogName),
                     new H2ConnectionModule(),
                     new SimpleAddressSqlFunctionExecutorsModule());

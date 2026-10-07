@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.hive.parquet;
 
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.Session;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.RuntimeStats;
@@ -33,7 +34,8 @@ import com.facebook.presto.sql.gen.ExpressionCompiler;
 import com.facebook.presto.sql.gen.PageFunctionCompiler;
 import com.facebook.presto.testing.TestingSession;
 import com.google.common.collect.ImmutableList;
-import io.airlift.units.DataSize;
+import com.google.errorprone.annotations.Immutable;
+import org.apache.parquet.column.ParquetProperties;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 import org.apache.parquet.io.ColumnIOConverter;
@@ -57,19 +59,17 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
 import org.openjdk.jmh.runner.options.VerboseMode;
 import org.testng.annotations.Test;
 
-import javax.annotation.concurrent.Immutable;
-
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Random;
 import java.util.stream.IntStream;
 
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static com.facebook.presto.common.function.OperatorType.EQUAL;
 import static com.facebook.presto.common.function.OperatorType.GREATER_THAN_OR_EQUAL;
 import static com.facebook.presto.common.function.OperatorType.LESS_THAN_OR_EQUAL;
@@ -78,6 +78,7 @@ import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.common.type.IntegerType.INTEGER;
 import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.hive.parquet.AbstractTestParquetReader.intToSqlTimestamp;
+import static com.facebook.presto.hive.parquet.ParquetTester.HIVE_STORAGE_TIME_ZONE;
 import static com.facebook.presto.hive.parquet.ParquetTester.writeParquetFileFromPresto;
 import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static com.facebook.presto.metadata.MetadataManager.createTestMetadataManager;
@@ -95,7 +96,6 @@ import static com.google.common.io.Files.createTempDir;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static io.airlift.slice.Slices.utf8Slice;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.util.Objects.requireNonNull;
 import static java.util.UUID.randomUUID;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -246,11 +246,11 @@ public class BenchmarkParquetPageSource
             List<Float> filterRates = Arrays.stream(filterRateSignature.split("\\|")).map(r -> Float.parseFloat(r)).collect(toImmutableList());
             channelCount = filterRates.size();
 
-            Iterator<?>[] values = new Iterator<?>[channelCount];
+            List<?>[] values = new List<?>[channelCount];
             for (int i = 0; i < channelCount; i++) {
                 float filterRate = filterRates.get(i);
                 Pair<Boolean, Float> filterInfoForNonNull = getFilterInfoForNonNull(filterRate);
-                values[i] = createValues(filterRate).iterator();
+                values[i] = createValues(filterRate);
                 filters.add(getFilter(i, type, filterRate, filterInfoForNonNull.getKey(), filterInfoForNonNull.getValue()));
                 columnNames.add("column" + i);
             }
@@ -260,14 +260,15 @@ public class BenchmarkParquetPageSource
                     columnNames,
                     values,
                     ROWS,
-                    compressionCodecName);
+                    compressionCodecName,
+                    ParquetProperties.WriterVersion.PARQUET_1_0);
 
             //Set up PageProcessor
             List<RowExpression> projections = getProjections(type);
             PageFunctionCompiler pageFunctionCompiler = new PageFunctionCompiler(metadata, 0);
             pageProcessor = new ExpressionCompiler(metadata, pageFunctionCompiler).compilePageProcessor(testSession.getSqlFunctionProperties(), filterConjunction(), projections).get();
 
-            parquetMetadata = MetadataReader.readFooter(new FileParquetDataSource(parquetFile), parquetFile.length()).getParquetMetadata();
+            parquetMetadata = MetadataReader.readFooter(new FileParquetDataSource(parquetFile), parquetFile.length(), Optional.empty(), false).getParquetMetadata();
         }
 
         @TearDown
@@ -290,8 +291,7 @@ public class BenchmarkParquetPageSource
                 fields.add(ColumnIOConverter.constructField(getTypeFromTypeSignature(), messageColumnIO.getChild(i)));
             }
 
-            ParquetReader parquetReader = new ParquetReader(messageColumnIO, parquetMetadata.getBlocks(), dataSource, newSimpleAggregatedMemoryContext(), new DataSize(16, MEGABYTE), batchReadEnabled, enableVerification);
-
+            ParquetReader parquetReader = new ParquetReader(messageColumnIO, parquetMetadata.getBlocks(), Optional.empty(), dataSource, newSimpleAggregatedMemoryContext(), new DataSize(16, MEGABYTE), batchReadEnabled, enableVerification, null, null, false, Optional.empty(), Optional.of(HIVE_STORAGE_TIME_ZONE));
             return new ParquetPageSource(parquetReader, Collections.nCopies(channelCount, type), fields, columnNames, new RuntimeStats());
         }
 
@@ -448,7 +448,7 @@ public class BenchmarkParquetPageSource
             }
         }
 
-        private final Object createValue(Type type, float filterRate)
+        private Object createValue(Type type, float filterRate)
         {
             if (BOOLEAN.equals(type)) {
                 switch (withNulls) {

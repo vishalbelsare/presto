@@ -41,9 +41,8 @@ import com.google.common.util.concurrent.ListeningExecutorService;
 import io.airlift.tpch.TpchColumn;
 import io.airlift.tpch.TpchEntity;
 import io.airlift.tpch.TpchTable;
-
-import javax.annotation.Nullable;
-import javax.annotation.PreDestroy;
+import jakarta.annotation.Nullable;
+import jakarta.annotation.PreDestroy;
 
 import java.io.Closeable;
 import java.util.ArrayList;
@@ -286,6 +285,8 @@ public class ThriftTpchService
                 return createPageSource(TpchTable.REGION, columnNames, splitInfo);
             case "part":
                 return createPageSource(TpchTable.PART, columnNames, splitInfo);
+            case "supplier":
+                return createPageSource(TpchTable.SUPPLIER, columnNames, splitInfo);
             default:
                 throw new IllegalArgumentException("Table not setup: " + splitInfo.getTableName());
         }

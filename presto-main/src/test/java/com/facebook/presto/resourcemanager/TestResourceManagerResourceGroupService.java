@@ -15,11 +15,13 @@ package com.facebook.presto.resourcemanager;
 
 import com.facebook.presto.execution.resourceGroups.ResourceGroupRuntimeInfo;
 import com.facebook.presto.metadata.InMemoryNodeManager;
+import com.facebook.presto.server.InternalCommunicationConfig;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.Test;
 
 import java.util.List;
+import java.util.Optional;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.testng.Assert.assertEquals;
@@ -34,14 +36,16 @@ public class TestResourceManagerResourceGroupService
     {
         TestingResourceManagerClient resourceManagerClient = new TestingResourceManagerClient();
         InMemoryNodeManager nodeManager = new InMemoryNodeManager();
+        InternalCommunicationConfig internalCommunicationConfig = new InternalCommunicationConfig();
         ResourceManagerConfig resourceManagerConfig = new ResourceManagerConfig();
-        ResourceManagerResourceGroupService service = new ResourceManagerResourceGroupService((addressSelectionContext, headers) -> resourceManagerClient, resourceManagerConfig, nodeManager);
+        NoOpHttpResourceManagerClient client = new NoOpHttpResourceManagerClient();
+        ResourceManagerResourceGroupService service = new ResourceManagerResourceGroupService((addressSelectionContext, headers) -> resourceManagerClient, client, resourceManagerConfig, internalCommunicationConfig, nodeManager);
         List<ResourceGroupRuntimeInfo> resourceGroupInfos = service.getResourceGroupInfo();
         assertNotNull(resourceGroupInfos);
         assertTrue(resourceGroupInfos.isEmpty());
         assertEquals(resourceManagerClient.getResourceGroupInfoCalls("local"), 1);
 
-        resourceManagerClient.setResourceGroupRuntimeInfos(ImmutableList.of(new ResourceGroupRuntimeInfo(new ResourceGroupId("global"), 1, 2, 3, 0, 1)));
+        resourceManagerClient.setResourceGroupRuntimeInfos(ImmutableList.of(new ResourceGroupRuntimeInfo(new ResourceGroupId("global"), 1, 2, 3, 0, 1, Optional.empty())));
 
         Thread.sleep(SECONDS.toMillis(2));
 

@@ -17,42 +17,43 @@ import com.facebook.airlift.event.client.EventClient;
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.sql.parser.ParsingException;
 import com.facebook.presto.sql.parser.SqlParser;
-import com.facebook.presto.sql.tree.AliasedRelation;
 import com.facebook.presto.sql.tree.AstVisitor;
 import com.facebook.presto.sql.tree.CreateTable;
-import com.facebook.presto.sql.tree.CreateTableAsSelect;
-import com.facebook.presto.sql.tree.CreateView;
 import com.facebook.presto.sql.tree.Except;
-import com.facebook.presto.sql.tree.Insert;
 import com.facebook.presto.sql.tree.Intersect;
 import com.facebook.presto.sql.tree.Join;
+import com.facebook.presto.sql.tree.Literal;
+import com.facebook.presto.sql.tree.Node;
+import com.facebook.presto.sql.tree.Offset;
+import com.facebook.presto.sql.tree.OrderBy;
 import com.facebook.presto.sql.tree.Query;
 import com.facebook.presto.sql.tree.QuerySpecification;
-import com.facebook.presto.sql.tree.Relation;
 import com.facebook.presto.sql.tree.Statement;
+import com.facebook.presto.sql.tree.SubqueryExpression;
 import com.facebook.presto.sql.tree.Table;
 import com.facebook.presto.sql.tree.TableSubquery;
 import com.facebook.presto.sql.tree.Union;
 import com.facebook.presto.sql.tree.Unnest;
 import com.facebook.presto.sql.tree.Values;
-import com.facebook.presto.sql.tree.With;
 import com.facebook.presto.sql.tree.WithQuery;
 import com.facebook.presto.verifier.annotation.ForControl;
 import com.facebook.presto.verifier.annotation.ForTest;
 import com.facebook.presto.verifier.event.VerifierQueryEvent;
 import com.facebook.presto.verifier.event.VerifierQueryEvent.EventStatus;
+import com.facebook.presto.verifier.source.SnapshotQueryConsumer;
+import com.facebook.presto.verifier.source.SnapshotQuerySupplier;
 import com.facebook.presto.verifier.source.SourceQuerySupplier;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-
-import javax.annotation.PostConstruct;
-import javax.annotation.PreDestroy;
-import javax.inject.Inject;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import jakarta.inject.Inject;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.Iterator;
 import java.util.List;
@@ -68,6 +69,7 @@ import java.util.function.Predicate;
 
 import static com.facebook.presto.verifier.event.VerifierQueryEvent.EventStatus.FAILED;
 import static com.facebook.presto.verifier.event.VerifierQueryEvent.EventStatus.FAILED_RESOLVED;
+import static com.facebook.presto.verifier.event.VerifierQueryEvent.EventStatus.RESUBMITTED;
 import static com.facebook.presto.verifier.event.VerifierQueryEvent.EventStatus.SKIPPED;
 import static com.facebook.presto.verifier.event.VerifierQueryEvent.EventStatus.SUCCEEDED;
 import static com.facebook.presto.verifier.framework.ClusterType.CONTROL;
@@ -78,6 +80,8 @@ import static com.facebook.presto.verifier.framework.SkippedReason.MISMATCHED_QU
 import static com.facebook.presto.verifier.framework.SkippedReason.NON_DETERMINISTIC;
 import static com.facebook.presto.verifier.framework.SkippedReason.SYNTAX_ERROR;
 import static com.facebook.presto.verifier.framework.SkippedReason.UNSUPPORTED_QUERY_TYPE;
+import static com.facebook.presto.verifier.framework.SkippedReason.VERIFIER_INTERNAL_ERROR;
+import static com.facebook.presto.verifier.framework.VerifierConfig.QUERY_BANK_MODE;
 import static com.facebook.presto.verifier.framework.VerifierUtil.PARSING_OPTIONS;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.Thread.currentThread;
@@ -89,6 +93,8 @@ public class VerificationManager
     private static final Logger log = Logger.get(VerificationManager.class);
 
     private final SourceQuerySupplier sourceQuerySupplier;
+    private final SnapshotQueryConsumer snapshotQueryConsumer;
+    private final Map<String, SnapshotQuery> snapshotQueries;
     private final VerificationFactory verificationFactory;
     private final SqlParser sqlParser;
     private final Set<EventClient> eventClients;
@@ -107,6 +113,8 @@ public class VerificationManager
     private final int verificationResubmissionLimit;
     private final boolean explain;
     private final boolean skipControl;
+    private final boolean skipChecksum;
+    private final String runningMode;
 
     private final ExecutorService executor;
     private final CompletionService<VerificationResult> completionService;
@@ -115,6 +123,8 @@ public class VerificationManager
     @Inject
     public VerificationManager(
             SourceQuerySupplier sourceQuerySupplier,
+            SnapshotQueryConsumer snapshotQueryConsumer,
+            SnapshotQuerySupplier snapshotQuerySupplier,
             VerificationFactory verificationFactory,
             SqlParser sqlParser,
             Set<EventClient> eventClients,
@@ -124,6 +134,8 @@ public class VerificationManager
             VerifierConfig config)
     {
         this.sourceQuerySupplier = requireNonNull(sourceQuerySupplier, "sourceQuerySupplier is null");
+        this.snapshotQueryConsumer = requireNonNull(snapshotQueryConsumer, "snapshotQueryConsumer is null");
+        requireNonNull(snapshotQuerySupplier, "snapshotQuerySupplier is null");
         this.verificationFactory = requireNonNull(verificationFactory, "verificationFactory is null");
         this.sqlParser = requireNonNull(sqlParser, "sqlParser is null");
         this.eventClients = ImmutableSet.copyOf(eventClients);
@@ -141,10 +153,18 @@ public class VerificationManager
         this.queryRepetitions = config.getQueryRepetitions();
         this.verificationResubmissionLimit = config.getVerificationResubmissionLimit();
         this.skipControl = config.isSkipControl();
+        this.skipChecksum = config.isSkipChecksum();
         this.explain = config.isExplain();
 
         this.executor = newFixedThreadPool(maxConcurrency);
         this.completionService = new ExecutorCompletionService<>(executor);
+        this.runningMode = config.getRunningMode();
+        if (runningMode.equals(QUERY_BANK_MODE)) {
+            snapshotQueries = snapshotQuerySupplier.get();
+        }
+        else {
+            snapshotQueries = Collections.emptyMap();
+        }
     }
 
     @PostConstruct
@@ -182,10 +202,10 @@ public class VerificationManager
     {
         SourceQuery sourceQuery = verification.getSourceQuery();
         VerificationContext newContext = verification.getVerificationContext();
-        Verification newVerification = verificationFactory.get(sourceQuery, Optional.of(newContext));
+        Verification newVerification = verificationFactory.get(sourceQuery, Optional.of(newContext), snapshotQueryConsumer, snapshotQueries);
         completionService.submit(newVerification::run);
         queriesSubmitted.addAndGet(1);
-        log.info("Verification %s failed, resubmitted for verification (%s/%s)", sourceQuery.getName(), newContext.getResubmissionCount(), verificationResubmissionLimit);
+        log.info("Resubmitted %s for verification (%s/%s)", sourceQuery.getName(), newContext.getResubmissionCount(), verificationResubmissionLimit);
     }
 
     @VisibleForTesting
@@ -202,6 +222,8 @@ public class VerificationManager
                         sourceQuery.getName(),
                         sourceQuery.getQuery(CONTROL),
                         sourceQuery.getQuery(TEST),
+                        sourceQuery.getQueryId(CONTROL),
+                        sourceQuery.getQueryId(TEST),
                         sourceQuery.getControlConfiguration().applyOverrides(controlOverrides),
                         sourceQuery.getTestConfiguration().applyOverrides(testOverrides)))
                 .collect(toImmutableList());
@@ -250,7 +272,7 @@ public class VerificationManager
                 else if (controlQueryType != testQueryType) {
                     postEvent(VerifierQueryEvent.skipped(sourceQuery.getSuite(), testId, sourceQuery, MISMATCHED_QUERY_TYPE, skipControl));
                 }
-                else if (isLimitWithoutOrderBy(controlStatement, sourceQuery.getName())) {
+                else if (!skipControl && !skipChecksum && isLimitWithoutOrderBy(controlStatement, sourceQuery.getName())) {
                     log.debug("LimitWithoutOrderByChecker Skipped %s", sourceQuery.getName());
                     postEvent(VerifierQueryEvent.skipped(sourceQuery.getSuite(), testId, sourceQuery, NON_DETERMINISTIC, skipControl));
                 }
@@ -261,6 +283,19 @@ public class VerificationManager
             catch (ParsingException e) {
                 log.warn("Failed to parse query: %s", sourceQuery.getName());
                 postEvent(VerifierQueryEvent.skipped(sourceQuery.getSuite(), testId, sourceQuery, SYNTAX_ERROR, skipControl));
+            }
+            catch (StackOverflowError e) {
+                // Deeply nested ASTs, e.g. a WHERE clause with thousands of OR-ed predicates, overflow the
+                // recursive AST visitors. StackOverflowError is an Error, not an Exception, so it has to be
+                // caught explicitly or it escapes start() and aborts the entire run instead of one query.
+                log.warn(
+                        "Failed to analyze query, AST too deeply nested: %s, suite: %s, controlQueryId: %s, controlQueryLength: %s, testQueryLength: %s",
+                        sourceQuery.getName(),
+                        sourceQuery.getSuite(),
+                        sourceQuery.getQueryId(CONTROL).orElse("unknown"),
+                        sourceQuery.getQuery(CONTROL).length(),
+                        sourceQuery.getQuery(TEST).length());
+                postEvent(VerifierQueryEvent.skipped(sourceQuery.getSuite(), testId, sourceQuery, VERIFIER_INTERNAL_ERROR, skipControl));
             }
         }
         List<SourceQuery> selectQueries = selected.build();
@@ -314,7 +349,7 @@ public class VerificationManager
         for (int i = 0; i < suiteRepetitions; i++) {
             for (SourceQuery sourceQuery : sourceQueries) {
                 for (int j = 0; j < queryRepetitions; j++) {
-                    Verification verification = verificationFactory.get(sourceQuery, Optional.empty());
+                    Verification verification = verificationFactory.get(sourceQuery, Optional.empty(), snapshotQueryConsumer, snapshotQueries);
                     completionService.submit(verification::run);
                 }
             }
@@ -335,26 +370,25 @@ public class VerificationManager
                 VerificationResult result = completionService.take().get();
                 Optional<VerifierQueryEvent> event = result.getEvent();
                 completed++;
-                if (!event.isPresent()) {
-                    statusCount.compute(SKIPPED, (status, count) -> count == null ? 1 : count + 1);
-                }
-                else {
+                if (event.isPresent()) {
                     statusCount.compute(EventStatus.valueOf(event.get().getStatus()), (status, count) -> count == null ? 1 : count + 1);
                     postEvent(event.get());
                 }
 
                 if (result.shouldResubmit()) {
+                    statusCount.compute(RESUBMITTED, (status, count) -> count == null ? 1 : count + 1);
                     resubmit(result.getVerification());
                 }
 
                 double progress = ((double) completed) / queriesSubmitted.get() * 100;
-                if (progress - lastProgress > 0.5 || completed == queriesSubmitted.get()) {
+                if (progress - lastProgress > 0.2 || completed == queriesSubmitted.get()) {
                     log.info(
-                            "Progress: %s succeeded, %s skipped, %s resolved, %s failed, %.2f%% done",
+                            "Progress: %s succeeded, %s skipped, %s resolved, %s failed, %s resubmitted, %.2f%% done",
                             statusCount.getOrDefault(SUCCEEDED, 0),
                             statusCount.getOrDefault(SKIPPED, 0),
                             statusCount.getOrDefault(FAILED_RESOLVED, 0),
                             statusCount.getOrDefault(FAILED, 0),
+                            statusCount.getOrDefault(RESUBMITTED, 0),
                             progress);
                     lastProgress = progress;
                 }
@@ -376,17 +410,14 @@ public class VerificationManager
         }
     }
 
-    private class LimitWithoutOrderByChecker
+    static class LimitWithoutOrderByChecker
             extends AstVisitor<Boolean, Integer>
     {
         @Override
         protected Boolean visitQuerySpecification(QuerySpecification node, Integer level)
         {
-            if (node.getFrom().isPresent()) {
-                Relation relation = node.getFrom().get();
-                if (process(relation, level)) {
-                    return true;
-                }
+            if (node.getChildren().stream().anyMatch(n -> process(n, level))) {
+                return true;
             }
             //Check if node is not at root level and limit clause is present without order by
             return level != 0 && node.getLimit().isPresent() && !node.getOrderBy().isPresent();
@@ -395,62 +426,60 @@ public class VerificationManager
         @Override
         protected Boolean visitQuery(Query node, Integer level)
         {
-            if (node.getWith().isPresent()) {
-                With with = node.getWith().get();
-                for (WithQuery query : with.getQueries()) {
-                    if (process(query.getQuery(), level + 1)) {
-                        return true;
-                    }
-                }
+            if (node.getChildren().stream().anyMatch(n -> process(n, level))) {
+                return true;
             }
-
-            return process(node.getQueryBody(), level);
+            //Check if node is not at root level and limit clause is present without order by
+            return level != 0 && node.getLimit().isPresent() && !node.getOrderBy().isPresent();
         }
 
         @Override
-        protected Boolean visitInsert(Insert node, Integer level)
+        protected Boolean visitWithQuery(WithQuery node, Integer level)
         {
-            return process(node.getQuery(), level);
+            return process(node.getQuery(), level + 1);
         }
 
         @Override
-        protected Boolean visitJoin(Join node, Integer level)
+        protected Boolean visitTableSubquery(TableSubquery node, Integer level)
         {
-            return false;
+            //Incrementing level when we reach a sub-query
+            return process(node.getQuery(), level + 1);
+        }
+
+        @Override
+        protected Boolean visitSubqueryExpression(SubqueryExpression node, Integer level)
+        {
+            return process(node.getQuery(), level + 1);
+        }
+
+        @Override
+        protected Boolean visitNode(Node node, Integer level)
+        {
+            return node.getChildren().stream().anyMatch(n -> process(n, level));
         }
 
         @Override
         protected Boolean visitUnion(Union node, Integer level)
         {
-            for (Relation relation : node.getRelations()) {
-                if (process(relation, level)) {
-                    return true;
-                }
-            }
-            return false;
+            return node.getChildren().stream().anyMatch(n -> process(n, level));
         }
 
         @Override
         protected Boolean visitIntersect(Intersect node, Integer level)
         {
-            for (Relation relation : node.getRelations()) {
-                if (process(relation, level)) {
-                    return true;
-                }
-            }
-            return false;
+            return node.getChildren().stream().anyMatch(n -> process(n, level));
         }
 
         @Override
         protected Boolean visitExcept(Except node, Integer level)
         {
-            return process(node.getLeft(), level) || process(node.getRight(), level);
+            return node.getChildren().stream().anyMatch(n -> process(n, level));
         }
 
         @Override
-        protected Boolean visitAliasedRelation(AliasedRelation node, Integer level)
+        protected Boolean visitJoin(Join node, Integer level)
         {
-            return process(node.getRelation(), level);
+            return node.getChildren().stream().anyMatch(n -> process(n, level));
         }
 
         @Override
@@ -466,32 +495,31 @@ public class VerificationManager
         }
 
         @Override
-        protected Boolean visitTableSubquery(TableSubquery node, Integer level)
-        {
-            //Incrementing level when we reach a sub-query
-            return process(node.getQuery(), level + 1);
-        }
-
-        @Override
         protected Boolean visitCreateTable(CreateTable node, Integer level)
         {
             return false;
         }
 
         @Override
-        protected Boolean visitCreateTableAsSelect(CreateTableAsSelect node, Integer level)
-        {
-            return process(node.getQuery(), level);
-        }
-
-        @Override
-        protected Boolean visitCreateView(CreateView node, Integer level)
-        {
-            return process(node.getQuery(), level);
-        }
-
-        @Override
         protected Boolean visitValues(Values node, Integer level)
+        {
+            return false;
+        }
+
+        @Override
+        protected Boolean visitLiteral(Literal node, Integer context)
+        {
+            return false;
+        }
+
+        @Override
+        protected Boolean visitOrderBy(OrderBy node, Integer context)
+        {
+            return false;
+        }
+
+        @Override
+        protected Boolean visitOffset(Offset node, Integer context)
         {
             return false;
         }

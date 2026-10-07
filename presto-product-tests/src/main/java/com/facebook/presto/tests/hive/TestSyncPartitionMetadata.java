@@ -20,9 +20,8 @@ import io.prestodb.tempto.fulfillment.table.hive.HiveDataSource;
 import io.prestodb.tempto.hadoop.hdfs.HdfsClient;
 import io.prestodb.tempto.internal.hadoop.hdfs.HdfsDataSourceWriter;
 import io.prestodb.tempto.query.QueryResult;
+import jakarta.inject.Inject;
 import org.testng.annotations.Test;
-
-import javax.inject.Inject;
 
 import static com.facebook.presto.tests.TestGroups.HIVE_PARTITIONING;
 import static com.facebook.presto.tests.TestGroups.SMOKE;
@@ -124,6 +123,33 @@ public class TestSyncPartitionMetadata
         assertThatThrownBy(() -> query("CALL system.sync_partition_metadata('default', '" + tableName + "', 'ADD', false)"))
                 .hasMessageContaining(format("One or more partitions already exist for table 'default.%s'", tableName));
         assertPartitions(tableName, row("a", "1"), row("b", "2"));
+    }
+
+    @Test(groups = {HIVE_PARTITIONING, SMOKE})
+    public void testAddPartitionNeedsUrlEncoding()
+    {
+        String tableName = "test_sync_partition_add_partition_url_encoding";
+        String mirrorTableName = "test_sync_partition_add_partition_url_encoding_mirror";
+
+        query("CREATE TABLE " + tableName + " (payload bigint, col_x varchar, col_y varchar) " +
+                "WITH (format = 'ORC', partitioned_by = ARRAY[ 'col_x', 'col_y' ])");
+        query("INSERT INTO " + tableName + " VALUES (1, 'a', '1'), (2, 'b', '2')");
+
+        String tableLocation = WAREHOUSE_DIRECTORY_PATH + tableName;
+
+        query("CREATE TABLE " + mirrorTableName + " (payload bigint, col_x varchar, col_y varchar) " +
+                "WITH (external_location = '" + tableLocation + "', format = 'ORC', partitioned_by = ARRAY[ 'col_x', 'col_y' ])");
+        query("CALL system.sync_partition_metadata('default', '" + mirrorTableName + "', 'ADD')");
+
+        assertPartitions(tableName, row("a", "1"), row("b", "2"));
+        assertPartitions(mirrorTableName, row("a", "1"), row("b", "2"));
+
+        query("INSERT INTO " + tableName + " VALUES (3, 'c', '3')");
+        assertPartitions(tableName, row("a", "1"), row("b", "2"), row("c", "3"));
+        assertPartitions(mirrorTableName, row("a", "1"), row("b", "2"));
+
+        query("CALL system.sync_partition_metadata('default', '" + mirrorTableName + "', 'ADD')");
+        assertPartitions(mirrorTableName, row("a", "1"), row("b", "2"), row("c", "3"));
     }
 
     private static void prepare(HdfsClient hdfsClient, HdfsDataSourceWriter hdfsDataSourceWriter, String tableName)

@@ -16,6 +16,7 @@ package com.facebook.presto.hive;
 import com.facebook.airlift.bootstrap.Bootstrap;
 import com.facebook.airlift.json.JsonCodec;
 import com.facebook.airlift.json.JsonModule;
+import com.facebook.drift.codec.guice.ThriftCodecModule;
 import com.facebook.presto.block.BlockJsonSerde;
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.block.BlockEncoding;
@@ -23,6 +24,7 @@ import com.facebook.presto.common.block.BlockEncodingManager;
 import com.facebook.presto.common.block.BlockEncodingSerde;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.connector.ConnectorManager;
 import com.facebook.presto.hive.metastore.Column;
 import com.facebook.presto.hive.metastore.Storage;
 import com.facebook.presto.hive.metastore.StorageFormat;
@@ -53,8 +55,8 @@ import static com.facebook.airlift.configuration.ConfigBinder.configBinder;
 import static com.facebook.airlift.json.JsonBinder.jsonBinder;
 import static com.facebook.airlift.json.JsonCodecBinder.jsonCodecBinder;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.hive.BaseHiveColumnHandle.ColumnType.REGULAR;
 import static com.facebook.presto.hive.CacheQuotaRequirement.NO_CACHE_REQUIREMENT;
-import static com.facebook.presto.hive.HiveColumnHandle.ColumnType.REGULAR;
 import static com.facebook.presto.hive.HiveType.HIVE_LONG;
 import static com.facebook.presto.hive.HiveType.HIVE_STRING;
 import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
@@ -80,15 +82,22 @@ public class TestHiveSplit
                 Optional.empty(),
                 ImmutableList.of(),
                 Optional.empty()));
-        HiveSplit expected = new HiveSplit(
-                "db",
-                "table",
-                "partitionId",
+        HiveFileSplit fileSplit = new HiveFileSplit(
                 "path",
                 42,
                 87,
                 88,
                 Instant.now().toEpochMilli(),
+                Optional.empty(),
+                customSplitInfo,
+                0);
+
+        byte[] rowIdPartitionComponent = {(byte) 76, (byte) 58};
+        HiveSplit expected = new HiveSplit(
+                fileSplit,
+                "db",
+                "table",
+                "partitionId",
                 new Storage(
                         StorageFormat.create("serde", "input", "output"),
                         "location",
@@ -108,16 +117,15 @@ public class TestHiveSplit
                         16,
                         ImmutableList.of(new HiveColumnHandle("col", HIVE_LONG, BIGINT.getTypeSignature(), 5, REGULAR, Optional.of("comment"), Optional.empty())))),
                 false,
-                Optional.empty(),
                 NO_CACHE_REQUIREMENT,
                 Optional.of(EncryptionInformation.fromEncryptionMetadata(DwrfEncryptionMetadata.forPerField(
                         ImmutableMap.of("field1", "test1".getBytes()),
                         ImmutableMap.of(),
                         "test_algo",
                         "test_provider"))),
-                customSplitInfo,
                 redundantColumnDomains,
-                SplitWeight.fromProportion(2.0)); // some non-standard value
+                SplitWeight.fromProportion(2.0), // some non-standard value
+                Optional.of(rowIdPartitionComponent));
 
         JsonCodec<HiveSplit> codec = getJsonCodec();
         String json = codec.toJson(expected);
@@ -126,10 +134,7 @@ public class TestHiveSplit
         assertEquals(actual.getDatabase(), expected.getDatabase());
         assertEquals(actual.getTable(), expected.getTable());
         assertEquals(actual.getPartitionName(), expected.getPartitionName());
-        assertEquals(actual.getPath(), expected.getPath());
-        assertEquals(actual.getStart(), expected.getStart());
-        assertEquals(actual.getLength(), expected.getLength());
-        assertEquals(actual.getFileSize(), expected.getFileSize());
+        assertEquals(actual.getFileSplit(), expected.getFileSplit());
         assertEquals(actual.getStorage(), expected.getStorage());
         assertEquals(actual.getPartitionKeys(), expected.getPartitionKeys());
         assertEquals(actual.getAddresses(), expected.getAddresses());
@@ -141,8 +146,8 @@ public class TestHiveSplit
         assertEquals(actual.isS3SelectPushdownEnabled(), expected.isS3SelectPushdownEnabled());
         assertEquals(actual.getCacheQuotaRequirement(), expected.getCacheQuotaRequirement());
         assertEquals(actual.getEncryptionInformation(), expected.getEncryptionInformation());
-        assertEquals(actual.getCustomSplitInfo(), expected.getCustomSplitInfo());
         assertEquals(actual.getSplitWeight(), expected.getSplitWeight());
+        assertEquals(actual.getRowIdPartitionComponent().get(), expected.getRowIdPartitionComponent().get());
     }
 
     private JsonCodec<HiveSplit> getJsonCodec()
@@ -150,8 +155,10 @@ public class TestHiveSplit
     {
         Module module = binder -> {
             binder.install(new JsonModule());
+            binder.install(new ThriftCodecModule());
             binder.install(new HandleJsonModule());
             configBinder(binder).bindConfig(FeaturesConfig.class);
+            binder.bind(ConnectorManager.class).toProvider(() -> null);
             FunctionAndTypeManager functionAndTypeManager = createTestFunctionAndTypeManager();
             binder.bind(TypeManager.class).toInstance(functionAndTypeManager);
             jsonBinder(binder).addDeserializerBinding(Type.class).to(TypeDeserializer.class);

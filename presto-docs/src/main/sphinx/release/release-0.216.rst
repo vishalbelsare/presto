@@ -5,13 +5,13 @@ Release 0.216
 General Changes
 ---------------
 
-* Fix correctness issue for :func:`array_intersect` and :func:`array_distinct` when input contains
+* Fix correctness issue for :func:`!array_intersect` and :func:`!array_distinct` when input contains
   both zeros and nulls.
 * Fix ``count(*)`` aggregation on empty relation when ``optimize_mixed_distinct_aggregation`` is enabled.
 * Improve table scan performance for structural types.
-* Improve performance for :func:`array_intersect`.
-* Add :func:`reduce_agg` aggregate function.
-* Add :func:`millisecond` function.
+* Improve performance for :func:`!array_intersect`.
+* Add :func:`!reduce_agg` aggregate function.
+* Add :func:`!millisecond` function.
 * Add an optimizer rule to filter the window partitions before executing the window operators.
 * Remove ``ON`` keyword for :doc:`/sql/show-stats`.
 * Restrict ``WHERE`` clause in :doc:`/sql/show-stats` to filters that can be pushed down to the connectors.
@@ -30,7 +30,7 @@ Hive Connector Changes
 * Fix a corner case where the ORC writer fails with integer overflow when writing
   highly compressible data using dictionary encoding (:issue:`11930`).
 * Fail queries reading Parquet files if statistics in those Parquet files are
-  corrupt (e.g., min > max). To disable this behavior, set the configuration
+  corrupt (such as min > max). To disable this behavior, set the configuration
   property ``hive.parquet.fail-on-corrupted-statistics``
   or session property ``parquet_fail_with_corrupted_statistics`` to false.
 * Add support for :ref:`S3 select pushdown <s3selectpushdown>`, which enables pushing down

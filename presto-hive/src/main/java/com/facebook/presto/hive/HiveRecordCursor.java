@@ -17,10 +17,12 @@ import com.facebook.presto.common.type.DecimalType;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.hive.HivePageSourceProvider.ColumnMapping;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.RecordCursor;
 import com.google.common.annotations.VisibleForTesting;
 import io.airlift.slice.Slice;
+import io.airlift.slice.Slices;
 import org.joda.time.DateTimeZone;
 
 import java.util.List;
@@ -38,6 +40,7 @@ import static com.facebook.presto.common.type.SmallintType.SMALLINT;
 import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.common.type.TinyintType.TINYINT;
 import static com.facebook.presto.common.type.Varchars.isVarcharType;
+import static com.facebook.presto.hive.HivePageSourceProvider.ColumnMappingKind.POSTFILLED;
 import static com.facebook.presto.hive.HivePageSourceProvider.ColumnMappingKind.PREFILLED;
 import static com.facebook.presto.hive.HivePageSourceProvider.ColumnMappingKind.REGULAR;
 import static com.facebook.presto.hive.HiveUtil.bigintPartitionKey;
@@ -74,6 +77,7 @@ public class HiveRecordCursor
     private final boolean[] nulls;
 
     public HiveRecordCursor(
+            ConnectorSession session,
             List<ColumnMapping> columnMappings,
             DateTimeZone hiveStorageTimeZone,
             TypeManager typeManager,
@@ -99,8 +103,12 @@ public class HiveRecordCursor
 
         for (int columnIndex = 0; columnIndex < size; columnIndex++) {
             ColumnMapping columnMapping = columnMappings.get(columnIndex);
-
-            if (columnMapping.getKind() == PREFILLED) {
+            if (columnMapping.getKind() == POSTFILLED) {
+                slices[columnIndex] = Slices.EMPTY_SLICE;
+                Type type = typeManager.getType(columnMapping.getHiveColumnHandle().getTypeSignature());
+                types[columnIndex] = type;
+            }
+            else if (columnMapping.getKind() == PREFILLED) {
                 String columnValue = columnMapping.getPrefilledValue();
                 byte[] bytes = columnValue.getBytes(UTF_8);
 
@@ -142,7 +150,7 @@ public class HiveRecordCursor
                     longs[columnIndex] = datePartitionKey(columnValue, name);
                 }
                 else if (TIMESTAMP.equals(type)) {
-                    longs[columnIndex] = timestampPartitionKey(columnValue, hiveStorageTimeZone, name);
+                    longs[columnIndex] = timestampPartitionKey(session.getSqlFunctionProperties().isLegacyTimestamp(), columnValue, hiveStorageTimeZone, name);
                 }
                 else if (isShortDecimal(type)) {
                     longs[columnIndex] = shortDecimalPartitionKey(columnValue, (DecimalType) type, name);

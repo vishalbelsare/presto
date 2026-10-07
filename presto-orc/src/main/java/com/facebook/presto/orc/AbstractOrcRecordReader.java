@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.orc;
 
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.RuntimeStats;
 import com.facebook.presto.common.Subfield;
@@ -33,16 +34,14 @@ import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Maps;
 import com.google.common.io.Closer;
 import io.airlift.slice.Slice;
-import io.airlift.slice.Slices;
-import io.airlift.units.DataSize;
 import org.joda.time.DateTimeZone;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -113,13 +112,12 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
     private final long[] maxBytesPerCell;
     private long maxCombinedBytesPerRow;
 
-    private final Map<String, Slice> userMetadata;
-
     private final Optional<OrcWriteValidation> writeValidation;
     private final Optional<OrcWriteValidation.WriteChecksumBuilder> writeChecksumBuilder;
     private final Optional<OrcWriteValidation.StatisticsValidation> rowGroupStatisticsValidation;
     private final Optional<OrcWriteValidation.StatisticsValidation> stripeStatisticsValidation;
     private final Optional<OrcWriteValidation.StatisticsValidation> fileStatisticsValidation;
+    private final Optional<OrcFileIntrospector> fileIntrospector;
 
     private final RuntimeStats runtimeStats;
 
@@ -147,13 +145,14 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
             DataSize maxMergeDistance,
             DataSize tinyStripeThreshold,
             DataSize maxBlockSize,
-            Map<String, Slice> userMetadata,
             OrcAggregatedMemoryContext systemMemoryUsage,
             Optional<OrcWriteValidation> writeValidation,
             int initialBatchSize,
             StripeMetadataSource stripeMetadataSource,
             boolean cacheable,
-            RuntimeStats runtimeStats)
+            RuntimeStats runtimeStats,
+            Optional<OrcFileIntrospector> fileIntrospector,
+            long fileModificationTime)
     {
         requireNonNull(includedColumns, "includedColumns is null");
         requireNonNull(predicate, "predicate is null");
@@ -166,7 +165,6 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
         requireNonNull(dwrfEncryptionGroupMap, "dwrfEncryptionGroupMap is null");
         requireNonNull(columnToIntermediateKeyMap, "columnToIntermediateKeyMap is null");
         requireNonNull(hiveStorageTimeZone, "hiveStorageTimeZone is null");
-        requireNonNull(userMetadata, "userMetadata is null");
         requireNonNull(systemMemoryUsage, "systemMemoryUsage is null");
 
         this.writeValidation = requireNonNull(writeValidation, "writeValidation is null");
@@ -176,12 +174,13 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
         this.fileStatisticsValidation = writeValidation.map(validation -> validation.createWriteStatisticsBuilder(includedColumns));
         this.systemMemoryUsage = systemMemoryUsage;
         this.runtimeStats = requireNonNull(runtimeStats, "runtimeStats is null");
+        this.fileIntrospector = requireNonNull(fileIntrospector, "fileIntrospector is null");
 
         // reduce the included columns to the set that is also present
         ImmutableSet.Builder<Integer> presentColumns = ImmutableSet.builder();
         OrcType root = types.get(0);
         for (int column : includedColumns.keySet()) {
-            // an old file can have less columns since columns can be added
+            // an old file can have fewer columns since columns can be added
             // after the file was written
             if (column >= 0 && column < root.getFieldCount()) {
                 presentColumns.add(column);
@@ -235,8 +234,6 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
                 .mapToLong(StripeInformation::getNumberOfRows)
                 .sum();
 
-        this.userMetadata = ImmutableMap.copyOf(Maps.transformValues(userMetadata, Slices::copyOf));
-
         this.currentStripeSystemMemoryContext = this.systemMemoryUsage.newOrcAggregatedMemoryContext();
 
         Set<Integer> includedOrcColumns = getIncludedOrcColumns(types, this.presentColumns, requireNonNull(requiredSubfields, "requiredSubfields is null"));
@@ -258,7 +255,10 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
                 stripeMetadataSource,
                 cacheable,
                 this.dwrfEncryptionGroupMap,
-                runtimeStats);
+                runtimeStats,
+                fileIntrospector,
+                fileModificationTime,
+                hiveStorageTimeZone.toTimeZone().toZoneId());
 
         this.streamReaders = requireNonNull(streamReaders, "streamReaders is null");
         for (int columnId = 0; columnId < root.getFieldCount(); columnId++) {
@@ -330,6 +330,9 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
         Map<String, List<Subfield>> fields = new HashMap<>();
         for (Subfield subfield : requiredSubfields) {
             List<Subfield.PathElement> path = subfield.getPath();
+            if (path.size() == 1 && path.get(0) instanceof Subfield.NoSubfield) {
+                continue;
+            }
             String name = ((Subfield.NestedField) path.get(0)).getName().toLowerCase(Locale.ENGLISH);
             fields.computeIfAbsent(name, k -> new ArrayList<>());
             if (path.size() > 1) {
@@ -525,11 +528,6 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
         return presentColumns.contains(hiveColumnIndex);
     }
 
-    public Map<String, Slice> getUserMetadata()
-    {
-        return ImmutableMap.copyOf(Maps.transformValues(userMetadata, Slices::copyOf));
-    }
-
     private boolean advanceToNextRowGroup()
             throws IOException
     {
@@ -662,14 +660,16 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
         SharedBuffer sharedDecompressionBuffer = new SharedBuffer(currentStripeSystemMemoryContext.newOrcLocalMemoryContext("sharedDecompressionBuffer"));
         Stripe stripe = stripeReader.readStripe(stripeInformation, currentStripeSystemMemoryContext, dwrfEncryptionInfo, sharedDecompressionBuffer);
         if (stripe != null) {
+            ZoneId timezone = stripe.getTimezone();
             for (StreamReader column : streamReaders) {
                 if (column != null) {
-                    column.startStripe(stripe);
+                    column.startStripe(timezone, stripe);
                 }
             }
 
             rowGroups = stripe.getRowGroups().iterator();
         }
+        fileIntrospector.ifPresent(introspector -> introspector.onStripe(stripeInformation, stripe));
     }
 
     @VisibleForTesting
@@ -759,30 +759,6 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
         return systemMemoryUsage.getBytes();
     }
 
-    protected static StreamDescriptor createStreamDescriptor(String parentStreamName, String fieldName, int typeId, List<OrcType> types, OrcDataSource dataSource)
-    {
-        OrcType type = types.get(typeId);
-
-        if (!fieldName.isEmpty()) {
-            parentStreamName += "." + fieldName;
-        }
-
-        ImmutableList.Builder<StreamDescriptor> nestedStreams = ImmutableList.builder();
-        if (type.getOrcTypeKind() == STRUCT) {
-            for (int i = 0; i < type.getFieldCount(); ++i) {
-                nestedStreams.add(createStreamDescriptor(parentStreamName, type.getFieldName(i), type.getFieldTypeIndex(i), types, dataSource));
-            }
-        }
-        else if (type.getOrcTypeKind() == OrcType.OrcTypeKind.LIST) {
-            nestedStreams.add(createStreamDescriptor(parentStreamName, "item", type.getFieldTypeIndex(0), types, dataSource));
-        }
-        else if (type.getOrcTypeKind() == OrcType.OrcTypeKind.MAP) {
-            nestedStreams.add(createStreamDescriptor(parentStreamName, "key", type.getFieldTypeIndex(0), types, dataSource));
-            nestedStreams.add(createStreamDescriptor(parentStreamName, "value", type.getFieldTypeIndex(1), types, dataSource));
-        }
-        return new StreamDescriptor(parentStreamName, typeId, fieldName, type, dataSource, nestedStreams.build());
-    }
-
     protected boolean shouldValidateWritePageChecksum()
     {
         return writeChecksumBuilder.isPresent();
@@ -796,6 +772,11 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
             stripeStatisticsValidation.get().addPage(page);
             fileStatisticsValidation.get().addPage(page);
         }
+    }
+
+    protected OrcDataSourceId getOrcDataSourceId()
+    {
+        return orcDataSource.getId();
     }
 
     private static class StripeInfo
@@ -849,7 +830,7 @@ abstract class AbstractOrcRecordReader<T extends StreamReader>
 
         public static OrcBatchRecordReader.LinearProbeRangeFinder createTinyStripesRangeFinder(List<StripeInformation> stripes, DataSize maxMergeDistance, DataSize tinyStripeThreshold)
         {
-            if (stripes.size() == 0) {
+            if (stripes.isEmpty()) {
                 return new OrcBatchRecordReader.LinearProbeRangeFinder(ImmutableList.of());
             }
 

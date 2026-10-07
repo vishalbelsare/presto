@@ -33,6 +33,9 @@ import com.facebook.presto.parquet.reader.PageReader;
 import com.facebook.presto.spi.PrestoException;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
+import org.apache.parquet.internal.filter2.columnindex.RowRanges;
+import org.joda.time.DateTimeZone;
+import org.openjdk.jol.info.ClassLayout;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -48,6 +51,8 @@ import static java.util.Objects.requireNonNull;
 public class BinaryFlatBatchReader
         implements ColumnReader
 {
+    private static final int INSTANCE_SIZE = ClassLayout.parseClass(BinaryFlatBatchReader.class).instanceSize();
+
     private final RichColumnDescriptor columnDescriptor;
 
     protected Field field;
@@ -72,16 +77,16 @@ public class BinaryFlatBatchReader
     }
 
     @Override
-    public void init(PageReader pageReader, Field field)
+    public void init(PageReader pageReader, Field field, RowRanges rowRanges, Optional<DateTimeZone> timezone)
     {
         checkArgument(!isInitialized(), "Parquet batch reader already initialized");
         this.pageReader = requireNonNull(pageReader, "pageReader is null");
-        checkArgument(pageReader.getTotalValueCount() > 0, "page is empty");
+        checkArgument(pageReader.getValueCountInColumnChunk() > 0, "page is empty");
         this.field = requireNonNull(field, "field is null");
 
         DictionaryPage dictionaryPage = pageReader.readDictionaryPage();
         if (dictionaryPage != null) {
-            dictionary = Dictionaries.createDictionary(columnDescriptor, dictionaryPage);
+            dictionary = Dictionaries.createDictionary(columnDescriptor, dictionaryPage, timezone);
         }
     }
 
@@ -93,7 +98,7 @@ public class BinaryFlatBatchReader
     }
 
     @Override
-    public ColumnChunk readNext()
+    public ColumnChunk readNext(Optional<DateTimeZone> timezone)
     {
         ColumnChunk columnChunk = null;
         try {
@@ -112,6 +117,16 @@ public class BinaryFlatBatchReader
         readOffset = 0;
         nextBatchSize = 0;
         return columnChunk;
+    }
+
+    @Override
+    public long getRetainedSizeInBytes()
+    {
+        return INSTANCE_SIZE +
+                (definitionLevelDecoder == null ? 0 : definitionLevelDecoder.getRetainedSizeInBytes()) +
+                (valuesDecoder == null ? 0 : valuesDecoder.getRetainedSizeInBytes()) +
+                (dictionary == null ? 0 : dictionary.getRetainedSizeInBytes()) +
+                (pageReader == null ? 0 : pageReader.getRetainedSizeInBytes());
     }
 
     protected boolean readNextPage()

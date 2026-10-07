@@ -18,8 +18,7 @@ import com.facebook.presto.spi.SourceLocation;
 import com.facebook.presto.spi.function.FunctionHandle;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import javax.annotation.concurrent.Immutable;
+import com.google.errorprone.annotations.Immutable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -88,6 +87,12 @@ public final class CallExpression
         return returnType;
     }
 
+    @Override
+    public List<RowExpression> getChildren()
+    {
+        return arguments;
+    }
+
     @JsonProperty
     public List<RowExpression> getArguments()
     {
@@ -123,5 +128,11 @@ public final class CallExpression
     public <R, C> R accept(RowExpressionVisitor<R, C> visitor, C context)
     {
         return visitor.visitCall(this, context);
+    }
+
+    @Override
+    public RowExpression canonicalize()
+    {
+        return getSourceLocation().isPresent() ? new CallExpression(Optional.empty(), displayName, functionHandle, returnType, arguments) : this;
     }
 }

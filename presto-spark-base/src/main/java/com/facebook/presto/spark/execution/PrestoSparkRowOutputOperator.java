@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.spark.execution;
 
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.block.RunLengthEncodedBlock;
@@ -32,7 +33,6 @@ import com.facebook.presto.sql.planner.OutputPartitioning;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.slice.SliceOutput;
-import io.airlift.units.DataSize;
 
 import java.util.List;
 import java.util.Optional;
@@ -81,7 +81,7 @@ public class PrestoSparkRowOutputOperator
                 Optional<OutputPartitioning> outputPartitioning,
                 PagesSerdeFactory serdeFactory)
         {
-            OutputPartitioning partitioning = outputPartitioning.orElse(preDeterminedPartition.orElse(SINGLE_PARTITION));
+            OutputPartitioning partitioning = outputPartitioning.orElseGet(() -> preDeterminedPartition.orElse(SINGLE_PARTITION));
             return new PrestoSparkRowOutputOperatorFactory(
                     operatorId,
                     planNodeId,
@@ -185,7 +185,6 @@ public class PrestoSparkRowOutputOperator
             OperatorContext operatorContext = driverContext.addOperatorContext(operatorId, planNodeId, PrestoSparkRowOutputOperator.class.getSimpleName());
             return new PrestoSparkRowOutputOperator(
                     operatorContext,
-                    operatorContext.newLocalSystemMemoryContext(PrestoSparkRowOutputOperator.class.getSimpleName()),
                     outputBuffer,
                     pagePreprocessor,
                     partitionFunction,
@@ -237,7 +236,6 @@ public class PrestoSparkRowOutputOperator
 
     public PrestoSparkRowOutputOperator(
             OperatorContext operatorContext,
-            LocalMemoryContext systemMemoryContext,
             PrestoSparkOutputBuffer<PrestoSparkRowBatch> outputBuffer,
             Function<Page, Page> pagePreprocessor,
             PartitionFunction partitionFunction,
@@ -248,7 +246,7 @@ public class PrestoSparkRowOutputOperator
             int targetAverageRowSizeInBytes)
     {
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
-        this.systemMemoryContext = requireNonNull(systemMemoryContext, "systemMemoryContext is null");
+        this.systemMemoryContext = operatorContext.localSystemMemoryContext();
         this.outputBuffer = requireNonNull(outputBuffer, "outputBuffer is null");
         this.pagePreprocessor = requireNonNull(pagePreprocessor, "pagePreprocessor is null");
         this.partitionFunction = requireNonNull(partitionFunction, "partitionFunction is null");
@@ -323,6 +321,7 @@ public class PrestoSparkRowOutputOperator
                 rowBatchBuilder.closeEntryForNonReplicatedRow(partition);
             }
         }
+        operatorContext.recordOutput(page.getSizeInBytes(), page.getPositionCount());
         updateMemoryContext();
     }
 

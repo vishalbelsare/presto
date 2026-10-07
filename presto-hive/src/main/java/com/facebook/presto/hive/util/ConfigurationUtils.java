@@ -14,6 +14,7 @@
 package com.facebook.presto.hive.util;
 
 import com.facebook.presto.hadoop.FileSystemFactory;
+import com.facebook.presto.hive.CopyOnFirstWriteConfiguration;
 import com.facebook.presto.hive.HiveCompressionCodec;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapred.JobConf;
@@ -25,7 +26,7 @@ import java.util.Map;
 
 import static com.facebook.hive.orc.OrcConf.ConfVars.HIVE_ORC_COMPRESSION;
 import static com.google.common.base.Preconditions.checkArgument;
-import static org.apache.hadoop.hive.conf.HiveConf.ConfVars.COMPRESSRESULT;
+import static org.apache.hadoop.hive.conf.HiveConf.ConfVars.COMPRESS_RESULT;
 import static org.apache.hadoop.io.SequenceFile.CompressionType.BLOCK;
 
 public final class ConfigurationUtils
@@ -53,7 +54,15 @@ public final class ConfigurationUtils
 
     public static Configuration copy(Configuration configuration)
     {
+        if (configuration instanceof CopyOnFirstWriteConfiguration) {
+            return new CopyOnFirstWriteConfiguration(copy(((CopyOnFirstWriteConfiguration) configuration).getConfig()));
+        }
         Configuration copy = new Configuration(false);
+        // new Configuration() captures Thread.currentThread().getContextClassLoader(), and the
+        // copy below carries key/value entries only, so the source's ClassLoader has to be
+        // carried over explicitly. Otherwise a copy taken on a thread that cannot see plugin
+        // classes loses the ClassLoader pinned by HiveHdfsConfiguration.
+        copy.setClassLoader(configuration.getClassLoader());
         copy(configuration, copy);
         return copy;
     }
@@ -61,6 +70,10 @@ public final class ConfigurationUtils
     public static void copy(Configuration from, Configuration to)
     {
         for (Map.Entry<String, String> entry : from) {
+            if (entry.getKey().equals("io.bytes.per.checksum")) {
+                to.set("dfs.bytes-per-checksum", entry.getValue());
+                continue;
+            }
             to.set(entry.getKey(), entry.getValue());
         }
     }
@@ -95,8 +108,8 @@ public final class ConfigurationUtils
     private static void setCompressionProperties(Configuration config, HiveCompressionCodec compression)
     {
         boolean compressed = compression != HiveCompressionCodec.NONE;
-        config.setBoolean(COMPRESSRESULT.varname, compressed);
-        config.setBoolean("mapred.output.compress", compressed);
+        config.setBoolean(COMPRESS_RESULT.varname, compressed);
+        config.setBoolean("mapreduce.output.fileoutputformat.compress", compressed);
         config.setBoolean(FileOutputFormat.COMPRESS, compressed);
         // For DWRF
         com.facebook.hive.orc.OrcConf.setVar(config, HIVE_ORC_COMPRESSION, compression.getOrcCompressionKind().name());
@@ -104,15 +117,15 @@ public final class ConfigurationUtils
         OrcConf.COMPRESS.setString(config, compression.getOrcCompressionKind().name());
         // For RCFile and Text
         if (compression.getCodec().isPresent()) {
-            config.set("mapred.output.compression.codec", compression.getCodec().get().getName());
+            config.set("mapreduce.output.fileoutputformat.compress.codec", compression.getCodec().get().getName());
             config.set(FileOutputFormat.COMPRESS_CODEC, compression.getCodec().get().getName());
         }
         else {
-            config.unset("mapred.output.compression.codec");
+            config.unset("mapreduce.output.fileoutputformat.compress.codec");
             config.unset(FileOutputFormat.COMPRESS_CODEC);
         }
         // For Parquet
-        compression.getParquetCompressionCodec().ifPresent(codec -> config.set(ParquetOutputFormat.COMPRESSION, codec.name()));
+        config.set(ParquetOutputFormat.COMPRESSION, compression.getParquetCompressionCodec().name());
         // For SequenceFile
         config.set(FileOutputFormat.COMPRESS_TYPE, BLOCK.toString());
         // For PageFile

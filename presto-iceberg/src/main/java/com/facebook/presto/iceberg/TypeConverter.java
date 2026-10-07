@@ -21,6 +21,7 @@ import com.facebook.presto.common.type.DateType;
 import com.facebook.presto.common.type.DecimalType;
 import com.facebook.presto.common.type.DoubleType;
 import com.facebook.presto.common.type.IntegerType;
+import com.facebook.presto.common.type.JsonType;
 import com.facebook.presto.common.type.MapType;
 import com.facebook.presto.common.type.NamedTypeSignature;
 import com.facebook.presto.common.type.RealType;
@@ -33,8 +34,10 @@ import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.common.type.TypeSignature;
 import com.facebook.presto.common.type.TypeSignatureParameter;
+import com.facebook.presto.common.type.UuidType;
 import com.facebook.presto.common.type.VarbinaryType;
 import com.facebook.presto.common.type.VarcharType;
+import com.facebook.presto.geospatial.type.GeometryType;
 import com.facebook.presto.hive.HiveType;
 import com.facebook.presto.orc.metadata.OrcType;
 import com.facebook.presto.spi.PrestoException;
@@ -51,6 +54,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
@@ -60,6 +64,7 @@ import static com.facebook.presto.common.type.IntegerType.INTEGER;
 import static com.facebook.presto.common.type.RealType.REAL;
 import static com.facebook.presto.common.type.SmallintType.SMALLINT;
 import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
 import static com.facebook.presto.common.type.TinyintType.TINYINT;
 import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.hive.HiveType.HIVE_BINARY;
@@ -68,6 +73,7 @@ import static com.facebook.presto.hive.HiveType.HIVE_BYTE;
 import static com.facebook.presto.hive.HiveType.HIVE_DATE;
 import static com.facebook.presto.hive.HiveType.HIVE_DOUBLE;
 import static com.facebook.presto.hive.HiveType.HIVE_FLOAT;
+import static com.facebook.presto.hive.HiveType.HIVE_GEOMETRY;
 import static com.facebook.presto.hive.HiveType.HIVE_INT;
 import static com.facebook.presto.hive.HiveType.HIVE_LONG;
 import static com.facebook.presto.hive.HiveType.HIVE_SHORT;
@@ -90,7 +96,7 @@ public final class TypeConverter
 {
     public static final String ORC_ICEBERG_ID_KEY = "iceberg.id";
     public static final String ORC_ICEBERG_REQUIRED_KEY = "iceberg.required";
-    public static final String ICEBERG_LONG_TYPE = "iceberg.long-type";
+    private static final Pattern UNQUOTED_IDENTIFIER = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
 
     private TypeConverter() {}
 
@@ -117,10 +123,20 @@ public final class TypeConverter
                 return IntegerType.INTEGER;
             case TIME:
                 return TimeType.TIME;
+            case GEOMETRY:
+                return GeometryType.GEOMETRY;
             case TIMESTAMP:
+                Types.TimestampType timestampType = (Types.TimestampType) type.asPrimitiveType();
+                if (timestampType.shouldAdjustToUTC()) {
+                    return TIMESTAMP_WITH_TIME_ZONE;
+                }
                 return TimestampType.TIMESTAMP;
             case STRING:
                 return VarcharType.createUnboundedVarcharType();
+            case UUID:
+                return UuidType.UUID;
+            case VARIANT:
+                return JsonType.JSON;
             case LIST:
                 Types.ListType listType = (Types.ListType) type;
                 return new ArrayType(toPrestoType(listType.elementType(), typeManager));
@@ -132,11 +148,34 @@ public final class TypeConverter
             case STRUCT:
                 List<Types.NestedField> fields = ((Types.StructType) type).fields();
                 return RowType.from(fields.stream()
-                        .map(field -> new RowType.Field(Optional.of(field.name()), toPrestoType(field.type(), typeManager)))
+                        .map(field -> new RowType.Field(Optional.of(field.name()), toPrestoType(field.type(), typeManager), needsDelimiting(field.name())))
                         .collect(toImmutableList()));
             default:
                 throw new UnsupportedOperationException(format("Cannot convert from Iceberg type '%s' (%s) to Presto type", type, type.typeId()));
         }
+    }
+
+    private static boolean needsDelimiting(String name)
+    {
+        return !UNQUOTED_IDENTIFIER.matcher(name).matches();
+    }
+
+    public static org.apache.iceberg.types.Type toIcebergType(
+            Type type,
+            String columnName,
+            Map<String, Integer> columnNameToIdMapping)
+    {
+        if (type instanceof RowType) {
+            return fromRow((RowType) type, columnName, columnNameToIdMapping);
+        }
+        if (type instanceof ArrayType) {
+            return fromArray((ArrayType) type, columnName, columnNameToIdMapping);
+        }
+        if (type instanceof MapType) {
+            return fromMap((MapType) type, columnName, columnNameToIdMapping);
+        }
+
+        return toIcebergType(type);
     }
 
     public static org.apache.iceberg.types.Type toIcebergType(Type type)
@@ -145,6 +184,9 @@ public final class TypeConverter
             return Types.BooleanType.get();
         }
         if (type instanceof IntegerType) {
+            return Types.IntegerType.get();
+        }
+        if (type.equals(SMALLINT) || type.equals(TINYINT)) {
             return Types.IntegerType.get();
         }
         if (type instanceof BigintType) {
@@ -186,6 +228,9 @@ public final class TypeConverter
         if (type instanceof TimestampWithTimeZoneType) {
             return Types.TimestampType.withZone();
         }
+        if (type instanceof UuidType) {
+            return Types.UUIDType.get();
+        }
         throw new PrestoException(NOT_SUPPORTED, "Type not supported for Iceberg: " + type.getDisplayName());
     }
 
@@ -199,20 +244,64 @@ public final class TypeConverter
         return Types.DecimalType.of(type.getPrecision(), type.getScale());
     }
 
-    private static org.apache.iceberg.types.Type fromRow(RowType type)
+    public static org.apache.iceberg.types.Type fromRow(RowType type, int startId)
     {
         List<Types.NestedField> fields = new ArrayList<>();
         for (RowType.Field field : type.getFields()) {
             String name = field.getName().orElseThrow(() ->
                     new PrestoException(NOT_SUPPORTED, "Row type field does not have a name: " + type.getDisplayName()));
-            fields.add(Types.NestedField.optional(fields.size() + 1, name, toIcebergType(field.getType())));
+            fields.add(Types.NestedField.optional(startId + fields.size() + 1, name, toIcebergType(field.getType())));
         }
         return Types.StructType.of(fields);
+    }
+
+    public static org.apache.iceberg.types.Type fromRow(
+            RowType type,
+            String columnName,
+            Map<String, Integer> columnNameToIdMapping)
+    {
+        List<Types.NestedField> fields = new ArrayList<>();
+        for (RowType.Field field : type.getFields()) {
+            String name = field.getName().orElseThrow(() ->
+                    new PrestoException(NOT_SUPPORTED, "Cannot convert Row type field " + type.getDisplayName() + " to Iceberg"));
+            fields.add(Types.NestedField.optional(
+                    columnNameToIdMapping.get(columnName + "." + name),
+                    name,
+                    toIcebergType(field.getType(), columnName + "." + name, columnNameToIdMapping)));
+        }
+        return Types.StructType.of(fields);
+    }
+
+    public static org.apache.iceberg.types.Type fromRow(RowType type)
+    {
+        return fromRow(type, 0);
+    }
+
+    private static org.apache.iceberg.types.Type fromArray(
+            ArrayType type,
+            String columnName,
+            Map<String, Integer> columnNameToIdMapping)
+    {
+        return Types.ListType.ofOptional(
+                columnNameToIdMapping.get(columnName + ".element"),
+                toIcebergType(type.getElementType(), columnName + ".element", columnNameToIdMapping));
     }
 
     private static org.apache.iceberg.types.Type fromArray(ArrayType type)
     {
         return Types.ListType.ofOptional(1, toIcebergType(type.getElementType()));
+    }
+
+    private static org.apache.iceberg.types.Type fromMap(
+            MapType type,
+            String columnName,
+            Map<String, Integer> columnNameToIdMapping)
+    {
+        return Types.MapType.ofOptional(
+                columnNameToIdMapping.get(columnName + ".key"),
+                columnNameToIdMapping.get(columnName + ".value"),
+                toIcebergType(type.getKeyType(), columnName + ".key", columnNameToIdMapping),
+                toIcebergType(type.getValueType(), columnName + ".value", columnNameToIdMapping));
     }
 
     private static org.apache.iceberg.types.Type fromMap(MapType type)
@@ -242,6 +331,12 @@ public final class TypeConverter
         }
         if (DOUBLE.equals(type)) {
             return HIVE_DOUBLE.getTypeInfo();
+        }
+        if (TimeType.TIME.equals(type)) {
+            return HIVE_LONG.getTypeInfo();
+        }
+        if (GeometryType.GEOMETRY.equals(type)) {
+            return HIVE_GEOMETRY.getTypeInfo();
         }
         if (type instanceof VarcharType) {
             VarcharType varcharType = (VarcharType) type;
@@ -316,6 +411,7 @@ public final class TypeConverter
             case BOOLEAN:
                 return ImmutableList.of(new OrcType(OrcType.OrcTypeKind.BOOLEAN, ImmutableList.of(), ImmutableList.of(), Optional.empty(), Optional.empty(), Optional.empty(), attributes));
             case INTEGER:
+            case TIME:
                 return ImmutableList.of(new OrcType(OrcType.OrcTypeKind.INT, ImmutableList.of(), ImmutableList.of(), Optional.empty(), Optional.empty(), Optional.empty(), attributes));
             case LONG:
                 return ImmutableList.of(new OrcType(OrcType.OrcTypeKind.LONG, ImmutableList.of(), ImmutableList.of(), Optional.empty(), Optional.empty(), Optional.empty(), attributes));
@@ -325,16 +421,12 @@ public final class TypeConverter
                 return ImmutableList.of(new OrcType(OrcType.OrcTypeKind.DOUBLE, ImmutableList.of(), ImmutableList.of(), Optional.empty(), Optional.empty(), Optional.empty(), attributes));
             case DATE:
                 return ImmutableList.of(new OrcType(OrcType.OrcTypeKind.DATE, ImmutableList.of(), ImmutableList.of(), Optional.empty(), Optional.empty(), Optional.empty(), attributes));
-            case TIME:
-                return ImmutableList.of(new OrcType(OrcType.OrcTypeKind.INT, ImmutableList.of(), ImmutableList.of(), Optional.empty(), Optional.empty(), Optional.empty(), attributes));
             case TIMESTAMP:
                 return ImmutableList.of(new OrcType(OrcType.OrcTypeKind.TIMESTAMP, ImmutableList.of(), ImmutableList.of(), Optional.empty(), Optional.empty(), Optional.empty(), attributes));
             case STRING:
                 return ImmutableList.of(new OrcType(OrcType.OrcTypeKind.STRING, ImmutableList.of(), ImmutableList.of(), Optional.empty(), Optional.empty(), Optional.empty(), attributes));
             case UUID:
-                return ImmutableList.of(new OrcType(OrcType.OrcTypeKind.BINARY, ImmutableList.of(), ImmutableList.of(), Optional.empty(), Optional.empty(), Optional.empty(), attributes));
             case FIXED:
-                return ImmutableList.of(new OrcType(OrcType.OrcTypeKind.BINARY, ImmutableList.of(), ImmutableList.of(), Optional.empty(), Optional.empty(), Optional.empty(), attributes));
             case BINARY:
                 return ImmutableList.of(new OrcType(OrcType.OrcTypeKind.BINARY, ImmutableList.of(), ImmutableList.of(), Optional.empty(), Optional.empty(), Optional.empty(), attributes));
             case DECIMAL:

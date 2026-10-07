@@ -114,22 +114,22 @@ public final class PageListBuilder
         VARBINARY.writeSlice(nextColumn(), value);
     }
 
+    public void appendIntegerArray(Iterable<Integer> values)
+    {
+        BlockBuilder column = nextColumn();
+        BlockBuilder array = column.beginBlockEntry();
+        for (Integer value : values) {
+            INTEGER.writeLong(array, value);
+        }
+        column.closeEntry();
+    }
+
     public void appendBigintArray(Iterable<Long> values)
     {
         BlockBuilder column = nextColumn();
         BlockBuilder array = column.beginBlockEntry();
         for (Long value : values) {
             BIGINT.writeLong(array, value);
-        }
-        column.closeEntry();
-    }
-
-    public void appendVarcharArray(Iterable<String> values)
-    {
-        BlockBuilder column = nextColumn();
-        BlockBuilder array = column.beginBlockEntry();
-        for (String value : values) {
-            VARCHAR.writeString(array, value);
         }
         column.closeEntry();
     }

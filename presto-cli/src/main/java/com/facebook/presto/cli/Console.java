@@ -15,6 +15,7 @@ package com.facebook.presto.cli;
 
 import com.facebook.airlift.log.Logging;
 import com.facebook.airlift.log.LoggingConfiguration;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.cli.ClientOptions.OutputFormat;
 import com.facebook.presto.client.ClientSession;
 import com.facebook.presto.spi.security.SelectedRole;
@@ -25,13 +26,11 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.io.Files;
 import io.airlift.airline.Command;
 import io.airlift.airline.HelpOption;
-import io.airlift.units.Duration;
+import jakarta.inject.Inject;
 import jline.console.history.FileHistory;
 import jline.console.history.History;
 import jline.console.history.MemoryHistory;
 import org.fusesource.jansi.AnsiConsole;
-
-import javax.inject.Inject;
 
 import java.io.File;
 import java.io.IOException;
@@ -124,13 +123,17 @@ public class Console
         try (QueryRunner queryRunner = new QueryRunner(
                 session,
                 clientOptions.debug,
+                clientOptions.runtime,
                 Optional.ofNullable(clientOptions.socksProxy),
                 Optional.ofNullable(clientOptions.httpProxy),
                 Optional.ofNullable(clientOptions.keystorePath),
                 Optional.ofNullable(clientOptions.keystorePassword),
+                Optional.ofNullable(clientOptions.keyStoreType),
                 Optional.ofNullable(clientOptions.truststorePath),
                 Optional.ofNullable(clientOptions.truststorePassword),
+                Optional.ofNullable(clientOptions.trustStoreType),
                 Optional.ofNullable(clientOptions.accessToken),
+                clientOptions.insecure,
                 Optional.ofNullable(clientOptions.user),
                 clientOptions.password ? Optional.of(getPassword()) : Optional.empty(),
                 Optional.ofNullable(clientOptions.krb5Principal),
@@ -138,7 +141,10 @@ public class Console
                 Optional.ofNullable(clientOptions.krb5ConfigPath),
                 Optional.ofNullable(clientOptions.krb5KeytabPath),
                 Optional.ofNullable(clientOptions.krb5CredentialCachePath),
-                !clientOptions.krb5DisableRemoteServiceHostnameCanonicalization)) {
+                !clientOptions.krb5DisableRemoteServiceHostnameCanonicalization,
+                !clientOptions.disableRedirects,
+                clientOptions.externalAuthentication,
+                clientOptions.externalAuthenticationRedirectHandler)) {
             if (hasQuery) {
                 return executeCommand(queryRunner, query, clientOptions.outputFormat, clientOptions.ignoreErrors);
             }

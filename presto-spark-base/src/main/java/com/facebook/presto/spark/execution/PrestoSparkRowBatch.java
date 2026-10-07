@@ -18,11 +18,11 @@ import com.facebook.presto.spark.classloader_interface.PrestoSparkMutableRow;
 import com.google.common.annotations.VisibleForTesting;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.SliceOutput;
+import jakarta.annotation.Nullable;
 import org.openjdk.jol.info.ClassLayout;
 import scala.Tuple2;
 
-import javax.annotation.Nullable;
-
+import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 
@@ -347,8 +347,8 @@ public class PrestoSparkRowBatch
             int nextRow = currentRow + 1;
             int nextRowOffset = nextRow < rowCount ? rowOffsets[nextRow] : totalSizeInBytes;
             int rowSize = nextRowOffset - currentRowOffset;
-            rowData.limit(currentRowOffset + rowSize);
-            rowData.position(currentRowOffset);
+            ((Buffer) rowData).limit(currentRowOffset + rowSize);
+            ((Buffer) rowData).position(currentRowOffset);
 
             short rowsCount = rowData.getShort(currentRowOffset);
             row.setPositionCount(rowsCount);

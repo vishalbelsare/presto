@@ -14,17 +14,19 @@
 package com.facebook.presto.spark;
 
 import com.facebook.airlift.configuration.testing.ConfigAssertions;
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.units.DataSize;
 import org.testng.annotations.Test;
 
 import java.util.Map;
 
 import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
 import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
-import static io.airlift.units.DataSize.Unit.GIGABYTE;
-import static io.airlift.units.DataSize.Unit.KILOBYTE;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
+import static com.facebook.airlift.units.DataSize.Unit.GIGABYTE;
+import static com.facebook.airlift.units.DataSize.Unit.KILOBYTE;
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
+import static java.util.concurrent.TimeUnit.MINUTES;
 
 public class TestPrestoSparkConfig
 {
@@ -37,6 +39,7 @@ public class TestPrestoSparkConfig
                 .setMinSparkInputPartitionCountForAutoTune(100)
                 .setMaxSparkInputPartitionCountForAutoTune(1000)
                 .setMaxSplitsDataSizePerSparkPartition(new DataSize(2, GIGABYTE))
+                .setMaxSplitsCountPerSparkPartition(Integer.MAX_VALUE)
                 .setShuffleOutputTargetAverageRowSize(new DataSize(1, KILOBYTE))
                 .setStorageBasedBroadcastJoinEnabled(false)
                 .setStorageBasedBroadcastJoinStorage("local")
@@ -45,7 +48,31 @@ public class TestPrestoSparkConfig
                 .setSmileSerializationEnabled(true)
                 .setSplitAssignmentBatchSize(1_000_000)
                 .setMemoryRevokingThreshold(0)
-                .setMemoryRevokingTarget(0));
+                .setMemoryRevokingTarget(0)
+                .setRetryOnOutOfMemoryBroadcastJoinEnabled(false)
+                .setRetryOnOutOfMemoryWithIncreasedMemorySettingsEnabled(false)
+                .setOutOfMemoryRetryPrestoSessionProperties("")
+                .setOutOfMemoryRetrySparkConfigs("")
+                .setAverageInputDataSizePerExecutor(new DataSize(10, GIGABYTE))
+                .setMaxExecutorCount(600)
+                .setMinExecutorCount(200)
+                .setMaxTaskInfosInQueryCompletedEvent(100000)
+                .setAverageInputDataSizePerPartition(new DataSize(2, GIGABYTE))
+                .setMaxHashPartitionCount(4096)
+                .setMinHashPartitionCount(1024)
+                .setSparkResourceAllocationStrategyEnabled(false)
+                .setRetryOnOutOfMemoryWithHigherHashPartitionCountEnabled(false)
+                .setHashPartitionCountScalingFactorOnOutOfMemory(2.0)
+                .setAdaptiveQueryExecutionEnabled(false)
+                .setAdaptiveJoinSideSwitchingEnabled(false)
+                .setExecutorAllocationStrategyEnabled(false)
+                .setHashPartitionCountAllocationStrategyEnabled(false)
+                .setNativeExecutionBroadcastBasePath(null)
+                .setNativeTerminateWithCoreWhenUnresponsiveEnabled(false)
+                .setNativeTerminateWithCoreTimeout(new Duration(5, MINUTES))
+                .setDynamicPrestoMemoryPoolTuningEnabled(false)
+                .setDynamicPrestoMemoryPoolTuningFraction(0.7)
+                .setAttemptNumberToApplyDynamicMemoryPoolTuning(1));
     }
 
     @Test
@@ -57,6 +84,7 @@ public class TestPrestoSparkConfig
                 .put("spark.min-spark-input-partition-count-for-auto-tune", "200")
                 .put("spark.max-spark-input-partition-count-for-auto-tune", "2000")
                 .put("spark.max-splits-data-size-per-partition", "4GB")
+                .put("spark.max-splits-count-per-partition", "9999")
                 .put("spark.shuffle-output-target-average-row-size", "10kB")
                 .put("spark.storage-based-broadcast-join-enabled", "true")
                 .put("spark.storage-based-broadcast-join-storage", "tempfs")
@@ -66,6 +94,30 @@ public class TestPrestoSparkConfig
                 .put("spark.split-assignment-batch-size", "420")
                 .put("spark.memory-revoking-threshold", "0.5")
                 .put("spark.memory-revoking-target", "0.5")
+                .put("spark.retry-on-out-of-memory-broadcast-join-enabled", "true")
+                .put("spark.retry-on-out-of-memory-with-increased-memory-settings-enabled", "true")
+                .put("spark.retry-presto-session-properties", "query_max_memory_per_node=1MB,query_max_total_memory_per_node=1MB")
+                .put("spark.retry-spark-configs", "spark.executor.memory=1g,spark.task.cpus=5")
+                .put("spark.average-input-datasize-per-executor", "5GB")
+                .put("spark.max-executor-count", "29")
+                .put("spark.min-executor-count", "2")
+                .put("spark.max-task-infos-in-query-completed-event", "12345")
+                .put("spark.average-input-datasize-per-partition", "1GB")
+                .put("spark.max-hash-partition-count", "333")
+                .put("spark.min-hash-partition-count", "30")
+                .put("spark.resource-allocation-strategy-enabled", "true")
+                .put("spark.retry-on-out-of-memory-higher-hash-partition-count-enabled", "true")
+                .put("spark.hash-partition-count-scaling-factor-on-out-of-memory", "5.6")
+                .put("spark.adaptive-query-execution-enabled", "true")
+                .put("optimizer.adaptive-join-side-switching-enabled", "true")
+                .put("spark.executor-allocation-strategy-enabled", "true")
+                .put("spark.hash-partition-count-allocation-strategy-enabled", "true")
+                .put("native-execution-broadcast-base-path", "/tmp/broadcast_path")
+                .put("native-terminate-with-core-when-unresponsive-enabled", "true")
+                .put("native-terminate-with-core-timeout", "1m")
+                .put("spark.dynamic-presto-memory-pool-tuning-enabled", "true")
+                .put("spark.dynamic-presto-memory-pool-tuning-fraction", "0.8")
+                .put("spark.attempt-number-to-apply-dynamic-memory-pool-tuning", "0")
                 .build();
         PrestoSparkConfig expected = new PrestoSparkConfig()
                 .setSparkPartitionCountAutoTuneEnabled(false)
@@ -73,6 +125,7 @@ public class TestPrestoSparkConfig
                 .setMinSparkInputPartitionCountForAutoTune(200)
                 .setMaxSparkInputPartitionCountForAutoTune(2000)
                 .setMaxSplitsDataSizePerSparkPartition(new DataSize(4, GIGABYTE))
+                .setMaxSplitsCountPerSparkPartition(9999)
                 .setShuffleOutputTargetAverageRowSize(new DataSize(10, KILOBYTE))
                 .setStorageBasedBroadcastJoinEnabled(true)
                 .setStorageBasedBroadcastJoinStorage("tempfs")
@@ -81,7 +134,31 @@ public class TestPrestoSparkConfig
                 .setSmileSerializationEnabled(false)
                 .setSplitAssignmentBatchSize(420)
                 .setMemoryRevokingThreshold(0.5)
-                .setMemoryRevokingTarget(0.5);
+                .setMemoryRevokingTarget(0.5)
+                .setRetryOnOutOfMemoryBroadcastJoinEnabled(true)
+                .setRetryOnOutOfMemoryWithIncreasedMemorySettingsEnabled(true)
+                .setOutOfMemoryRetryPrestoSessionProperties("query_max_memory_per_node=1MB,query_max_total_memory_per_node=1MB")
+                .setOutOfMemoryRetrySparkConfigs("spark.executor.memory=1g,spark.task.cpus=5")
+                .setAverageInputDataSizePerExecutor(new DataSize(5, GIGABYTE))
+                .setMaxExecutorCount(29)
+                .setMinExecutorCount(2)
+                .setMaxTaskInfosInQueryCompletedEvent(12345)
+                .setAverageInputDataSizePerPartition(new DataSize(1, GIGABYTE))
+                .setMaxHashPartitionCount(333)
+                .setMinHashPartitionCount(30)
+                .setSparkResourceAllocationStrategyEnabled(true)
+                .setRetryOnOutOfMemoryWithHigherHashPartitionCountEnabled(true)
+                .setHashPartitionCountScalingFactorOnOutOfMemory(5.6)
+                .setAdaptiveQueryExecutionEnabled(true)
+                .setAdaptiveJoinSideSwitchingEnabled(true)
+                .setHashPartitionCountAllocationStrategyEnabled(true)
+                .setExecutorAllocationStrategyEnabled(true)
+                .setNativeExecutionBroadcastBasePath("/tmp/broadcast_path")
+                .setNativeTerminateWithCoreWhenUnresponsiveEnabled(true)
+                .setNativeTerminateWithCoreTimeout(new Duration(1, MINUTES))
+                .setDynamicPrestoMemoryPoolTuningEnabled(true)
+                .setDynamicPrestoMemoryPoolTuningFraction(0.8)
+                .setAttemptNumberToApplyDynamicMemoryPoolTuning(0);
         assertFullMapping(properties, expected);
     }
 }

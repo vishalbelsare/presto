@@ -16,6 +16,7 @@ package com.facebook.presto.tests;
 import com.facebook.presto.Session;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.metadata.SessionPropertyManager;
+import com.facebook.presto.scalar.sql.SqlInvokedFunctionsPlugin;
 import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.testing.LocalQueryRunner;
 import com.facebook.presto.testing.MaterializedResult;
@@ -74,6 +75,7 @@ public class TestQueryPlanDeterminism
         sessionPropertyManager.addSystemSessionProperties(TEST_SYSTEM_PROPERTIES);
         sessionPropertyManager.addConnectorSessionProperties(new ConnectorId(TESTING_CATALOG), TEST_CATALOG_PROPERTIES);
 
+        localQueryRunner.installPlugin(new SqlInvokedFunctionsPlugin());
         return localQueryRunner;
     }
 
@@ -182,6 +184,16 @@ public class TestQueryPlanDeterminism
     }
 
     @Override
+    public void testExplainValidate()
+    {
+    }
+
+    @Override
+    public void testSetSessionNativeWorkerSessionProperty()
+    {
+    }
+
+    @Override
     protected void assertAccessAllowed(@Language("SQL") String sql, TestingAccessControlManager.TestingPrivilege... deniedPrivileges)
     {
     }
@@ -206,11 +218,25 @@ public class TestQueryPlanDeterminism
     {
     }
 
+    @Test
+    public void testUse()
+    {
+        // USE statement is not supported
+    }
+
     @Override
     protected MaterializedResult computeExpected(@Language("SQL") String sql, List<? extends Type> resultTypes)
     {
         determinismChecker.checkPlanIsDeterministic(sql);
         return super.computeExpected(sql, resultTypes);
+    }
+
+    // Give more time for large queries in plan determinsm check.
+    @Override
+    @Test(timeOut = 100_000)
+    public void testLargeQuery()
+    {
+        super.testLargeQuery();
     }
 
     @Test

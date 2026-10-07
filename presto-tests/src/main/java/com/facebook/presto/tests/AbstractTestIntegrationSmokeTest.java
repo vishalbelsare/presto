@@ -13,10 +13,13 @@
  */
 package com.facebook.presto.tests;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.testing.MaterializedResult;
 import org.intellij.lang.annotations.Language;
 import org.testng.annotations.Test;
 
+import static com.facebook.presto.SystemSessionProperties.LEGACY_TIMESTAMP;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.testing.assertions.Assert.assertEquals;
 import static com.facebook.presto.tests.QueryAssertions.assertContains;
@@ -32,6 +35,19 @@ public abstract class AbstractTestIntegrationSmokeTest
     protected boolean isParameterizedVarcharSupported()
     {
         return true;
+    }
+    protected boolean isLegacyTimestampEnabled()
+    {
+        return true;
+    }
+
+    protected Session sessionWithLegacyTimestamp()
+    {
+        Session.SessionBuilder builder = Session.builder(getSession());
+        if (!isLegacyTimestampEnabled()) {
+            builder.setSystemProperty(LEGACY_TIMESTAMP, "false");
+        }
+        return builder.build();
     }
 
     @Test
@@ -81,19 +97,22 @@ public abstract class AbstractTestIntegrationSmokeTest
     @Test
     public void testMultipleRangesPredicate()
     {
-        assertQuery("SELECT * FROM orders WHERE orderkey BETWEEN 10 AND 50 OR orderkey BETWEEN 100 AND 150");
+        Session session = sessionWithLegacyTimestamp();
+        assertQuery(session, "SELECT * FROM orders WHERE orderkey BETWEEN 10 AND 50 OR orderkey BETWEEN 100 AND 150");
     }
 
     @Test
     public void testRangePredicate()
     {
-        assertQuery("SELECT * FROM orders WHERE orderkey BETWEEN 10 AND 50");
+        Session session = sessionWithLegacyTimestamp();
+        assertQuery(session, "SELECT * FROM orders WHERE orderkey BETWEEN 10 AND 50");
     }
 
     @Test
     public void testSelectAll()
     {
-        assertQuery("SELECT * FROM orders");
+        Session session = sessionWithLegacyTimestamp();
+        assertQuery(session, "SELECT * FROM orders");
     }
 
     @Test
@@ -121,7 +140,7 @@ public abstract class AbstractTestIntegrationSmokeTest
     public void testDescribeTable()
     {
         MaterializedResult actualColumns = computeActual("DESC orders").toTestTypes();
-        assertEquals(actualColumns, getExpectedOrdersTableDescription(isDateTypeSupported(), isParameterizedVarcharSupported()));
+        assertEquals(actualColumns, getExpectedOrdersTableDescription());
     }
 
     @Test
@@ -185,39 +204,39 @@ public abstract class AbstractTestIntegrationSmokeTest
                 "line 1:49: Column name 'orderkey' specified more than once");
     }
 
-    protected MaterializedResult getExpectedOrdersTableDescription(boolean dateSupported, boolean parametrizedVarchar)
+    protected MaterializedResult getExpectedOrdersTableDescription()
     {
         String orderDateType;
-        if (dateSupported) {
+        if (isDateTypeSupported()) {
             orderDateType = "date";
         }
         else {
             orderDateType = "varchar";
         }
-        if (parametrizedVarchar) {
-            return MaterializedResult.resultBuilder(getQueryRunner().getDefaultSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
-                    .row("orderkey", "bigint", "", "")
-                    .row("custkey", "bigint", "", "")
-                    .row("orderstatus", "varchar(1)", "", "")
-                    .row("totalprice", "double", "", "")
-                    .row("orderdate", orderDateType, "", "")
-                    .row("orderpriority", "varchar(15)", "", "")
-                    .row("clerk", "varchar(15)", "", "")
-                    .row("shippriority", "integer", "", "")
-                    .row("comment", "varchar(79)", "", "")
+        if (isParameterizedVarcharSupported()) {
+            return MaterializedResult.resultBuilder(getQueryRunner().getDefaultSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR, BIGINT, BIGINT, BIGINT)
+                    .row("orderkey", "bigint", "", "", 19L, null, null)
+                    .row("custkey", "bigint", "", "", 19L, null, null)
+                    .row("orderstatus", "varchar(1)", "", "", null, null, 1L)
+                    .row("totalprice", "double", "", "", 53L, null, null)
+                    .row("orderdate", orderDateType, "", "", null, null, "varchar".equals(2147483647L) ? 2147483647L : null)
+                    .row("orderpriority", "varchar(15)", "", "", null, null, 15L)
+                    .row("clerk", "varchar(15)", "", "", null, null, 15L)
+                    .row("shippriority", "integer", "", "", 10L, null, null)
+                    .row("comment", "varchar(79)", "", "", null, null, 79L)
                     .build();
         }
         else {
-            return MaterializedResult.resultBuilder(getQueryRunner().getDefaultSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
-                    .row("orderkey", "bigint", "", "")
-                    .row("custkey", "bigint", "", "")
-                    .row("orderstatus", "varchar", "", "")
-                    .row("totalprice", "double", "", "")
-                    .row("orderdate", orderDateType, "", "")
-                    .row("orderpriority", "varchar", "", "")
-                    .row("clerk", "varchar", "", "")
-                    .row("shippriority", "integer", "", "")
-                    .row("comment", "varchar", "", "")
+            return MaterializedResult.resultBuilder(getQueryRunner().getDefaultSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR, BIGINT, BIGINT, BIGINT)
+                    .row("orderkey", "bigint", "", "", 19L, null, null)
+                    .row("custkey", "bigint", "", "", 19L, null, null)
+                    .row("orderstatus", "varchar", "", "", null, null, 2147483647L)
+                    .row("totalprice", "double", "", "", 53L, null, null)
+                    .row("orderdate", orderDateType, "", "", null, null, "varchar".equals(orderDateType) ? 2147483647L : null)
+                    .row("orderpriority", "varchar", "", "", null, null, 2147483647L)
+                    .row("clerk", "varchar", "", "", null, null, 2147483647L)
+                    .row("shippriority", "integer", "", "", 10L, null, null)
+                    .row("comment", "varchar", "", "", null, null, 2147483647L)
                     .build();
         }
     }

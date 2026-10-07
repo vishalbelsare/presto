@@ -13,22 +13,34 @@
  */
 package com.facebook.presto.hive.metastore.thrift;
 
+import org.apache.hadoop.hive.metastore.api.CheckLockRequest;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj;
 import org.apache.hadoop.hive.metastore.api.Database;
+import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.HiveObjectPrivilege;
 import org.apache.hadoop.hive.metastore.api.HiveObjectRef;
+import org.apache.hadoop.hive.metastore.api.LockRequest;
+import org.apache.hadoop.hive.metastore.api.LockResponse;
+import org.apache.hadoop.hive.metastore.api.NotNullConstraintsResponse;
 import org.apache.hadoop.hive.metastore.api.Partition;
+import org.apache.hadoop.hive.metastore.api.PrimaryKeysResponse;
 import org.apache.hadoop.hive.metastore.api.PrincipalType;
 import org.apache.hadoop.hive.metastore.api.PrivilegeBag;
 import org.apache.hadoop.hive.metastore.api.Role;
 import org.apache.hadoop.hive.metastore.api.RolePrincipalGrant;
+import org.apache.hadoop.hive.metastore.api.SQLNotNullConstraint;
+import org.apache.hadoop.hive.metastore.api.SQLPrimaryKey;
+import org.apache.hadoop.hive.metastore.api.SQLUniqueConstraint;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.api.UniqueConstraintsResponse;
+import org.apache.hadoop.hive.metastore.api.UnlockRequest;
 import org.apache.thrift.TException;
 
 import java.io.Closeable;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 public interface HiveMetastoreClient
         extends Closeable
@@ -37,6 +49,9 @@ public interface HiveMetastoreClient
     void close();
 
     String getDelegationToken(String owner, String renewer)
+            throws TException;
+
+    List<String> getDatabases(String pattern)
             throws TException;
 
     List<String> getAllDatabases()
@@ -63,10 +78,16 @@ public interface HiveMetastoreClient
     void createTable(Table table)
             throws TException;
 
+    void createTableWithConstraints(Table table, List<SQLPrimaryKey> primaryKeys, List<SQLUniqueConstraint> uniqueConstraints, List<SQLNotNullConstraint> notNullConstraints)
+            throws TException;
+
     void dropTable(String databaseName, String name, boolean deleteData)
             throws TException;
 
     void alterTable(String databaseName, String tableName, Table newTable)
+            throws TException;
+
+    void alterTableWithEnvironmentContext(String databaseName, String tableName, Table newTable, EnvironmentContext context)
             throws TException;
 
     Table getTable(String databaseName, String tableName)
@@ -145,5 +166,35 @@ public interface HiveMetastoreClient
             throws TException;
 
     void setUGI(String userName)
+            throws TException;
+
+    LockResponse checkLock(CheckLockRequest request)
+            throws TException;
+
+    LockResponse lock(LockRequest request)
+            throws TException;
+
+    void unlock(UnlockRequest request)
+            throws TException;
+
+    Optional<PrimaryKeysResponse> getPrimaryKey(String dbName, String tableName)
+            throws TException;
+
+    Optional<UniqueConstraintsResponse> getUniqueConstraints(String catName, String dbName, String tableName)
+            throws TException;
+
+    Optional<NotNullConstraintsResponse> getNotNullConstraints(String catName, String dbName, String tableName)
+            throws TException;
+
+    void dropConstraint(String dbName, String tableName, String constraintName)
+            throws TException;
+
+    void addUniqueConstraint(List<SQLUniqueConstraint> constraint)
+            throws TException;
+
+    void addPrimaryKeyConstraint(List<SQLPrimaryKey> constraint)
+            throws TException;
+
+    void addNotNullConstraint(List<SQLNotNullConstraint> constraint)
             throws TException;
 }

@@ -35,6 +35,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.facebook.presto.orc.StreamDescriptorFactory.createStreamDescriptor;
+
 public class OrcBatchRecordReader
         extends AbstractOrcRecordReader<BatchStreamReader>
 {
@@ -66,7 +68,8 @@ public class OrcBatchRecordReader
             int initialBatchSize,
             StripeMetadataSource stripeMetadataSource,
             boolean cacheable,
-            RuntimeStats runtimeStats)
+            RuntimeStats runtimeStats,
+            long fileModificationTime)
             throws OrcCorruptionException
 
     {
@@ -77,7 +80,7 @@ public class OrcBatchRecordReader
                 // doesn't have a local buffer. All non-leaf level StreamReaders' (e.g. MapStreamReader, LongStreamReader,
                 // ListStreamReader and StructStreamReader) instance sizes were not counted, because calling setBytes() in
                 // their constructors is confusing.
-                createStreamReaders(orcDataSource, types, hiveStorageTimeZone, options, includedColumns, systemMemoryUsage.newOrcAggregatedMemoryContext()),
+                createStreamReaders(orcDataSource, types, options, includedColumns, systemMemoryUsage.newOrcAggregatedMemoryContext()),
                 predicate,
                 numberOfRows,
                 fileStripes,
@@ -98,13 +101,14 @@ public class OrcBatchRecordReader
                 options.getMaxMergeDistance(),
                 options.getTinyStripeThreshold(),
                 options.getMaxBlockSize(),
-                userMetadata,
                 systemMemoryUsage,
                 writeValidation,
                 initialBatchSize,
                 stripeMetadataSource,
                 cacheable,
-                runtimeStats);
+                runtimeStats,
+                Optional.empty(),
+                 fileModificationTime);
     }
 
     public int nextBatch()
@@ -150,13 +154,12 @@ public class OrcBatchRecordReader
     private static BatchStreamReader[] createStreamReaders(
             OrcDataSource orcDataSource,
             List<OrcType> types,
-            DateTimeZone hiveStorageTimeZone,
             OrcRecordReaderOptions options,
             Map<Integer, Type> includedColumns,
             OrcAggregatedMemoryContext systemMemoryContext)
             throws OrcCorruptionException
     {
-        List<StreamDescriptor> streamDescriptors = createStreamDescriptor("", "", 0, types, orcDataSource).getNestedStreams();
+        List<StreamDescriptor> streamDescriptors = createStreamDescriptor(types, orcDataSource).getNestedStreams();
 
         OrcType rowType = types.get(0);
         BatchStreamReader[] streamReaders = new BatchStreamReader[rowType.getFieldCount()];
@@ -165,7 +168,7 @@ public class OrcBatchRecordReader
                 Type type = includedColumns.get(columnId);
                 if (type != null) {
                     StreamDescriptor streamDescriptor = streamDescriptors.get(columnId);
-                    streamReaders[columnId] = BatchStreamReaders.createStreamReader(type, streamDescriptor, hiveStorageTimeZone, options, systemMemoryContext);
+                    streamReaders[columnId] = BatchStreamReaders.createStreamReader(type, streamDescriptor, options, systemMemoryContext);
                 }
             }
         }

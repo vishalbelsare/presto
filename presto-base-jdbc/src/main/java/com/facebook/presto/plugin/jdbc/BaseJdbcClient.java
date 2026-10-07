@@ -18,7 +18,10 @@ import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.type.CharType;
 import com.facebook.presto.common.type.DecimalType;
 import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.UuidType;
 import com.facebook.presto.common.type.VarcharType;
+import com.facebook.presto.plugin.jdbc.mapping.ReadMapping;
+import com.facebook.presto.plugin.jdbc.mapping.WriteMapping;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorSession;
@@ -26,19 +29,18 @@ import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.FixedSplitSource;
 import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.PrestoWarning;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.TableNotFoundException;
 import com.facebook.presto.spi.statistics.TableStatistics;
-import com.google.common.base.CharMatcher;
 import com.google.common.base.Joiner;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-
-import javax.annotation.Nullable;
-import javax.annotation.PreDestroy;
+import jakarta.annotation.Nullable;
+import jakarta.annotation.PreDestroy;
 
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
@@ -69,14 +71,17 @@ import static com.facebook.presto.common.type.TinyintType.TINYINT;
 import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.common.type.Varchars.isVarcharType;
 import static com.facebook.presto.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
-import static com.facebook.presto.plugin.jdbc.StandardReadMappings.jdbcTypeToPrestoType;
+import static com.facebook.presto.plugin.jdbc.JdbcWarningCode.USE_OF_DEPRECATED_CONFIGURATION_PROPERTY;
+import static com.facebook.presto.plugin.jdbc.mapping.StandardColumnMappings.jdbcTypeToReadMapping;
+import static com.facebook.presto.plugin.jdbc.mapping.StandardColumnMappings.prestoTypeToWriteMapping;
+import static com.facebook.presto.plugin.jdbc.mapping.StandardColumnMappings.timestampReadMapping;
+import static com.facebook.presto.plugin.jdbc.mapping.StandardColumnMappings.timestampReadMappingLegacy;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_FOUND;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Strings.emptyToNull;
 import static com.google.common.base.Strings.isNullOrEmpty;
-import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getOnlyElement;
@@ -107,6 +112,7 @@ public class BaseJdbcClient
             .put(TIME_WITH_TIME_ZONE, "time with timezone")
             .put(TIMESTAMP, "timestamp")
             .put(TIMESTAMP_WITH_TIME_ZONE, "timestamp with timezone")
+            .put(UuidType.UUID, "uuid")
             .build();
 
     protected final String connectorId;
@@ -115,6 +121,8 @@ public class BaseJdbcClient
     protected final boolean caseInsensitiveNameMatching;
     protected final Cache<JdbcIdentity, Map<String, String>> remoteSchemaNames;
     protected final Cache<RemoteTableNameCacheKey, Map<String, String>> remoteTableNames;
+    protected final Set<String> listSchemasIgnoredSchemas;
+    protected final boolean caseSensitiveNameMatchingEnabled;
 
     public BaseJdbcClient(JdbcConnectorId connectorId, BaseJdbcConfig config, String identifierQuote, ConnectionFactory connectionFactory)
     {
@@ -128,6 +136,8 @@ public class BaseJdbcClient
                 .expireAfterWrite(config.getCaseInsensitiveNameMatchingCacheTtl().toMillis(), MILLISECONDS);
         this.remoteSchemaNames = remoteNamesCacheBuilder.build();
         this.remoteTableNames = remoteNamesCacheBuilder.build();
+        this.listSchemasIgnoredSchemas = config.getlistSchemasIgnoredSchemas();
+        this.caseSensitiveNameMatchingEnabled = config.isCaseSensitiveNameMatching();
     }
 
     @PreDestroy
@@ -144,11 +154,11 @@ public class BaseJdbcClient
     }
 
     @Override
-    public final Set<String> getSchemaNames(JdbcIdentity identity)
+    public final Set<String> getSchemaNames(ConnectorSession session, JdbcIdentity identity)
     {
         try (Connection connection = connectionFactory.openConnection(identity)) {
             return listSchemas(connection).stream()
-                    .map(schemaName -> schemaName.toLowerCase(ENGLISH))
+                    .map(schemaName -> normalizeIdentifier(session, schemaName))
                     .collect(toImmutableSet());
         }
         catch (SQLException e) {
@@ -163,7 +173,7 @@ public class BaseJdbcClient
             while (resultSet.next()) {
                 String schemaName = resultSet.getString("TABLE_SCHEM");
                 // skip internal schemas
-                if (!schemaName.equalsIgnoreCase("information_schema")) {
+                if (!listSchemasIgnoredSchemas.contains(schemaName.toLowerCase(ENGLISH))) {
                     schemaNames.add(schemaName);
                 }
             }
@@ -175,16 +185,17 @@ public class BaseJdbcClient
     }
 
     @Override
-    public List<SchemaTableName> getTableNames(JdbcIdentity identity, Optional<String> schema)
+    public List<SchemaTableName> getTableNames(ConnectorSession session, JdbcIdentity identity, Optional<String> schema)
     {
         try (Connection connection = connectionFactory.openConnection(identity)) {
-            Optional<String> remoteSchema = schema.map(schemaName -> toRemoteSchemaName(identity, connection, schemaName));
+            Optional<String> remoteSchema = schema.map(schemaName -> toRemoteSchemaName(session, identity, connection, schemaName));
             try (ResultSet resultSet = getTables(connection, remoteSchema, Optional.empty())) {
                 ImmutableList.Builder<SchemaTableName> list = ImmutableList.builder();
                 while (resultSet.next()) {
                     String tableSchema = getTableSchemaName(resultSet);
                     String tableName = resultSet.getString("TABLE_NAME");
-                    list.add(new SchemaTableName(tableSchema.toLowerCase(ENGLISH), tableName.toLowerCase(ENGLISH)));
+                    list.add(new SchemaTableName(normalizeIdentifier(session, tableSchema),
+                            normalizeIdentifier(session, tableName)));
                 }
                 return list.build();
             }
@@ -196,11 +207,11 @@ public class BaseJdbcClient
 
     @Nullable
     @Override
-    public JdbcTableHandle getTableHandle(JdbcIdentity identity, SchemaTableName schemaTableName)
+    public JdbcTableHandle getTableHandle(ConnectorSession session, JdbcIdentity identity, SchemaTableName schemaTableName)
     {
         try (Connection connection = connectionFactory.openConnection(identity)) {
-            String remoteSchema = toRemoteSchemaName(identity, connection, schemaTableName.getSchemaName());
-            String remoteTable = toRemoteTableName(identity, connection, remoteSchema, schemaTableName.getTableName());
+            String remoteSchema = toRemoteSchemaName(session, identity, connection, schemaTableName.getSchemaName());
+            String remoteTable = toRemoteTableName(session, identity, connection, remoteSchema, schemaTableName.getTableName());
             try (ResultSet resultSet = getTables(connection, Optional.of(remoteSchema), Optional.of(remoteTable))) {
                 List<JdbcTableHandle> tableHandles = new ArrayList<>();
                 while (resultSet.next()) {
@@ -230,24 +241,31 @@ public class BaseJdbcClient
     {
         try (Connection connection = connectionFactory.openConnection(JdbcIdentity.from(session))) {
             try (ResultSet resultSet = getColumns(tableHandle, connection.getMetaData())) {
+                int allColumns = 0;
                 List<JdbcColumnHandle> columns = new ArrayList<>();
                 while (resultSet.next()) {
+                    allColumns++;
                     JdbcTypeHandle typeHandle = new JdbcTypeHandle(
                             resultSet.getInt("DATA_TYPE"),
+                            resultSet.getString("TYPE_NAME"),
                             resultSet.getInt("COLUMN_SIZE"),
                             resultSet.getInt("DECIMAL_DIGITS"));
-                    Optional<ReadMapping> columnMapping = toPrestoType(session, typeHandle);
+                    Optional<ReadMapping> readMapping = toPrestoType(session, typeHandle);
                     // skip unsupported column types
-                    if (columnMapping.isPresent()) {
+                    if (readMapping.isPresent()) {
                         String columnName = resultSet.getString("COLUMN_NAME");
                         boolean nullable = columnNullable == resultSet.getInt("NULLABLE");
                         Optional<String> comment = Optional.ofNullable(emptyToNull(resultSet.getString("REMARKS")));
-                        columns.add(new JdbcColumnHandle(connectorId, columnName, typeHandle, columnMapping.get().getType(), nullable, comment));
+                        columns.add(new JdbcColumnHandle(connectorId, columnName, typeHandle, readMapping.get().getType(), nullable, comment));
                     }
                 }
                 if (columns.isEmpty()) {
-                    // In rare cases (e.g. PostgreSQL) a table might have no columns.
-                    throw new TableNotFoundException(tableHandle.getSchemaTableName());
+                    // A table may have no supported columns. In rare cases (e.g. PostgreSQL) a table might have no columns at all.
+                    // Throw an exception if the table has no supported columns.
+                    // This can occur if all columns in the table are of unsupported types, or in rare cases, if the table has no columns at all.
+                    throw new TableNotFoundException(
+                            tableHandle.getSchemaTableName(),
+                            format("Table '%s' has no supported columns (all %s columns are not supported)", tableHandle.getSchemaTableName(), allColumns));
                 }
                 return ImmutableList.copyOf(columns);
             }
@@ -260,11 +278,15 @@ public class BaseJdbcClient
     @Override
     public Optional<ReadMapping> toPrestoType(ConnectorSession session, JdbcTypeHandle typeHandle)
     {
-        return jdbcTypeToPrestoType(typeHandle);
+        if (typeHandle.getJdbcType() == java.sql.Types.TIMESTAMP) {
+            boolean legacyTimestamp = session.getSqlFunctionProperties().isLegacyTimestamp();
+            return Optional.of(legacyTimestamp ? timestampReadMappingLegacy() : timestampReadMapping());
+        }
+        return jdbcTypeToReadMapping(typeHandle);
     }
 
     @Override
-    public ConnectorSplitSource getSplits(JdbcIdentity identity, JdbcTableLayoutHandle layoutHandle)
+    public ConnectorSplitSource getSplits(ConnectorSession session, JdbcIdentity identity, JdbcTableLayoutHandle layoutHandle)
     {
         JdbcTableHandle tableHandle = layoutHandle.getTable();
         JdbcSplit jdbcSplit = new JdbcSplit(
@@ -278,7 +300,7 @@ public class BaseJdbcClient
     }
 
     @Override
-    public Connection getConnection(JdbcIdentity identity, JdbcSplit split)
+    public Connection getConnection(ConnectorSession session, JdbcIdentity identity, JdbcSplit split)
             throws SQLException
     {
         Connection connection = connectionFactory.openConnection(identity);
@@ -346,15 +368,15 @@ public class BaseJdbcClient
     {
         SchemaTableName schemaTableName = tableMetadata.getTable();
         JdbcIdentity identity = JdbcIdentity.from(session);
-        if (!getSchemaNames(identity).contains(schemaTableName.getSchemaName())) {
+        if (!getSchemaNames(session, identity).contains(schemaTableName.getSchemaName())) {
             throw new PrestoException(NOT_FOUND, "Schema not found: " + schemaTableName.getSchemaName());
         }
 
         try (Connection connection = connectionFactory.openConnection(identity)) {
             boolean uppercase = connection.getMetaData().storesUpperCaseIdentifiers();
-            String remoteSchema = toRemoteSchemaName(identity, connection, schemaTableName.getSchemaName());
-            String remoteTable = toRemoteTableName(identity, connection, remoteSchema, schemaTableName.getTableName());
-            if (uppercase) {
+            String remoteSchema = toRemoteSchemaName(session, identity, connection, schemaTableName.getSchemaName());
+            String remoteTable = toRemoteTableName(session, identity, connection, remoteSchema, schemaTableName.getTableName());
+            if (uppercase && !caseSensitiveNameMatchingEnabled) {
                 tableName = tableName.toUpperCase(ENGLISH);
             }
             String catalog = connection.getCatalog();
@@ -364,7 +386,7 @@ public class BaseJdbcClient
             ImmutableList.Builder<String> columnList = ImmutableList.builder();
             for (ColumnMetadata column : tableMetadata.getColumns()) {
                 String columnName = column.getName();
-                if (uppercase) {
+                if (uppercase && !caseSensitiveNameMatchingEnabled) {
                     columnName = columnName.toUpperCase(ENGLISH);
                 }
                 columnNames.add(columnName);
@@ -408,7 +430,7 @@ public class BaseJdbcClient
 
     //todo
     @Override
-    public void commitCreateTable(JdbcIdentity identity, JdbcOutputTableHandle handle)
+    public void commitCreateTable(ConnectorSession session, JdbcIdentity identity, JdbcOutputTableHandle handle)
     {
         renameTable(
                 identity,
@@ -418,7 +440,7 @@ public class BaseJdbcClient
     }
 
     @Override
-    public void renameTable(JdbcIdentity identity, JdbcTableHandle handle, SchemaTableName newTable)
+    public void renameTable(ConnectorSession session, JdbcIdentity identity, JdbcTableHandle handle, SchemaTableName newTable)
     {
         renameTable(identity, handle.getCatalogName(), handle.getSchemaTableName(), newTable);
     }
@@ -431,7 +453,7 @@ public class BaseJdbcClient
             String tableName = oldTable.getTableName();
             String newSchemaName = newTable.getSchemaName();
             String newTableName = newTable.getTableName();
-            if (metadata.storesUpperCaseIdentifiers()) {
+            if (metadata.storesUpperCaseIdentifiers() && !caseSensitiveNameMatchingEnabled) {
                 schemaName = schemaName.toUpperCase(ENGLISH);
                 tableName = tableName.toUpperCase(ENGLISH);
                 newSchemaName = newSchemaName.toUpperCase(ENGLISH);
@@ -449,21 +471,21 @@ public class BaseJdbcClient
     }
 
     @Override
-    public void finishInsertTable(JdbcIdentity identity, JdbcOutputTableHandle handle)
+    public void finishInsertTable(ConnectorSession session, JdbcIdentity identity, JdbcOutputTableHandle handle)
     {
         String temporaryTable = quoted(handle.getCatalogName(), handle.getSchemaName(), handle.getTemporaryTableName());
         String targetTable = quoted(handle.getCatalogName(), handle.getSchemaName(), handle.getTableName());
         String insertSql = format("INSERT INTO %s SELECT * FROM %s", targetTable, temporaryTable);
         String cleanupSql = "DROP TABLE " + temporaryTable;
 
-        try (Connection connection = getConnection(identity, handle)) {
+        try (Connection connection = getConnection(session, identity, handle)) {
             execute(connection, insertSql);
         }
         catch (SQLException e) {
             throw new PrestoException(JDBC_ERROR, e);
         }
 
-        try (Connection connection = getConnection(identity, handle)) {
+        try (Connection connection = getConnection(session, identity, handle)) {
             execute(connection, cleanupSql);
         }
         catch (SQLException e) {
@@ -472,14 +494,14 @@ public class BaseJdbcClient
     }
 
     @Override
-    public void addColumn(JdbcIdentity identity, JdbcTableHandle handle, ColumnMetadata column)
+    public void addColumn(ConnectorSession session, JdbcIdentity identity, JdbcTableHandle handle, ColumnMetadata column)
     {
         try (Connection connection = connectionFactory.openConnection(identity)) {
             String schema = handle.getSchemaName();
             String table = handle.getTableName();
             String columnName = column.getName();
             DatabaseMetaData metadata = connection.getMetaData();
-            if (metadata.storesUpperCaseIdentifiers()) {
+            if (metadata.storesUpperCaseIdentifiers() && !caseSensitiveNameMatchingEnabled) {
                 schema = schema != null ? schema.toUpperCase(ENGLISH) : null;
                 table = table.toUpperCase(ENGLISH);
                 columnName = columnName.toUpperCase(ENGLISH);
@@ -496,18 +518,24 @@ public class BaseJdbcClient
     }
 
     @Override
-    public void renameColumn(JdbcIdentity identity, JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newColumnName)
+    public void renameColumn(ConnectorSession session, JdbcIdentity identity, JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newColumnName)
     {
         try (Connection connection = connectionFactory.openConnection(identity)) {
             DatabaseMetaData metadata = connection.getMetaData();
-            if (metadata.storesUpperCaseIdentifiers()) {
+            String schema = handle.getSchemaName();
+            String table = handle.getTableName();
+            String columnName = jdbcColumn.getColumnName();
+            if (metadata.storesUpperCaseIdentifiers() && !caseSensitiveNameMatchingEnabled) {
+                schema = schema != null ? schema.toUpperCase(ENGLISH) : null;
+                table = table.toUpperCase(ENGLISH);
+                columnName = columnName.toUpperCase(ENGLISH);
                 newColumnName = newColumnName.toUpperCase(ENGLISH);
             }
             String sql = format(
                     "ALTER TABLE %s RENAME COLUMN %s TO %s",
-                    quoted(handle.getCatalogName(), handle.getSchemaName(), handle.getTableName()),
-                    jdbcColumn.getColumnName(),
-                    newColumnName);
+                    quoted(handle.getCatalogName(), schema, table),
+                    quoted(columnName),
+                    quoted(newColumnName));
             execute(connection, sql);
         }
         catch (SQLException e) {
@@ -516,13 +544,22 @@ public class BaseJdbcClient
     }
 
     @Override
-    public void dropColumn(JdbcIdentity identity, JdbcTableHandle handle, JdbcColumnHandle column)
+    public void dropColumn(ConnectorSession session, JdbcIdentity identity, JdbcTableHandle handle, JdbcColumnHandle column)
     {
         try (Connection connection = connectionFactory.openConnection(identity)) {
+            DatabaseMetaData metadata = connection.getMetaData();
+            String schema = handle.getSchemaName();
+            String table = handle.getTableName();
+            String columnName = column.getColumnName();
+            if (metadata.storesUpperCaseIdentifiers() && !caseSensitiveNameMatchingEnabled) {
+                schema = schema != null ? schema.toUpperCase(ENGLISH) : null;
+                table = table.toUpperCase(ENGLISH);
+                columnName = columnName.toUpperCase(ENGLISH);
+            }
             String sql = format(
                     "ALTER TABLE %s DROP COLUMN %s",
-                    quoted(handle.getCatalogName(), handle.getSchemaName(), handle.getTableName()),
-                    column.getColumnName());
+                    quoted(handle.getCatalogName(), schema, table),
+                    quoted(columnName));
             execute(connection, sql);
         }
         catch (SQLException e) {
@@ -531,7 +568,7 @@ public class BaseJdbcClient
     }
 
     @Override
-    public void dropTable(JdbcIdentity identity, JdbcTableHandle handle)
+    public void dropTable(ConnectorSession session, JdbcIdentity identity, JdbcTableHandle handle)
     {
         StringBuilder sql = new StringBuilder()
                 .append("DROP TABLE ")
@@ -546,9 +583,24 @@ public class BaseJdbcClient
     }
 
     @Override
-    public void rollbackCreateTable(JdbcIdentity identity, JdbcOutputTableHandle handle)
+    public void truncateTable(ConnectorSession session, JdbcIdentity identity, JdbcTableHandle jdbcTableHandle)
     {
-        dropTable(identity, new JdbcTableHandle(
+        StringBuilder sql = new StringBuilder()
+                .append("TRUNCATE TABLE ")
+                .append(quoted(jdbcTableHandle.getCatalogName(), jdbcTableHandle.getSchemaName(), jdbcTableHandle.getTableName()));
+
+        try (Connection connection = connectionFactory.openConnection(identity)) {
+            execute(connection, sql.toString());
+        }
+        catch (SQLException e) {
+            throw new PrestoException(JDBC_ERROR, e);
+        }
+    }
+
+    @Override
+    public void rollbackCreateTable(ConnectorSession session, JdbcIdentity identity, JdbcOutputTableHandle handle)
+    {
+        dropTable(session, identity, new JdbcTableHandle(
                 handle.getConnectorId(),
                 new SchemaTableName(handle.getSchemaName(), handle.getTemporaryTableName()),
                 handle.getCatalogName(),
@@ -557,7 +609,7 @@ public class BaseJdbcClient
     }
 
     @Override
-    public String buildInsertSql(JdbcOutputTableHandle handle)
+    public String buildInsertSql(ConnectorSession session, JdbcOutputTableHandle handle)
     {
         String vars = Joiner.on(',').join(nCopies(handle.getColumnNames().size(), "?"));
         return new StringBuilder()
@@ -568,17 +620,23 @@ public class BaseJdbcClient
     }
 
     @Override
-    public Connection getConnection(JdbcIdentity identity, JdbcOutputTableHandle handle)
+    public Connection getConnection(ConnectorSession session, JdbcIdentity identity, JdbcOutputTableHandle handle)
             throws SQLException
     {
         return connectionFactory.openConnection(identity);
     }
 
     @Override
-    public PreparedStatement getPreparedStatement(Connection connection, String sql)
+    public PreparedStatement getPreparedStatement(ConnectorSession session, Connection connection, String sql)
             throws SQLException
     {
         return connection.prepareStatement(sql);
+    }
+
+    @Override
+    public String normalizeIdentifier(ConnectorSession session, String identifier)
+    {
+        return identifier.toLowerCase(ENGLISH);
     }
 
     protected ResultSet getTables(Connection connection, Optional<String> schemaName, Optional<String> tableName)
@@ -599,12 +657,14 @@ public class BaseJdbcClient
         return resultSet.getString("TABLE_SCHEM");
     }
 
-    protected String toRemoteSchemaName(JdbcIdentity identity, Connection connection, String schemaName)
+    protected String toRemoteSchemaName(ConnectorSession session, JdbcIdentity identity, Connection connection, String schemaName)
     {
         requireNonNull(schemaName, "schemaName is null");
-        verify(CharMatcher.forPredicate(Character::isUpperCase).matchesNoneOf(schemaName), "Expected schema name from internal metadata to be lowercase: %s", schemaName);
 
         if (caseInsensitiveNameMatching) {
+            session.getWarningCollector().add(new PrestoWarning(USE_OF_DEPRECATED_CONFIGURATION_PROPERTY,
+                    "'case-insensitive-name-matching' is deprecated. Use of this configuration value may lead to query failures. " +
+                            "Please switch to using 'case-sensitive-name-matching' for proper case sensitivity behavior."));
             try {
                 Map<String, String> mapping = remoteSchemaNames.getIfPresent(identity);
                 if (mapping != null && !mapping.containsKey(schemaName)) {
@@ -627,7 +687,7 @@ public class BaseJdbcClient
 
         try {
             DatabaseMetaData metadata = connection.getMetaData();
-            if (metadata.storesUpperCaseIdentifiers()) {
+            if (metadata.storesUpperCaseIdentifiers() && !caseSensitiveNameMatchingEnabled) {
                 return schemaName.toUpperCase(ENGLISH);
             }
             return schemaName;
@@ -643,13 +703,15 @@ public class BaseJdbcClient
                 .collect(toImmutableMap(schemaName -> schemaName.toLowerCase(ENGLISH), schemaName -> schemaName));
     }
 
-    protected String toRemoteTableName(JdbcIdentity identity, Connection connection, String remoteSchema, String tableName)
+    protected String toRemoteTableName(ConnectorSession session, JdbcIdentity identity, Connection connection, String remoteSchema, String tableName)
     {
         requireNonNull(remoteSchema, "remoteSchema is null");
         requireNonNull(tableName, "tableName is null");
-        verify(CharMatcher.forPredicate(Character::isUpperCase).matchesNoneOf(tableName), "Expected table name from internal metadata to be lowercase: %s", tableName);
 
         if (caseInsensitiveNameMatching) {
+            session.getWarningCollector().add(new PrestoWarning(USE_OF_DEPRECATED_CONFIGURATION_PROPERTY,
+                    "'case-insensitive-name-matching' is deprecated. Use of this configuration value may lead to query failures. " +
+                            "Please switch to using 'case-sensitive-name-matching' for proper case sensitivity behavior."));
             try {
                 RemoteTableNameCacheKey cacheKey = new RemoteTableNameCacheKey(identity, remoteSchema);
                 Map<String, String> mapping = remoteTableNames.getIfPresent(cacheKey);
@@ -673,7 +735,7 @@ public class BaseJdbcClient
 
         try {
             DatabaseMetaData metadata = connection.getMetaData();
-            if (metadata.storesUpperCaseIdentifiers()) {
+            if (metadata.storesUpperCaseIdentifiers() && !caseSensitiveNameMatchingEnabled) {
                 return tableName.toUpperCase(ENGLISH);
             }
             return tableName;
@@ -712,7 +774,6 @@ public class BaseJdbcClient
             statement.execute(query);
         }
     }
-
     protected String toSqlType(Type type)
     {
         if (isVarcharType(type)) {
@@ -735,6 +796,15 @@ public class BaseJdbcClient
         String sqlType = SQL_TYPES.get(type);
         if (sqlType != null) {
             return sqlType;
+        }
+        throw new PrestoException(NOT_SUPPORTED, "Unsupported column type: " + type.getDisplayName());
+    }
+
+    public WriteMapping toWriteMapping(ConnectorSession session, Type type)
+    {
+        Optional<WriteMapping> writeMapping = prestoTypeToWriteMapping(session, type);
+        if (writeMapping.isPresent()) {
+            return writeMapping.get();
         }
         throw new PrestoException(NOT_SUPPORTED, "Unsupported column type: " + type.getDisplayName());
     }

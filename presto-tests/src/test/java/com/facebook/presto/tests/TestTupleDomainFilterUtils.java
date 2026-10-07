@@ -70,7 +70,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
-import static com.facebook.presto.common.predicate.TupleDomainFilter.ALWAYS_FALSE;
 import static com.facebook.presto.common.predicate.TupleDomainFilter.IS_NOT_NULL;
 import static com.facebook.presto.common.predicate.TupleDomainFilter.IS_NULL;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
@@ -225,8 +224,10 @@ public class TestTupleDomainFilterUtils
         assertEquals(toFilter(not(greaterThanOrEqual(C_BIGINT, bigintLiteral(2L)))), BigintRange.of(Long.MIN_VALUE, 1L, false));
 
         assertEquals(toFilter(in(C_BIGINT, ImmutableList.of(1, 10, 100_000))), BigintValuesUsingHashTable.of(1, 100_000, new long[] {1, 10, 100_000}, false));
-        assertEquals(toFilter(in(C_BIGINT, ImmutableList.of(Long.MIN_VALUE, 10, 100_000))), BigintValuesUsingHashTable.of(Long.MIN_VALUE, 100_000, new long[] {Long.MIN_VALUE, 10, 100_000}, false));
-        assertEquals(toFilter(in(C_BIGINT, ImmutableList.of(Long.MIN_VALUE, Long.MAX_VALUE, 0))), BigintValuesUsingHashTable.of(Long.MIN_VALUE, Long.MAX_VALUE, new long[] {Long.MIN_VALUE, 0, Long.MAX_VALUE}, false));
+        assertEquals(toFilter(in(C_BIGINT, ImmutableList.of(Long.MIN_VALUE, 10, 100_000))), BigintValuesUsingHashTable.of(Long.MIN_VALUE, 100_000, new long[] {Long.MIN_VALUE, 10,
+                100_000}, false));
+        assertEquals(toFilter(in(C_BIGINT, ImmutableList.of(Long.MIN_VALUE, Long.MAX_VALUE, 0))), BigintValuesUsingHashTable.of(Long.MIN_VALUE, Long.MAX_VALUE, new long[] {
+                Long.MIN_VALUE, 0, Long.MAX_VALUE}, false));
         assertEquals(toFilter(in(C_BIGINT, ImmutableList.of(1, 10, 100))), BigintValuesUsingBitmask.of(1, 100, new long[] {1, 10, 100}, false));
         assertEquals(toFilter(not(in(C_BIGINT, ImmutableList.of(1, 10, 100)))), BigintMultiRange.of(ImmutableList.of(
                 BigintRange.of(Long.MIN_VALUE, 0L, false),
@@ -269,37 +270,39 @@ public class TestTupleDomainFilterUtils
         assertEquals(toFilter(equal(C_DOUBLE, doubleLiteral(1.2))), DoubleRange.of(1.2, false, false, 1.2, false, false, false));
         assertEquals(toFilter(notEqual(C_DOUBLE, doubleLiteral(1.2))), MultiRange.of(ImmutableList.of(
                 DoubleRange.of(Double.MIN_VALUE, true, true, 1.2, false, true, false),
-                DoubleRange.of(1.2, false, true, Double.MAX_VALUE, true, true, false)), false, true));
+                DoubleRange.of(1.2, false, true, Double.MAX_VALUE, true, true, false)), false));
 
         assertEquals(toFilter(in(C_DOUBLE, ImmutableList.of(1.2, 3.4, 5.6))), MultiRange.of(ImmutableList.of(
                 DoubleRange.of(1.2, false, false, 1.2, false, false, false),
                 DoubleRange.of(3.4, false, false, 3.4, false, false, false),
-                DoubleRange.of(5.6, false, false, 5.6, false, false, false)), false, false));
+                DoubleRange.of(5.6, false, false, 5.6, false, false, false)), false));
 
         assertEquals(toFilter(isDistinctFrom(C_DOUBLE, doubleLiteral(1.2))), MultiRange.of(ImmutableList.of(
                 DoubleRange.of(Double.MIN_VALUE, true, true, 1.2, false, true, false),
-                DoubleRange.of(1.2, false, true, Double.MAX_VALUE, true, true, false)), true, true));
+                DoubleRange.of(1.2, false, true, Double.MAX_VALUE, true, true, false)), true));
 
         assertEquals(toFilter(between(C_DOUBLE, doubleLiteral(1.2), doubleLiteral(3.4))), DoubleRange.of(1.2, false, false, 3.4, false, false, false));
 
-        assertEquals(toFilter(lessThan(C_DOUBLE, doubleLiteral(Double.NaN))), ALWAYS_FALSE);
-        assertEquals(toFilter(lessThanOrEqual(C_DOUBLE, doubleLiteral(Double.NaN))), ALWAYS_FALSE);
-        assertEquals(toFilter(greaterThanOrEqual(C_DOUBLE, doubleLiteral(Double.NaN))), ALWAYS_FALSE);
-        assertEquals(toFilter(greaterThan(C_DOUBLE, doubleLiteral(Double.NaN))), ALWAYS_FALSE);
-        assertEquals(toFilter(notEqual(C_DOUBLE, doubleLiteral(Double.NaN))), ALWAYS_FALSE);
+        assertEquals(toFilter(lessThan(C_DOUBLE, doubleLiteral(Double.NaN))), DoubleRange.of(Double.MIN_VALUE, true, true, Double.NaN, false, true, false));
+        assertEquals(toFilter(lessThanOrEqual(C_DOUBLE, doubleLiteral(Double.NaN))), DoubleRange.of(Double.MIN_VALUE, true, true, Double.NaN, false, false, false));
+        assertEquals(toFilter(greaterThanOrEqual(C_DOUBLE, doubleLiteral(Double.NaN))), DoubleRange.of(Double.NaN, false, false, Double.MAX_VALUE, true, true, false));
+        assertEquals(toFilter(greaterThan(C_DOUBLE, doubleLiteral(Double.NaN))), DoubleRange.of(Double.NaN, false, true, Double.MAX_VALUE, true, true, false));
+        assertEquals(toFilter(notEqual(C_DOUBLE, doubleLiteral(Double.NaN))), MultiRange.of(ImmutableList.of(
+                DoubleRange.of(Double.MIN_VALUE, true, true, Double.NaN, false, true, false),
+                DoubleRange.of(Double.NaN, false, true, Double.MAX_VALUE, true, true, false)), false));
 
         assertEquals(toFilter(not(in(C_DOUBLE, ImmutableList.of(doubleLiteral(1.2))))), MultiRange.of(ImmutableList.of(
                 DoubleRange.of(Double.MIN_VALUE, true, true, 1.2, false, true, false),
-                DoubleRange.of(1.2, false, true, Double.MAX_VALUE, true, true, false)), false, true));
+                DoubleRange.of(1.2, false, true, Double.MAX_VALUE, true, true, false)), false));
 
         assertEquals(toFilter(not(in(C_DOUBLE, ImmutableList.of(doubleLiteral(2.4), doubleLiteral(1.2))))), MultiRange.of(ImmutableList.of(
                 DoubleRange.of(Double.MIN_VALUE, true, true, 1.2, false, true, false),
                 DoubleRange.of(1.2, false, true, 2.4, false, true, false),
-                DoubleRange.of(2.4, false, true, Double.MAX_VALUE, true, true, false)), false, true));
+                DoubleRange.of(2.4, false, true, Double.MAX_VALUE, true, true, false)), false));
 
         assertEquals(toFilter((in(C_DOUBLE, ImmutableList.of(doubleLiteral(2.4), doubleLiteral(1.2))))), MultiRange.of(ImmutableList.of(
                 DoubleRange.of(1.2, false, false, 1.2, false, false, false),
-                DoubleRange.of(2.4, false, false, 2.4, false, false, false)), false, false));
+                DoubleRange.of(2.4, false, false, 2.4, false, false, false)), false));
     }
 
     @Test
@@ -310,33 +313,35 @@ public class TestTupleDomainFilterUtils
         assertEquals(toFilter(equal(C_REAL, realLiteral)), FloatRange.of(1.2f, false, false, 1.2f, false, false, false));
         assertEquals(toFilter(not(equal(C_REAL, realLiteral))), MultiRange.of(ImmutableList.of(
                 FloatRange.of(Float.MIN_VALUE, true, true, 1.2f, false, true, false),
-                FloatRange.of(1.2f, false, true, Float.MAX_VALUE, true, true, false)), false, true));
+                FloatRange.of(1.2f, false, true, Float.MAX_VALUE, true, true, false)), false));
 
         assertEquals(toFilter(or(isNull(C_REAL), equal(C_REAL, realLiteral))), FloatRange.of(1.2f, false, false, 1.2f, false, false, true));
 
         Expression floatNaNLiteral = toExpression(realValue(Float.NaN), TYPES.get(C_REAL.toSymbolReference()));
-        assertEquals(toFilter(lessThan(C_REAL, floatNaNLiteral)), ALWAYS_FALSE);
-        assertEquals(toFilter(lessThanOrEqual(C_REAL, floatNaNLiteral)), ALWAYS_FALSE);
-        assertEquals(toFilter(greaterThanOrEqual(C_REAL, floatNaNLiteral)), ALWAYS_FALSE);
-        assertEquals(toFilter(greaterThan(C_REAL, floatNaNLiteral)), ALWAYS_FALSE);
-        assertEquals(toFilter(notEqual(C_REAL, floatNaNLiteral)), ALWAYS_FALSE);
+        assertEquals(toFilter(lessThan(C_REAL, floatNaNLiteral)), FloatRange.of(Float.MIN_VALUE, true, true, Float.NaN, false, true, false));
+        assertEquals(toFilter(lessThanOrEqual(C_REAL, floatNaNLiteral)), FloatRange.of(Float.MIN_VALUE, true, true, Float.NaN, false, false, false));
+        assertEquals(toFilter(greaterThanOrEqual(C_REAL, floatNaNLiteral)), FloatRange.of(Float.NaN, false, false, Float.MAX_VALUE, true, true, false));
+        assertEquals(toFilter(greaterThan(C_REAL, floatNaNLiteral)), FloatRange.of(Float.NaN, false, true, Float.MAX_VALUE, true, true, false));
+        assertEquals(toFilter(notEqual(C_REAL, floatNaNLiteral)), MultiRange.of(ImmutableList.of(
+                FloatRange.of(Float.MIN_VALUE, true, true, Float.NaN, false, true, false),
+                FloatRange.of(Float.NaN, false, true, Float.MAX_VALUE, true, true, false)), false));
 
         assertEquals(toFilter(isDistinctFrom(C_REAL, realLiteral)), MultiRange.of(ImmutableList.of(
                 FloatRange.of(Float.MIN_VALUE, true, true, 1.2f, false, true, false),
-                FloatRange.of(1.2f, false, true, Float.MAX_VALUE, true, true, false)), true, true));
+                FloatRange.of(1.2f, false, true, Float.MAX_VALUE, true, true, false)), true));
 
         assertEquals(toFilter(or(isNull(C_REAL), notEqual(C_REAL, realLiteral))), MultiRange.of(ImmutableList.of(
                 FloatRange.of(Float.MIN_VALUE, true, true, 1.2f, false, true, false),
-                FloatRange.of(1.2f, false, true, Float.MAX_VALUE, true, true, false)), true, true));
+                FloatRange.of(1.2f, false, true, Float.MAX_VALUE, true, true, false)), true));
 
         assertEquals(toFilter(not(in(C_REAL, ImmutableList.of(realLiteral, realLiteralHigh)))), MultiRange.of(ImmutableList.of(
                 FloatRange.of(Float.MIN_VALUE, true, true, 1.2f, false, true, false),
                 FloatRange.of(1.2f, false, true, 2.4f, false, true, false),
-                FloatRange.of(2.4f, false, true, Float.MAX_VALUE, true, true, false)), false, true));
+                FloatRange.of(2.4f, false, true, Float.MAX_VALUE, true, true, false)), false));
 
         assertEquals(toFilter((in(C_REAL, ImmutableList.of(realLiteral, realLiteralHigh)))), MultiRange.of(ImmutableList.of(
                 FloatRange.of(1.2f, false, false, 1.2f, false, false, false),
-                FloatRange.of(2.4f, false, false, 2.4f, false, false, false)), false, false));
+                FloatRange.of(2.4f, false, false, 2.4f, false, false, false)), false));
     }
 
     @Test
@@ -347,12 +352,12 @@ public class TestTupleDomainFilterUtils
         assertEquals(toFilter(equal(C_DECIMAL_21_3, decimalLiteral)), LongDecimalRange.of(decimal.getLong(0), decimal.getLong(SIZE_OF_LONG), false, false, decimal.getLong(0), decimal.getLong(SIZE_OF_LONG), false, false, false));
         assertEquals(toFilter(not(equal(C_DECIMAL_21_3, decimalLiteral))), MultiRange.of(ImmutableList.of(
                 LongDecimalRange.of(Long.MIN_VALUE, Long.MIN_VALUE, true, true, decimal.getLong(0), decimal.getLong(SIZE_OF_LONG), false, true, false),
-                LongDecimalRange.of(decimal.getLong(0), decimal.getLong(SIZE_OF_LONG), false, true, Long.MAX_VALUE, Long.MAX_VALUE, true, true, false)), false, false));
+                LongDecimalRange.of(decimal.getLong(0), decimal.getLong(SIZE_OF_LONG), false, true, Long.MAX_VALUE, Long.MAX_VALUE, true, true, false)), false));
 
         assertEquals(toFilter(or(isNull(C_DECIMAL_21_3), equal(C_DECIMAL_21_3, decimalLiteral))), LongDecimalRange.of(decimal.getLong(0), decimal.getLong(SIZE_OF_LONG), false, false, decimal.getLong(0), decimal.getLong(SIZE_OF_LONG), false, false, true));
         assertEquals(toFilter(or(isNull(C_DECIMAL_21_3), not(equal(C_DECIMAL_21_3, decimalLiteral)))), MultiRange.of(ImmutableList.of(
                 LongDecimalRange.of(Long.MIN_VALUE, Long.MIN_VALUE, true, true, decimal.getLong(0), decimal.getLong(SIZE_OF_LONG), false, true, false),
-                LongDecimalRange.of(decimal.getLong(0), decimal.getLong(SIZE_OF_LONG), false, true, Long.MAX_VALUE, Long.MAX_VALUE, true, true, false)), true, false));
+                LongDecimalRange.of(decimal.getLong(0), decimal.getLong(SIZE_OF_LONG), false, true, Long.MAX_VALUE, Long.MAX_VALUE, true, true, false)), true));
     }
 
     @Test
@@ -493,9 +498,9 @@ public class TestTupleDomainFilterUtils
         return new IsNullPredicate(expression);
     }
 
-    private InPredicate in(Expression expression, Type expressisonType, List<?> values)
+    private InPredicate in(Expression expression, Type expressionType, List<?> values)
     {
-        List<Type> types = nCopies(values.size(), expressisonType);
+        List<Type> types = nCopies(values.size(), expressionType);
         List<Expression> expressions = literalEncoder.toExpressions(values, types);
         return new InPredicate(expression, new InListExpression(expressions));
     }

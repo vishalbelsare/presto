@@ -19,15 +19,18 @@ import com.facebook.presto.common.type.Decimals;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.hadoop.TextLineLengthLimitExceededException;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.RecordCursor;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.common.type.Date;
 import org.apache.hadoop.hive.common.type.HiveChar;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.common.type.HiveVarchar;
+import org.apache.hadoop.hive.common.type.Timestamp;
 import org.apache.hadoop.hive.serde2.Deserializer;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.io.HiveCharWritable;
@@ -46,8 +49,7 @@ import org.joda.time.DateTimeZone;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.math.BigInteger;
-import java.sql.Date;
-import java.sql.Timestamp;
+import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
@@ -68,7 +70,7 @@ import static com.facebook.presto.common.type.TinyintType.TINYINT;
 import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.common.type.Varchars.isVarcharType;
 import static com.facebook.presto.common.type.Varchars.truncateToLength;
-import static com.facebook.presto.hive.HiveColumnHandle.ColumnType.REGULAR;
+import static com.facebook.presto.hive.BaseHiveColumnHandle.ColumnType.REGULAR;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_BAD_DATA;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_CURSOR_ERROR;
 import static com.facebook.presto.hive.HiveUtil.closeWithSuppression;
@@ -83,7 +85,7 @@ import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.util.Objects.requireNonNull;
 
-class GenericHiveRecordCursor<K, V extends Writable>
+public class GenericHiveRecordCursor<K, V extends Writable>
         implements RecordCursor
 {
     private static final DateTimeZone JVM_TIME_ZONE = DateTimeZone.getDefault();
@@ -116,8 +118,30 @@ class GenericHiveRecordCursor<K, V extends Writable>
     private long completedBytes;
     private Object rowData;
     private boolean closed;
+    private final boolean legacyTimestampEnabled;
 
     public GenericHiveRecordCursor(
+            ConnectorSession connectorSession,
+            Configuration configuration,
+            Path path,
+            RecordReader<K, V> recordReader,
+            long totalBytes,
+            Properties splitSchema,
+            List<HiveColumnHandle> columns,
+            ZoneId hiveStorageTimeZoneId,
+            TypeManager typeManager)
+    {
+        this(connectorSession, configuration, path, recordReader, totalBytes, splitSchema, columns, getDateTimeZone(hiveStorageTimeZoneId), typeManager);
+    }
+
+    private static DateTimeZone getDateTimeZone(ZoneId hiveStorageTimeZoneId)
+    {
+        requireNonNull(hiveStorageTimeZoneId, "hiveStorageTimeZoneId is null");
+        return DateTimeZone.forID(hiveStorageTimeZoneId.getId());
+    }
+
+    public GenericHiveRecordCursor(
+            ConnectorSession connectorSession,
             Configuration configuration,
             Path path,
             RecordReader<K, V> recordReader,
@@ -140,6 +164,7 @@ class GenericHiveRecordCursor<K, V extends Writable>
         this.key = recordReader.createKey();
         this.value = recordReader.createValue();
         this.hiveStorageTimeZone = hiveStorageTimeZone;
+        this.legacyTimestampEnabled = connectorSession.getSqlFunctionProperties().isLegacyTimestamp();
 
         this.deserializer = getDeserializer(configuration, splitSchema);
         this.rowInspector = getTableObjectInspector(deserializer);
@@ -284,32 +309,25 @@ class GenericHiveRecordCursor<K, V extends Writable>
         else {
             Object fieldValue = ((PrimitiveObjectInspector) fieldInspectors[column]).getPrimitiveJavaObject(fieldData);
             checkState(fieldValue != null, "fieldValue should not be null");
-            longs[column] = getLongExpressedValue(fieldValue, hiveStorageTimeZone);
+            longs[column] = getLongExpressedValue(fieldValue, hiveStorageTimeZone, legacyTimestampEnabled);
             nulls[column] = false;
         }
     }
 
-    private static long getLongExpressedValue(Object value, DateTimeZone hiveTimeZone)
+    private static long getLongExpressedValue(Object value, DateTimeZone hiveTimeZone, boolean legacyTimestampEnabled)
     {
         if (value instanceof Date) {
-            long storageTime = ((Date) value).getTime();
-            // convert date from VM current time zone to UTC
-            long utcMillis = storageTime + JVM_TIME_ZONE.getOffset(storageTime);
+            long utcMillis = ((Date) value).toEpochMilli();
             return TimeUnit.MILLISECONDS.toDays(utcMillis);
         }
         if (value instanceof Timestamp) {
-            // The Hive SerDe parses timestamps using the default time zone of
-            // this JVM, but the data might have been written using a different
-            // time zone. We need to convert it to the configured time zone.
+            long hiveMillis = ((Timestamp) value).toEpochMilli();
 
-            // the timestamp that Hive parsed using the JVM time zone
-            long parsedJvmMillis = ((Timestamp) value).getTime();
-
-            // remove the JVM time zone correction from the timestamp
-            long hiveMillis = JVM_TIME_ZONE.convertUTCToLocal(parsedJvmMillis);
-
-            // convert to UTC using the real time zone for the underlying data
-            return hiveTimeZone.convertLocalToUTC(hiveMillis, false);
+            if (legacyTimestampEnabled) {
+                // convert to UTC using the real time zone for the underlying data
+                return hiveTimeZone.convertLocalToUTC(hiveMillis, false);
+            }
+            return hiveMillis;
         }
         if (value instanceof Float) {
             return floatToRawIntBits(((Float) value));
@@ -493,7 +511,7 @@ class GenericHiveRecordCursor<K, V extends Writable>
             nulls[column] = true;
         }
         else {
-            objects[column] = getBlockObject(types[column], fieldData, fieldInspectors[column]);
+            objects[column] = getBlockObject(types[column], fieldData, fieldInspectors[column], hiveStorageTimeZone, legacyTimestampEnabled);
             nulls[column] = false;
         }
     }

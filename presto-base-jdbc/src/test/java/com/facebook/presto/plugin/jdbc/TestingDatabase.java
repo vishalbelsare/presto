@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplitSource;
@@ -34,10 +35,12 @@ import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NO
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.Iterables.getOnlyElement;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 final class TestingDatabase
         implements AutoCloseable
 {
+    public static final Duration LOCK_TIMEOUT = new Duration(30, SECONDS);
     public static final String CONNECTOR_ID = "test";
     private static final ConnectorSession session = testSessionBuilder().build().toConnectorSession();
 
@@ -47,7 +50,7 @@ final class TestingDatabase
     public TestingDatabase()
             throws SQLException
     {
-        String connectionUrl = "jdbc:h2:mem:test" + System.nanoTime() + "_" + ThreadLocalRandom.current().nextInt();
+        String connectionUrl = "jdbc:h2:mem:test" + System.nanoTime() + "_" + ThreadLocalRandom.current().nextInt() + ";LOCK_TIMEOUT=" + LOCK_TIMEOUT.toMillis();
         jdbcClient = new BaseJdbcClient(
                 new JdbcConnectorId(CONNECTOR_ID),
                 new BaseJdbcConfig(),
@@ -100,21 +103,21 @@ final class TestingDatabase
     public JdbcSplit getSplit(String schemaName, String tableName)
     {
         JdbcIdentity identity = JdbcIdentity.from(session);
-        JdbcTableHandle jdbcTableHandle = jdbcClient.getTableHandle(identity, new SchemaTableName(schemaName, tableName));
+        JdbcTableHandle jdbcTableHandle = jdbcClient.getTableHandle(session, identity, new SchemaTableName(schemaName, tableName));
         JdbcTableLayoutHandle jdbcLayoutHandle = new JdbcTableLayoutHandle(session.getSqlFunctionProperties(), jdbcTableHandle, TupleDomain.all(), Optional.empty());
-        ConnectorSplitSource splits = jdbcClient.getSplits(identity, jdbcLayoutHandle);
+        ConnectorSplitSource splits = jdbcClient.getSplits(session, identity, jdbcLayoutHandle);
         return (JdbcSplit) getOnlyElement(getFutureValue(splits.getNextBatch(NOT_PARTITIONED, 1000)).getSplits());
     }
 
     public Map<String, JdbcColumnHandle> getColumnHandles(String schemaName, String tableName)
     {
-        JdbcTableHandle tableHandle = jdbcClient.getTableHandle(JdbcIdentity.from(session), new SchemaTableName(schemaName, tableName));
+        JdbcTableHandle tableHandle = jdbcClient.getTableHandle(session, JdbcIdentity.from(session), new SchemaTableName(schemaName, tableName));
         List<JdbcColumnHandle> columns = jdbcClient.getColumns(session, tableHandle);
         checkArgument(columns != null, "table not found: %s.%s", schemaName, tableName);
 
         ImmutableMap.Builder<String, JdbcColumnHandle> columnHandles = ImmutableMap.builder();
         for (JdbcColumnHandle column : columns) {
-            columnHandles.put(column.getColumnMetadata().getName(), column);
+            columnHandles.put(column.getColumnMetadata(session, jdbcClient).getName(), column);
         }
         return columnHandles.build();
     }

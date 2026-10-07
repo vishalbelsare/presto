@@ -21,21 +21,18 @@ import com.facebook.presto.tpch.TpchPlugin;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
+import jakarta.ws.rs.core.Response;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
-import javax.ws.rs.core.Response;
-
 import java.util.Map;
 
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
+import static jakarta.ws.rs.core.Response.Status.BAD_REQUEST;
 import static java.util.concurrent.Executors.newCachedThreadPool;
-import static javax.ws.rs.core.Response.Status.BAD_REQUEST;
 import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
 
-@Test(singleThreaded = true)
 public class TestServerInfoResource
 {
     private static final long SHUTDOWN_TIMEOUT_MILLIS = 240_000;
@@ -43,7 +40,6 @@ public class TestServerInfoResource
             .setCatalog("tpch")
             .setSchema("tiny")
             .build();
-    private static final String COORDINATOR = "coordinator";
 
     private ListeningExecutorService executor;
 
@@ -72,7 +68,7 @@ public class TestServerInfoResource
 
             ServerInfoResource serverInfoResource = coordinator.getServerInfoResource();
             NodeState nodeState = serverInfoResource.getServerState();
-            assertTrue(nodeState == NodeState.ACTIVE);
+            assertEquals(nodeState, NodeState.ACTIVE);
         }
     }
 
@@ -91,11 +87,11 @@ public class TestServerInfoResource
             Response response = serverInfoResource.updateState(NodeState.INACTIVE);
             assertEquals(response.getStatus(), 200);
             NodeState nodeState = serverInfoResource.getServerState();
-            assertTrue(nodeState == NodeState.INACTIVE);
+            assertEquals(nodeState, NodeState.INACTIVE);
             response = serverInfoResource.updateState(NodeState.ACTIVE);
             assertEquals(response.getStatus(), 200);
             nodeState = serverInfoResource.getServerState();
-            assertTrue(nodeState == NodeState.ACTIVE);
+            assertEquals(nodeState, NodeState.ACTIVE);
         }
     }
 
@@ -114,7 +110,7 @@ public class TestServerInfoResource
             Response response = serverInfoResource.updateState(NodeState.SHUTTING_DOWN);
             assertEquals(response.getStatus(), 200);
             NodeState nodeState = serverInfoResource.getServerState();
-            assertTrue(nodeState == NodeState.SHUTTING_DOWN);
+            assertEquals(nodeState, NodeState.SHUTTING_DOWN);
         }
     }
 

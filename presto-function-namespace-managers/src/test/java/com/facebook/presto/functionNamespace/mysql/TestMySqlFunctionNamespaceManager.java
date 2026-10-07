@@ -35,8 +35,8 @@ import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.util.concurrent.UncheckedExecutionException;
 import com.google.inject.Injector;
+import io.netty.buffer.PooledByteBufAllocator;
 import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
 import org.testng.annotations.AfterClass;
@@ -80,9 +80,9 @@ import static org.testng.Assert.fail;
 @Test(singleThreaded = true)
 public class TestMySqlFunctionNamespaceManager
 {
-    private static final String DB = "presto";
+    protected static final String DB = "presto";
 
-    private TestingMySqlServer mySqlServer;
+    protected TestingMySqlServer mySqlServer;
     private Jdbi jdbi;
     private Injector injector;
     private MySqlFunctionNamespaceManager functionNamespaceManager;
@@ -100,19 +100,13 @@ public class TestMySqlFunctionNamespaceManager
         Bootstrap app = new Bootstrap(
                 new MySqlFunctionNamespaceManagerModule(TEST_CATALOG),
                 new SimpleAddressSqlFunctionExecutorsModule(),
-                new DriftNettyClientModule(),
+                new DriftNettyClientModule(PooledByteBufAllocator.DEFAULT),
                 new MySqlConnectionModule());
-
-        Map<String, String> config = ImmutableMap.<String, String>builder()
-                .put("function-cache-expiration", "0s")
-                .put("function-instance-cache-expiration", "0s")
-                .put("database-url", mySqlServer.getJdbcUrl(DB))
-                .build();
 
         try {
             this.injector = app
                     .doNotInitializeLogging()
-                    .setRequiredConfigurationProperties(config)
+                    .setRequiredConfigurationProperties(getConfig())
                     .initialize();
             this.functionNamespaceManager = injector.getInstance(MySqlFunctionNamespaceManager.class);
             this.jdbi = injector.getInstance(Jdbi.class);
@@ -121,6 +115,15 @@ public class TestMySqlFunctionNamespaceManager
             throwIfUnchecked(e);
             throw new RuntimeException(e);
         }
+    }
+
+    protected Map<String, String> getConfig()
+    {
+        return ImmutableMap.<String, String>builder()
+                .put("function-cache-expiration", "0s")
+                .put("function-instance-cache-expiration", "0s")
+                .put("database-url", mySqlServer.getJdbcUrl(DB))
+                .build();
     }
 
     @BeforeMethod
@@ -203,7 +206,7 @@ public class TestMySqlFunctionNamespaceManager
         assertListFunctions(FUNCTION_POWER_TOWER_DOUBLE.withVersion("1"));
     }
 
-    @Test(expectedExceptions = IllegalArgumentException.class, expectedExceptionsMessageRegExp = ".*function 'unittest\\.memory\\.power_tower\\(x double\\):double:1 \\{RETURN pow\\(x, x\\)\\} \\(SQL, DETERMINISTIC, CALLED_ON_NULL_INPUT\\)' is already versioned")
+    @Test(expectedExceptions = IllegalArgumentException.class, expectedExceptionsMessageRegExp = ".*function 'unittest\\.memory\\.power_tower\\(x double\\):double:1 \\[SCALAR] \\{RETURN pow\\(x, x\\)\\} \\(SQL, DETERMINISTIC, CALLED_ON_NULL_INPUT\\)' is already versioned")
     public void testCreateFunctionFailedVersioned()
     {
         createFunction(FUNCTION_POWER_TOWER_DOUBLE.withVersion("1"), true);
@@ -406,7 +409,7 @@ public class TestMySqlFunctionNamespaceManager
         assertGetFunctionMetadata(handle2, FUNCTION_POWER_TOWER_DOUBLE_UPDATED);
     }
 
-    @Test(expectedExceptions = UncheckedExecutionException.class, expectedExceptionsMessageRegExp = ".*Invalid FunctionHandle: unittest\\.memory\\.power_tower\\(double\\):2")
+    @Test(expectedExceptions = PrestoException.class, expectedExceptionsMessageRegExp = "Error getting FunctionMetadata for handle: unittest\\.memory\\.power_tower\\(double\\):2")
     public void testInvalidFunctionHandle()
     {
         createFunction(FUNCTION_POWER_TOWER_DOUBLE, true);
@@ -444,7 +447,7 @@ public class TestMySqlFunctionNamespaceManager
                 .max(comparing(SqlInvokedFunction::getRequiredVersion));
         assertTrue(function.isPresent());
         functionNamespaceManager.commit(transactionHandle);
-        return function.get().getRequiredFunctionHandle();
+        return function.orElseThrow().getRequiredFunctionHandle();
     }
 
     private void assertListFunctions(Optional<String> likePattern, Optional<String> escape, SqlInvokedFunction... functions)

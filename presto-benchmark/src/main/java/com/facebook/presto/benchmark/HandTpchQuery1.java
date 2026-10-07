@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.benchmark;
 
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.benchmark.HandTpchQuery1.TpchQuery1Operator.TpchQuery1OperatorFactory;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.PageBuilder;
@@ -24,48 +25,48 @@ import com.facebook.presto.operator.HashAggregationOperator.HashAggregationOpera
 import com.facebook.presto.operator.Operator;
 import com.facebook.presto.operator.OperatorContext;
 import com.facebook.presto.operator.OperatorFactory;
-import com.facebook.presto.operator.aggregation.InternalAggregationFunction;
+import com.facebook.presto.spi.function.JavaAggregationFunctionImplementation;
 import com.facebook.presto.spi.plan.AggregationNode.Step;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.testing.LocalQueryRunner;
 import com.facebook.presto.util.DateTimeUtils;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Ints;
-import io.airlift.units.DataSize;
 
 import java.util.List;
 import java.util.Optional;
 
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static com.facebook.presto.benchmark.BenchmarkQueryRunner.createLocalQueryRunner;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.DateType.DATE;
 import static com.facebook.presto.common.type.DoubleType.DOUBLE;
 import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.operator.aggregation.GenericAccumulatorFactory.generateAccumulatorFactory;
 import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static com.google.common.base.Preconditions.checkState;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.util.Objects.requireNonNull;
 
 public class HandTpchQuery1
         extends AbstractSimpleOperatorBenchmark
 {
-    private final InternalAggregationFunction longAverage;
-    private final InternalAggregationFunction doubleAverage;
-    private final InternalAggregationFunction doubleSum;
-    private final InternalAggregationFunction countFunction;
+    private final JavaAggregationFunctionImplementation longAverage;
+    private final JavaAggregationFunctionImplementation doubleAverage;
+    private final JavaAggregationFunctionImplementation doubleSum;
+    private final JavaAggregationFunctionImplementation countFunction;
 
     public HandTpchQuery1(LocalQueryRunner localQueryRunner)
     {
         super(localQueryRunner, "hand_tpch_query_1", 1, 5);
 
         FunctionAndTypeManager functionAndTypeManager = localQueryRunner.getMetadata().getFunctionAndTypeManager();
-        longAverage = functionAndTypeManager.getAggregateFunctionImplementation(
+        longAverage = functionAndTypeManager.getJavaAggregateFunctionImplementation(
                 functionAndTypeManager.lookupFunction("avg", fromTypes(BIGINT)));
-        doubleAverage = functionAndTypeManager.getAggregateFunctionImplementation(
+        doubleAverage = functionAndTypeManager.getJavaAggregateFunctionImplementation(
                 functionAndTypeManager.lookupFunction("avg", fromTypes(DOUBLE)));
-        doubleSum = functionAndTypeManager.getAggregateFunctionImplementation(
+        doubleSum = functionAndTypeManager.getJavaAggregateFunctionImplementation(
                 functionAndTypeManager.lookupFunction("sum", fromTypes(DOUBLE)));
-        countFunction = functionAndTypeManager.getAggregateFunctionImplementation(
+        countFunction = functionAndTypeManager.getJavaAggregateFunctionImplementation(
                 functionAndTypeManager.lookupFunction("count", ImmutableList.of()));
     }
 
@@ -113,15 +114,16 @@ public class HandTpchQuery1
                 getColumnTypes("lineitem", "returnflag", "linestatus"),
                 Ints.asList(0, 1),
                 ImmutableList.of(),
+                ImmutableList.of(),
                 Step.SINGLE,
                 ImmutableList.of(
-                        doubleSum.bind(ImmutableList.of(2), Optional.empty()),
-                        doubleSum.bind(ImmutableList.of(3), Optional.empty()),
-                        doubleSum.bind(ImmutableList.of(4), Optional.empty()),
-                        longAverage.bind(ImmutableList.of(2), Optional.empty()),
-                        doubleAverage.bind(ImmutableList.of(5), Optional.empty()),
-                        doubleAverage.bind(ImmutableList.of(6), Optional.empty()),
-                        countFunction.bind(ImmutableList.of(2), Optional.empty())),
+                        generateAccumulatorFactory(doubleSum, ImmutableList.of(2), Optional.empty()),
+                        generateAccumulatorFactory(doubleSum, ImmutableList.of(3), Optional.empty()),
+                        generateAccumulatorFactory(doubleSum, ImmutableList.of(4), Optional.empty()),
+                        generateAccumulatorFactory(longAverage, ImmutableList.of(2), Optional.empty()),
+                        generateAccumulatorFactory(doubleAverage, ImmutableList.of(5), Optional.empty()),
+                        generateAccumulatorFactory(doubleAverage, ImmutableList.of(6), Optional.empty()),
+                        generateAccumulatorFactory(countFunction, ImmutableList.of(2), Optional.empty())),
                 Optional.empty(),
                 Optional.empty(),
                 10_000,

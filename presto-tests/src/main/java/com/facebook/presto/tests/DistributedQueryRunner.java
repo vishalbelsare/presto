@@ -19,9 +19,11 @@ import com.facebook.airlift.http.client.Request;
 import com.facebook.airlift.http.client.jetty.JettyHttpClient;
 import com.facebook.airlift.log.Logger;
 import com.facebook.airlift.testing.Assertions;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.Session;
 import com.facebook.presto.Session.SessionBuilder;
 import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.cost.StatsCalculator;
 import com.facebook.presto.execution.QueryInfo;
 import com.facebook.presto.execution.QueryManager;
@@ -30,21 +32,28 @@ import com.facebook.presto.metadata.Catalog;
 import com.facebook.presto.metadata.InternalNode;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.SessionPropertyManager;
+import com.facebook.presto.security.AllowAllSystemAccessControl;
 import com.facebook.presto.server.BasicQueryInfo;
 import com.facebook.presto.server.testing.TestingPrestoServer;
 import com.facebook.presto.spi.ConnectorId;
+import com.facebook.presto.spi.CoordinatorPlugin;
+import com.facebook.presto.spi.NodePoolType;
 import com.facebook.presto.spi.NodeState;
 import com.facebook.presto.spi.Plugin;
 import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.spi.eventlistener.EventListener;
+import com.facebook.presto.spi.function.SqlFunction;
 import com.facebook.presto.split.PageSourceManager;
 import com.facebook.presto.split.SplitManager;
+import com.facebook.presto.sql.expressions.ExpressionOptimizerManager;
 import com.facebook.presto.sql.parser.SqlParserOptions;
 import com.facebook.presto.sql.planner.ConnectorPlanOptimizerManager;
 import com.facebook.presto.sql.planner.NodePartitioningManager;
 import com.facebook.presto.sql.planner.Plan;
+import com.facebook.presto.sql.planner.sanity.PlanCheckerProviderManager;
 import com.facebook.presto.testing.MaterializedResult;
+import com.facebook.presto.testing.MaterializedRow;
 import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.testing.TestingAccessControlManager;
 import com.facebook.presto.transaction.TransactionManager;
@@ -52,14 +61,17 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Closer;
 import com.google.inject.Module;
-import io.airlift.units.Duration;
 import org.intellij.lang.annotations.Language;
 import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -68,6 +80,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -78,7 +91,12 @@ import java.util.function.Function;
 import static com.facebook.airlift.http.client.JsonResponseHandler.createJsonResponseHandler;
 import static com.facebook.airlift.http.client.Request.Builder.prepareGet;
 import static com.facebook.airlift.json.JsonCodec.jsonCodec;
+import static com.facebook.airlift.units.Duration.nanosSince;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_USER;
+import static com.facebook.presto.common.AuthClientConfigs.defaultAuthClientConfigs;
+import static com.facebook.presto.common.type.TypeUtils.isNumericType;
+import static com.facebook.presto.spi.NodePoolType.INTERMEDIATE;
+import static com.facebook.presto.spi.NodePoolType.LEAF;
 import static com.facebook.presto.testing.TestingSession.TESTING_CATALOG;
 import static com.facebook.presto.testing.TestingSession.createBogusTestingCatalog;
 import static com.facebook.presto.tests.AbstractTestQueries.TEST_CATALOG_PROPERTIES;
@@ -87,7 +105,6 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Throwables.throwIfUnchecked;
 import static com.google.common.collect.Iterables.getOnlyElement;
-import static io.airlift.units.Duration.nanosSince;
 import static java.lang.String.format;
 import static java.lang.System.nanoTime;
 import static java.util.Objects.requireNonNull;
@@ -115,9 +132,14 @@ public class DistributedQueryRunner
     private final List<TestingPrestoClient> prestoClients;
 
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
-    private Optional<TestingPrestoServer> resourceManager = Optional.empty();
+    private Optional<TestingPrestoServer> catalogServer = Optional.empty();
+    private Optional<List<TestingPrestoServer>> resourceManagers;
+    private Optional<TestingPrestoServer> coordinatorSidecar = Optional.empty();
 
+    private final int resourceManagerCount;
     private final AtomicReference<Handle> testFunctionNamespacesHandle = new AtomicReference<>();
+
+    private final Map<String, String> accessControlProperties;
 
     @Deprecated
     public DistributedQueryRunner(Session defaultSession, int nodeCount)
@@ -130,7 +152,26 @@ public class DistributedQueryRunner
     public DistributedQueryRunner(Session defaultSession, int nodeCount, Map<String, String> extraProperties)
             throws Exception
     {
-        this(false, defaultSession, nodeCount, 1, extraProperties, ImmutableMap.of(), ImmutableMap.of(), DEFAULT_SQL_PARSER_OPTIONS, ENVIRONMENT, Optional.empty(), Optional.empty(), ImmutableList.of());
+        this(
+                false,
+                false,
+                false,
+                false,
+                defaultSession,
+                nodeCount,
+                1,
+                1,
+                extraProperties,
+                ImmutableMap.of(),
+                ImmutableMap.of(),
+                ImmutableMap.of(),
+                ImmutableMap.of(),
+                DEFAULT_SQL_PARSER_OPTIONS,
+                ENVIRONMENT,
+                Optional.empty(),
+                Optional.empty(),
+                ImmutableList.of(),
+                ImmutableMap.of("access-control.name", AllowAllSystemAccessControl.NAME));
     }
 
     public static Builder builder(Session defaultSession)
@@ -140,26 +181,35 @@ public class DistributedQueryRunner
 
     private DistributedQueryRunner(
             boolean resourceManagerEnabled,
+            boolean catalogServerEnabled,
+            boolean coordinatorSidecarEnabled,
+            boolean skipLoadingResourceGroupConfigurationManager,
             Session defaultSession,
             int nodeCount,
             int coordinatorCount,
+            int resourceManagerCount,
             Map<String, String> extraProperties,
             Map<String, String> coordinatorProperties,
             Map<String, String> resourceManagerProperties,
+            Map<String, String> catalogServerProperties,
+            Map<String, String> coordinatorSidecarProperties,
             SqlParserOptions parserOptions,
             String environment,
-            Optional<Path> baseDataDir,
+            Optional<Path> dataDirectory,
             Optional<BiFunction<Integer, URI, Process>> externalWorkerLauncher,
-            List<Module> extraModules)
+            List<Module> extraModules,
+            Map<String, String> accessControlProperties)
             throws Exception
     {
         requireNonNull(defaultSession, "defaultSession is null");
         this.extraModules = requireNonNull(extraModules, "extraModules is null");
+        this.accessControlProperties = requireNonNull(accessControlProperties, "accessControlProperties is null");
 
         try {
             long start = nanoTime();
             discoveryServer = new TestingDiscoveryServer(environment);
             this.coordinatorCount = coordinatorCount;
+            this.resourceManagerCount = resourceManagerCount;
             closer.register(() -> closeUnchecked(discoveryServer));
             log.info("Created TestingDiscoveryServer in %s", nanosSince(start).convertToMostSuccinctTimeUnit());
             URI discoveryUrl = discoveryServer.getBaseUrl();
@@ -167,6 +217,7 @@ public class DistributedQueryRunner
 
             ImmutableList.Builder<TestingPrestoServer> servers = ImmutableList.builder();
             ImmutableList.Builder<TestingPrestoServer> coordinators = ImmutableList.builder();
+            ImmutableList.Builder<TestingPrestoServer> resourceManagers = ImmutableList.builder();
             Map<String, String> extraCoordinatorProperties = new HashMap<>();
 
             if (externalWorkerLauncher.isPresent()) {
@@ -187,8 +238,27 @@ public class DistributedQueryRunner
             else {
                 externalWorkers = ImmutableList.of();
 
-                for (int i = (coordinatorCount + (resourceManagerEnabled ? 1 : 0)); i < nodeCount; i++) {
-                    TestingPrestoServer worker = closer.register(createTestingPrestoServer(discoveryUrl, false, resourceManagerEnabled, false, extraProperties, parserOptions, environment, baseDataDir, extraModules));
+                for (int i = (coordinatorCount + (resourceManagerEnabled ? resourceManagerCount : 0)); i < nodeCount; i++) {
+                    // We are simply splitting the nodes into leaf and intermediate for testing purpose
+                    NodePoolType workerPool = i % 2 == 0 ? LEAF : INTERMEDIATE;
+                    Map<String, String> workerProperties = new HashMap<>(extraProperties);
+                    workerProperties.put("pool-type", workerPool.name());
+                    TestingPrestoServer worker = closer.register(createTestingPrestoServer(
+                            discoveryUrl,
+                            false,
+                            resourceManagerEnabled,
+                            false,
+                            catalogServerEnabled,
+                            false,
+                            coordinatorSidecarEnabled,
+                            false,
+                            skipLoadingResourceGroupConfigurationManager,
+                            false,
+                            workerProperties,
+                            parserOptions,
+                            environment,
+                            dataDirectory,
+                            extraModules));
                     servers.add(worker);
                 }
             }
@@ -197,20 +267,101 @@ public class DistributedQueryRunner
             extraCoordinatorProperties.putAll(extraProperties);
             extraCoordinatorProperties.putAll(coordinatorProperties);
 
+            if (resourceManagerEnabled) {
+                for (int i = 0; i < resourceManagerCount; i++) {
+                    Map<String, String> rmProperties = new HashMap<>(resourceManagerProperties);
+                    if (resourceManagerProperties.get("raft.isEnabled") != null) {
+                        int raftPort = Integer.valueOf(resourceManagerProperties.get("raft.port")) + i;
+                        rmProperties.replace("raft.port", String.valueOf(raftPort));
+                    }
+                    TestingPrestoServer resourceManager = closer.register(createTestingPrestoServer(
+                            discoveryUrl,
+                            true,
+                            true,
+                            false,
+                            false,
+                            false,
+                            false,
+                            false,
+                            skipLoadingResourceGroupConfigurationManager,
+                            false,
+                            rmProperties,
+                            parserOptions,
+                            environment,
+                            dataDirectory,
+                            extraModules));
+                    servers.add(resourceManager);
+                    resourceManagers.add(resourceManager);
+                }
+            }
+
+            if (catalogServerEnabled) {
+                catalogServer = Optional.of(closer.register(createTestingPrestoServer(
+                        discoveryUrl,
+                        false,
+                        false,
+                        true,
+                        true,
+                        false,
+                        false,
+                        false,
+                        skipLoadingResourceGroupConfigurationManager,
+                        false,
+                        catalogServerProperties,
+                        parserOptions,
+                        environment,
+                        dataDirectory,
+                        extraModules)));
+                servers.add(catalogServer.get());
+            }
+
+            if (coordinatorSidecarEnabled) {
+                coordinatorSidecar = Optional.of(closer.register(createTestingPrestoServer(
+                        discoveryUrl,
+                        false,
+                        false,
+                        false,
+                        false,
+                        true,
+                        true,
+                        false,
+                        skipLoadingResourceGroupConfigurationManager,
+                        false,
+                        coordinatorSidecarProperties,
+                        parserOptions,
+                        environment,
+                        dataDirectory,
+                        extraModules)));
+                servers.add(coordinatorSidecar.get());
+            }
+
+            final boolean loadDefaultSystemAccessControl = !accessControlProperties.containsKey("access-control.name") ||
+                    accessControlProperties.get("access-control.name").equals("allow-all");
             for (int i = 0; i < coordinatorCount; i++) {
-                TestingPrestoServer coordinator = closer.register(createTestingPrestoServer(discoveryUrl, false, resourceManagerEnabled, true, extraCoordinatorProperties, parserOptions, environment, baseDataDir, extraModules));
+                TestingPrestoServer coordinator = closer.register(createTestingPrestoServer(
+                        discoveryUrl,
+                        false,
+                        resourceManagerEnabled,
+                        false,
+                        catalogServerEnabled,
+                        false,
+                        false,
+                        true,
+                        skipLoadingResourceGroupConfigurationManager,
+                        loadDefaultSystemAccessControl,
+                        extraCoordinatorProperties,
+                        parserOptions,
+                        environment,
+                        dataDirectory,
+                        extraModules));
                 servers.add(coordinator);
                 coordinators.add(coordinator);
                 extraCoordinatorProperties.remove("http-server.http.port");
             }
 
-            if (resourceManagerEnabled) {
-                resourceManager = Optional.of(closer.register(createTestingPrestoServer(discoveryUrl, true, true, false, resourceManagerProperties, parserOptions, environment, baseDataDir, extraModules)));
-                servers.add(resourceManager.get());
-            }
-
             this.servers = servers.build();
             this.coordinators = coordinators.build();
+            this.resourceManagers = Optional.of(resourceManagers.build());
         }
         catch (Exception e) {
             try {
@@ -230,14 +381,15 @@ public class DistributedQueryRunner
         }
         prestoClients = prestoClientsBuilder.build();
 
-        long start = nanoTime();
-        while (!allNodesGloballyVisible()) {
-            Assertions.assertLessThan(nanosSince(start), new Duration(30, SECONDS));
-            MILLISECONDS.sleep(10);
+        try {
+            waitForAllNodesGloballyVisible();
         }
-        log.info("Announced servers in %s", nanosSince(start).convertToMostSuccinctTimeUnit());
+        catch (TimeoutException e) {
+            closer.close();
+            throw e;
+        }
 
-        start = nanoTime();
+        long start = nanoTime();
         for (TestingPrestoServer server : servers) {
             server.getMetadata().registerBuiltInFunctions(AbstractTestQueries.CUSTOM_FUNCTIONS);
         }
@@ -265,10 +417,12 @@ public class DistributedQueryRunner
             }
         }
 
-        int availableCoordinaors = 0;
-        while (availableCoordinaors != coordinators.size()) {
-            MILLISECONDS.sleep(10);
-            availableCoordinaors = getResourceManager().get().getNodeManager().getCoordinators().size();
+        int availableCoordinators = 0;
+        if (getResourceManager().isPresent()) {
+            while (availableCoordinators != coordinators.size()) {
+                MILLISECONDS.sleep(10);
+                availableCoordinators = getResourceManager().get().getNodeManager().getCoordinators().size();
+            }
         }
     }
 
@@ -284,7 +438,55 @@ public class DistributedQueryRunner
         return state;
     }
 
-    private static TestingPrestoServer createTestingPrestoServer(URI discoveryUri, boolean resourceManager, boolean resourceManagerEnabled, boolean coordinator, Map<String, String> extraProperties, SqlParserOptions parserOptions, String environment, Optional<Path> baseDataDir, List<Module> extraModules)
+    public NodeState getWorkerInfoState(int worker)
+    {
+        URI uri = URI.create(getWorker(worker).getBaseUrl().toString() + "/v1/info/state");
+        Request request = prepareGet()
+                .setHeader(PRESTO_USER, DEFAULT_USER)
+                .setUri(uri)
+                .build();
+
+        NodeState state = client.execute(request, createJsonResponseHandler(jsonCodec(NodeState.class)));
+        return state;
+    }
+
+    public int sendWorkerRequest(int worker, String body)
+    {
+        try {
+            URL url = new URL(getWorker(worker).getBaseUrl().toString() + "/v1/info/state");
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("PUT");
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json");
+
+            try (OutputStream os = connection.getOutputStream()) {
+                byte[] input = body.getBytes(StandardCharsets.UTF_8);
+                os.write(input, 0, input.length);
+            }
+            return connection.getResponseCode();
+        }
+        catch (Exception e) {
+            e.printStackTrace();
+            return 500;
+        }
+    }
+
+    private static TestingPrestoServer createTestingPrestoServer(
+            URI discoveryUri,
+            boolean resourceManager,
+            boolean resourceManagerEnabled,
+            boolean catalogServer,
+            boolean catalogServerEnabled,
+            boolean coordinatorSidecar,
+            boolean coordinatorSidecarEnabled,
+            boolean coordinator,
+            boolean skipLoadingResourceGroupConfigurationManager,
+            boolean loadDefaultSystemAccessControl,
+            Map<String, String> extraProperties,
+            SqlParserOptions parserOptions,
+            String environment,
+            Optional<Path> dataDirectory,
+            List<Module> extraModules)
             throws Exception
     {
         long start = nanoTime();
@@ -296,31 +498,90 @@ public class DistributedQueryRunner
                 .put("distributed-index-joins-enabled", "true")
                 .put("exchange.checksum-enabled", "true");
         if (coordinator) {
-            propertiesBuilder.put("node-scheduler.include-coordinator", "true");
+            propertiesBuilder.put("node-scheduler.include-coordinator", extraProperties.getOrDefault("node-scheduler.include-coordinator", "true"));
             propertiesBuilder.put("join-distribution-type", "PARTITIONED");
         }
         HashMap<String, String> properties = new HashMap<>(propertiesBuilder.build());
         properties.putAll(extraProperties);
 
-        TestingPrestoServer server = new TestingPrestoServer(resourceManager, resourceManagerEnabled, coordinator, properties, environment, discoveryUri, parserOptions, extraModules, baseDataDir);
+        TestingPrestoServer server = new TestingPrestoServer(
+                resourceManager,
+                resourceManagerEnabled,
+                catalogServer,
+                catalogServerEnabled,
+                coordinatorSidecar,
+                coordinatorSidecarEnabled,
+                coordinator,
+                skipLoadingResourceGroupConfigurationManager,
+                loadDefaultSystemAccessControl,
+                properties,
+                environment,
+                discoveryUri,
+                parserOptions,
+                extraModules,
+                dataDirectory);
 
-        String nodeRole = coordinator ? "coordinator" : resourceManager ? "resourceManager" : "worker";
+        String nodeRole = "worker";
+        if (coordinator) {
+            nodeRole = "coordinator";
+        }
+        else if (resourceManager) {
+            nodeRole = "resourceManager";
+        }
+        else if (catalogServer) {
+            nodeRole = "catalogServer";
+        }
+        else if (coordinatorSidecar) {
+            nodeRole = "coordinatorSidecar";
+        }
         log.info("Created %s TestingPrestoServer in %s: %s", nodeRole, nanosSince(start).convertToMostSuccinctTimeUnit(), server.getBaseUrl());
 
         return server;
     }
 
-    private boolean allNodesGloballyVisible()
+    private void waitForAllNodesGloballyVisible()
+            throws Exception
     {
+        long startTimeInMs = nanoTime();
         int expectedActiveNodes = externalWorkers.size() + servers.size();
-        for (TestingPrestoServer server : servers) {
+        Duration timeout = new Duration(100, SECONDS);
+
+        for (int serverIndex = 0; serverIndex < servers.size(); ) {
+            TestingPrestoServer server = servers.get(serverIndex);
             AllNodes allNodes = server.refreshNodes();
-            if (!allNodes.getInactiveNodes().isEmpty() ||
-                    (allNodes.getActiveNodes().size() != expectedActiveNodes)) {
-                return false;
+            int activeNodeCount = allNodes.getActiveNodes().size();
+
+            if (!allNodes.getInactiveNodes().isEmpty()) {
+                throwTimeoutIfNotReady(
+                        startTimeInMs,
+                        timeout,
+                        format("Timed out waiting for all nodes to be globally visible. Inactive nodes: %s", allNodes.getInactiveNodes()));
+                MILLISECONDS.sleep(10);
+                serverIndex = 0;
+            }
+            else if ((server.isCoordinator() || server.isResourceManager()) && activeNodeCount != expectedActiveNodes) {
+                throwTimeoutIfNotReady(
+                        startTimeInMs,
+                        timeout,
+                        format("Timed out waiting for all nodes to be globally visible. Node count: %s, expected: %s", activeNodeCount, expectedActiveNodes));
+                MILLISECONDS.sleep(10);
+                serverIndex = 0;
+            }
+            else {
+                log.info("Server %s has %s active nodes", server.getBaseUrl(), activeNodeCount);
+                serverIndex++;
             }
         }
-        return true;
+
+        log.info("Announced servers in %s", nanosSince(startTimeInMs).convertToMostSuccinctTimeUnit());
+    }
+
+    private static void throwTimeoutIfNotReady(long startTimeInMs, Duration timeout, String message)
+            throws TimeoutException
+    {
+        if (nanosSince(startTimeInMs).compareTo(timeout) >= 0) {
+            throw new TimeoutException(message);
+        }
     }
 
     public TestingPrestoClient getRandomClient()
@@ -336,7 +597,7 @@ public class DistributedQueryRunner
     @Override
     public int getNodeCount()
     {
-        return servers.size();
+        return servers.size() + externalWorkers.size();
     }
 
     @Override
@@ -395,10 +656,10 @@ public class DistributedQueryRunner
     }
 
     @Override
-    public Optional<EventListener> getEventListener()
+    public List<EventListener> getEventListeners()
     {
         checkState(coordinators.size() == 1, "Expected a single coordinator");
-        return coordinators.get(0).getEventListener();
+        return coordinators.get(0).getEventListeners();
     }
 
     @Override
@@ -406,6 +667,20 @@ public class DistributedQueryRunner
     {
         checkState(coordinators.size() == 1, "Expected a single coordinator");
         return coordinators.get(0).getAccessControl();
+    }
+
+    @Override
+    public PlanCheckerProviderManager getPlanCheckerProviderManager()
+    {
+        checkState(coordinators.size() == 1, "Expected a single coordinator");
+        return coordinators.get(0).getPlanCheckerProviderManager();
+    }
+
+    @Override
+    public ExpressionOptimizerManager getExpressionManager()
+    {
+        checkState(coordinators.size() == 1, "Expected a single coordinator");
+        return coordinators.get(0).getExpressionManager();
     }
 
     public TestingPrestoServer getCoordinator()
@@ -420,6 +695,12 @@ public class DistributedQueryRunner
         return coordinators.get(coordinator);
     }
 
+    private TestingPrestoServer getWorker(int worker)
+    {
+        checkState(worker < servers.size(), format("Expected worker index %d < %d", worker, servers.size()));
+        return servers.get(worker);
+    }
+
     public List<TestingPrestoServer> getCoordinators()
     {
         return coordinators;
@@ -427,7 +708,33 @@ public class DistributedQueryRunner
 
     public Optional<TestingPrestoServer> getResourceManager()
     {
-        return resourceManager;
+        return resourceManagers.isPresent() && !resourceManagers.get().isEmpty() ? Optional.of(resourceManagers.get().get(0)) : Optional.empty();
+    }
+
+    public Optional<TestingPrestoServer> getCatalogServer()
+    {
+        return catalogServer;
+    }
+
+    public Optional<TestingPrestoServer> getCoordinatorSidecar()
+    {
+        return coordinatorSidecar;
+    }
+
+    public TestingPrestoServer getResourceManager(int resourceManager)
+    {
+        checkState(resourceManager < resourceManagers.get().size(), format("Expected resource manager index %d < %d", resourceManager, resourceManagerCount));
+        return resourceManagers.get().get(resourceManager);
+    }
+
+    public List<TestingPrestoServer> getResourceManagers()
+    {
+        return resourceManagers.get();
+    }
+
+    public List<TestingPrestoServer> getCoordinatorWorkers()
+    {
+        return getServers().stream().filter(server -> !server.isResourceManager()).collect(ImmutableList.toImmutableList());
     }
 
     public List<TestingPrestoServer> getServers()
@@ -438,11 +745,13 @@ public class DistributedQueryRunner
     @Override
     public void installPlugin(Plugin plugin)
     {
-        long start = nanoTime();
-        for (TestingPrestoServer server : servers) {
-            server.installPlugin(plugin);
-        }
-        log.info("Installed plugin %s in %s", plugin.getClass().getSimpleName(), nanosSince(start).convertToMostSuccinctTimeUnit());
+        installPlugin(plugin, false);
+    }
+
+    @Override
+    public void installCoordinatorPlugin(CoordinatorPlugin plugin)
+    {
+        installCoordinatorPlugin(plugin, false);
     }
 
     public void createCatalog(String catalogName, String connectorName)
@@ -480,7 +789,21 @@ public class DistributedQueryRunner
     public void loadFunctionNamespaceManager(String functionNamespaceManagerName, String catalogName, Map<String, String> properties)
     {
         for (TestingPrestoServer server : servers) {
-            server.getMetadata().getFunctionAndTypeManager().loadFunctionNamespaceManager(functionNamespaceManagerName, catalogName, properties);
+            server.getMetadata().getFunctionAndTypeManager()
+                    .loadFunctionNamespaceManager(
+                            functionNamespaceManagerName, catalogName, properties, server.getPluginNodeManager(), server.getAuthClientConfigs());
+        }
+    }
+
+    @Override
+    public void loadExpressionOptimizer(String expressionOptimizerFactoryName, String expressionOptimizerName, Map<String, String> properties)
+    {
+        for (TestingPrestoServer server : servers) {
+            server.getExpressionManager().loadExpressionOptimizerFactory(
+                    expressionOptimizerFactoryName,
+                    expressionOptimizerName,
+                    properties,
+                    server.getAuthClientConfigs());
         }
     }
 
@@ -493,21 +816,12 @@ public class DistributedQueryRunner
      */
     public void enableTestFunctionNamespaces(List<String> catalogNames, Map<String, String> additionalProperties)
     {
-        checkState(testFunctionNamespacesHandle.get() == null, "Test function namespaces already enabled");
+        enableTestFunctionNamespaces(catalogNames, additionalProperties, false);
+    }
 
-        String databaseName = String.valueOf(nanoTime()) + "_" + ThreadLocalRandom.current().nextInt();
-        Map<String, String> properties = ImmutableMap.<String, String>builder()
-                .put("database-name", databaseName)
-                .putAll(additionalProperties)
-                .build();
-        installPlugin(new H2FunctionNamespaceManagerPlugin());
-        for (String catalogName : catalogNames) {
-            loadFunctionNamespaceManager("h2", catalogName, properties);
-        }
-
-        Handle handle = Jdbi.open(H2ConnectionModule.getJdbcUrl(databaseName));
-        testFunctionNamespacesHandle.set(handle);
-        closer.register(handle);
+    public void enableTestFunctionNamespacesOnCoordinators(List<String> catalogNames, Map<String, String> additionalProperties)
+    {
+        enableTestFunctionNamespaces(catalogNames, additionalProperties, true);
     }
 
     public void createTestFunctionNamespace(String catalogName, String schemaName)
@@ -515,6 +829,15 @@ public class DistributedQueryRunner
         checkState(testFunctionNamespacesHandle.get() != null, "Test function namespaces not enabled");
 
         testFunctionNamespacesHandle.get().execute("INSERT INTO function_namespaces SELECT ?, ?", catalogName, schemaName);
+    }
+
+    public void loadSystemAccessControl()
+    {
+        for (TestingPrestoServer server : servers) {
+            if (server.isCoordinator()) {
+                server.getAccessControl().loadSystemAccessControl(accessControlProperties);
+            }
+        }
     }
 
     private boolean isConnectorVisibleToAllNodes(ConnectorId connectorId)
@@ -526,7 +849,7 @@ public class DistributedQueryRunner
         for (TestingPrestoServer server : servers) {
             server.refreshNodes();
             Set<InternalNode> activeNodesWithConnector = server.getActiveNodesWithConnector(connectorId);
-            if (activeNodesWithConnector.size() != servers.size()) {
+            if (((server.isCoordinator() && server.nodeSchedulerIncludeCoordinator()) || server.isResourceManager()) && activeNodesWithConnector.size() != servers.size()) {
                 return false;
             }
         }
@@ -567,6 +890,52 @@ public class DistributedQueryRunner
     public MaterializedResult execute(Session session, @Language("SQL") String sql)
     {
         return execute(getRandomCoordinatorIndex(), session, sql);
+    }
+
+    @Override
+    public MaterializedResult execute(Session session, @Language("SQL") String sql, List<? extends Type> resultTypes)
+    {
+        MaterializedResult result = execute(session, sql);
+        List<Type> actualTypes = result.getTypes();
+        if (actualTypes.equals(resultTypes)) {
+            return result;
+        }
+        checkState(actualTypes.size() == resultTypes.size(),
+                "Expected %s result types but got %s", resultTypes.size(), actualTypes.size());
+
+        List<MaterializedRow> coercedRows = result.getMaterializedRows().stream()
+                .map(row -> {
+                    List<Object> coercedValues = new java.util.ArrayList<>();
+                    for (int i = 0; i < row.getFieldCount(); i++) {
+                        Object value = row.getField(i);
+                        Type fromType = actualTypes.get(i);
+                        Type toType = resultTypes.get(i);
+                        if (value == null || fromType.equals(toType)) {
+                            coercedValues.add(value);
+                        }
+                        else if (value instanceof Number && isNumericType(fromType) && isNumericType(toType)) {
+                            coercedValues.add(coerceNumeric((Number) value, toType));
+                        }
+                        else {
+                            coercedValues.add(value);
+                        }
+                    }
+                    return new MaterializedRow(row.getPrecision(), coercedValues);
+                })
+                .collect(ImmutableList.toImmutableList());
+        return new MaterializedResult(coercedRows, resultTypes);
+    }
+
+    private static Object coerceNumeric(Number value, Type toType)
+    {
+        Class<?> javaType = toType.getJavaType();
+        if (javaType == long.class) {
+            return value.longValue();
+        }
+        if (javaType == double.class) {
+            return value.doubleValue();
+        }
+        return value;
     }
 
     public ResultWithQueryId<MaterializedResult> executeWithQueryId(Session session, @Language("SQL") String sql)
@@ -652,7 +1021,7 @@ public class DistributedQueryRunner
     }
 
     @Override
-    public final void close()
+    public final synchronized void close()
     {
         cancelAllQueries();
         try {
@@ -663,7 +1032,7 @@ public class DistributedQueryRunner
         }
     }
 
-    private void cancelAllQueries()
+    public void cancelAllQueries()
     {
         for (TestingPrestoServer coordinator : coordinators) {
             QueryManager queryManager = coordinator.getQueryManager();
@@ -672,6 +1041,125 @@ public class DistributedQueryRunner
                     queryManager.cancelQuery(queryInfo.getQueryId());
                 }
             }
+        }
+    }
+
+    private void enableTestFunctionNamespaces(List<String> catalogNames, Map<String, String> additionalProperties, boolean coordinatorOnly)
+    {
+        checkState(testFunctionNamespacesHandle.get() == null, "Test function namespaces already enabled");
+
+        String databaseName = nanoTime() + "_" + ThreadLocalRandom.current().nextInt();
+        Map<String, String> properties = ImmutableMap.<String, String>builder()
+                .put("database-name", databaseName)
+                .putAll(additionalProperties)
+                .build();
+        installPlugin(new H2FunctionNamespaceManagerPlugin(), coordinatorOnly);
+        for (String catalogName : catalogNames) {
+            loadFunctionNamespaceManager("h2", catalogName, properties, coordinatorOnly);
+        }
+
+        Handle handle = Jdbi.open(H2ConnectionModule.getJdbcUrl(databaseName));
+        testFunctionNamespacesHandle.set(handle);
+        closer.register(handle);
+    }
+
+    private void loadFunctionNamespaceManager(
+            String functionNamespaceManagerName,
+            String catalogName,
+            Map<String, String> properties,
+            boolean coordinatorOnly)
+    {
+        for (TestingPrestoServer server : servers) {
+            if (coordinatorOnly && !server.isCoordinator()) {
+                continue;
+            }
+            server.getMetadata().getFunctionAndTypeManager()
+                    .loadFunctionNamespaceManager(
+                            functionNamespaceManagerName,
+                            catalogName,
+                            properties,
+                            server.getPluginNodeManager(),
+                            defaultAuthClientConfigs(server.getPluginNodeManager().getCurrentNode().getNodeIdentifier()));
+        }
+    }
+
+    private void installPlugin(Plugin plugin, boolean coordinatorOnly)
+    {
+        long start = nanoTime();
+        for (TestingPrestoServer server : servers) {
+            if (coordinatorOnly && !server.isCoordinator()) {
+                continue;
+            }
+            server.installPlugin(plugin);
+        }
+        log.info("Installed plugin %s in %s", plugin.getClass().getSimpleName(), nanosSince(start).convertToMostSuccinctTimeUnit());
+    }
+
+    public void registerWorkerAggregateFunctions(List<? extends SqlFunction> aggregateFunctions)
+    {
+        for (TestingPrestoServer server : servers) {
+            if (!server.isCoordinator()) {
+                continue;
+            }
+            server.registerWorkerAggregateFunctions(aggregateFunctions);
+        }
+    }
+
+    private void installCoordinatorPlugin(CoordinatorPlugin plugin, boolean coordinatorOnly)
+    {
+        long start = nanoTime();
+        for (TestingPrestoServer server : servers) {
+            if (coordinatorOnly && !server.isCoordinator()) {
+                continue;
+            }
+            server.installCoordinatorPlugin(plugin);
+        }
+        log.info("Installed plugin %s in %s", plugin.getClass().getSimpleName(), nanosSince(start).convertToMostSuccinctTimeUnit());
+    }
+
+    @Override
+    public void loadSessionPropertyProvider(String sessionPropertyProviderName, Map<String, String> properties)
+    {
+        for (TestingPrestoServer server : servers) {
+            server.getMetadata().getSessionPropertyManager().loadSessionPropertyProvider(
+                    sessionPropertyProviderName,
+                    properties,
+                    Optional.ofNullable(server.getMetadata().getFunctionAndTypeManager()),
+                    Optional.ofNullable(server.getPluginNodeManager()),
+                    server.getAuthClientConfigs());
+        }
+    }
+
+    @Override
+    public void loadTypeManager(String typeManagerName)
+    {
+        for (TestingPrestoServer server : servers) {
+            server.getMetadata().getFunctionAndTypeManager().loadTypeManager(typeManagerName);
+        }
+    }
+
+    @Override
+    public void loadPlanCheckerProviderManager(String planCheckerProviderName, Map<String, String> properties)
+    {
+        for (TestingPrestoServer server : servers) {
+            server.getPlanCheckerProviderManager()
+                    .loadPlanCheckerProvider(
+                            planCheckerProviderName, properties, server.getPluginNodeManager(), server.getAuthClientConfigs());
+        }
+    }
+
+    @Override
+    public void triggerConflictCheckWithBuiltInFunctions()
+    {
+        for (TestingPrestoServer server : servers) {
+            server.triggerConflictCheckWithBuiltInFunctions();
+        }
+    }
+
+    public void registerNativeFunctions()
+    {
+        for (TestingPrestoServer server : servers) {
+            server.registerWorkerFunctions();
         }
     }
 
@@ -694,12 +1182,19 @@ public class DistributedQueryRunner
         private Map<String, String> extraProperties = ImmutableMap.of();
         private Map<String, String> coordinatorProperties = ImmutableMap.of();
         private Map<String, String> resourceManagerProperties = ImmutableMap.of();
+        private Map<String, String> catalogServerProperties = ImmutableMap.of();
+        private Map<String, String> coordinatorSidecarProperties = ImmutableMap.of();
         private SqlParserOptions parserOptions = DEFAULT_SQL_PARSER_OPTIONS;
         private String environment = ENVIRONMENT;
-        private Optional<Path> baseDataDir = Optional.empty();
+        private Optional<Path> dataDirectory = Optional.empty();
         private Optional<BiFunction<Integer, URI, Process>> externalWorkerLauncher = Optional.empty();
         private boolean resourceManagerEnabled;
+        private boolean catalogServerEnabled;
+        private boolean coordinatorSidecarEnabled;
+        private boolean skipLoadingResourceGroupConfigurationManager;
         private List<Module> extraModules = ImmutableList.of();
+        private int resourceManagerCount = 1;
+        private Map<String, String> accessControlProperties = ImmutableMap.of("access-control.name", AllowAllSystemAccessControl.NAME);
 
         protected Builder(Session defaultSession)
         {
@@ -753,6 +1248,18 @@ public class DistributedQueryRunner
             return this;
         }
 
+        public Builder setCatalogServerProperties(Map<String, String> catalogServerProperties)
+        {
+            this.catalogServerProperties = catalogServerProperties;
+            return this;
+        }
+
+        public Builder setCoordinatorSidecarProperties(Map<String, String> coordinatorSidecarProperties)
+        {
+            this.coordinatorSidecarProperties = coordinatorSidecarProperties;
+            return this;
+        }
+
         /**
          * Sets coordinator properties being equal to a map containing given key and value.
          * Note, that calling this method OVERWRITES previously set property values.
@@ -775,9 +1282,9 @@ public class DistributedQueryRunner
             return this;
         }
 
-        public Builder setBaseDataDir(Optional<Path> baseDataDir)
+        public Builder setDataDirectory(Optional<Path> dataDirectory)
         {
-            this.baseDataDir = requireNonNull(baseDataDir, "baseDataDir is null");
+            this.dataDirectory = requireNonNull(dataDirectory, "dataDirectory is null");
             return this;
         }
 
@@ -793,16 +1300,65 @@ public class DistributedQueryRunner
             return this;
         }
 
+        public Builder setCatalogServerEnabled(boolean catalogServerEnabled)
+        {
+            this.catalogServerEnabled = catalogServerEnabled;
+            return this;
+        }
+
+        public Builder setCoordinatorSidecarEnabled(boolean coordinatorSidecarEnabled)
+        {
+            this.coordinatorSidecarEnabled = coordinatorSidecarEnabled;
+            return this;
+        }
+
         public Builder setExtraModules(List<Module> extraModules)
         {
             this.extraModules = extraModules;
             return this;
         }
 
+        public Builder setResourceManagerCount(int resourceManagerCount)
+        {
+            this.resourceManagerCount = resourceManagerCount;
+            return this;
+        }
+
+        public Builder setSkipLoadingResourceGroupConfigurationManager(boolean skipLoadingResourceGroupConfigurationManager)
+        {
+            this.skipLoadingResourceGroupConfigurationManager = skipLoadingResourceGroupConfigurationManager;
+            return this;
+        }
+
+        public Builder setAccessControlProperties(Map<String, String> accessControlProperties)
+        {
+            this.accessControlProperties = accessControlProperties;
+            return this;
+        }
+
         public DistributedQueryRunner build()
                 throws Exception
         {
-            return new DistributedQueryRunner(resourceManagerEnabled, defaultSession, nodeCount, coordinatorCount, extraProperties, coordinatorProperties, resourceManagerProperties, parserOptions, environment, baseDataDir, externalWorkerLauncher, extraModules);
+            return new DistributedQueryRunner(
+                    resourceManagerEnabled,
+                    catalogServerEnabled,
+                    coordinatorSidecarEnabled,
+                    skipLoadingResourceGroupConfigurationManager,
+                    defaultSession,
+                    nodeCount,
+                    coordinatorCount,
+                    resourceManagerCount,
+                    extraProperties,
+                    coordinatorProperties,
+                    resourceManagerProperties,
+                    catalogServerProperties,
+                    coordinatorSidecarProperties,
+                    parserOptions,
+                    environment,
+                    dataDirectory,
+                    externalWorkerLauncher,
+                    extraModules,
+                    accessControlProperties);
         }
     }
 }

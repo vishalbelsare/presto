@@ -49,7 +49,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.google.common.base.Preconditions.checkState;
-import static java.util.Locale.ENGLISH;
+import static java.util.Locale.ROOT;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
 
@@ -61,10 +61,12 @@ public class MongoMetadata
     private final MongoSession mongoSession;
 
     private final AtomicReference<Runnable> rollbackAction = new AtomicReference<>();
+    private final MongoClientConfig mongoClientConfig;
 
-    public MongoMetadata(MongoSession mongoSession)
+    public MongoMetadata(MongoSession mongoSession, MongoClientConfig mongoClientConfig)
     {
         this.mongoSession = requireNonNull(mongoSession, "mongoSession is null");
+        this.mongoClientConfig = mongoClientConfig;
     }
 
     @Override
@@ -101,7 +103,7 @@ public class MongoMetadata
 
         for (String schemaName : listSchemas(session, schemaNameOrNull)) {
             for (String tableName : mongoSession.getAllTables(schemaName)) {
-                tableNames.add(new SchemaTableName(schemaName, tableName.toLowerCase(ENGLISH)));
+                tableNames.add(new SchemaTableName(schemaName, normalizeIdentifier(session, tableName)));
             }
         }
         return tableNames.build();
@@ -151,7 +153,11 @@ public class MongoMetadata
     }
 
     @Override
-    public List<ConnectorTableLayoutResult> getTableLayouts(ConnectorSession session, ConnectorTableHandle table, Constraint<ColumnHandle> constraint, Optional<Set<ColumnHandle>> desiredColumns)
+    public ConnectorTableLayoutResult getTableLayoutForConstraint(
+            ConnectorSession session,
+            ConnectorTableHandle table,
+            Constraint<ColumnHandle> constraint,
+            Optional<Set<ColumnHandle>> desiredColumns)
     {
         MongoTableHandle tableHandle = (MongoTableHandle) table;
 
@@ -181,7 +187,7 @@ public class MongoMetadata
                 Optional.empty(),
                 localProperties.build());
 
-        return ImmutableList.of(new ConnectorTableLayoutResult(layout, constraint.getSummary()));
+        return new ConnectorTableLayoutResult(layout, constraint.getSummary());
     }
 
     @Override
@@ -190,8 +196,7 @@ public class MongoMetadata
         MongoTableLayoutHandle layout = (MongoTableLayoutHandle) handle;
 
         // tables in this connector have a single layout
-        return getTableLayouts(session, layout.getTable(), Constraint.alwaysTrue(), Optional.empty())
-                .get(0)
+        return getTableLayoutForConstraint(session, layout.getTable(), Constraint.alwaysTrue(), Optional.empty())
                 .getTableLayout();
     }
 
@@ -212,7 +217,8 @@ public class MongoMetadata
     @Override
     public void renameTable(ConnectorSession session, ConnectorTableHandle tableHandle, SchemaTableName newTableName)
     {
-        throw new UnsupportedOperationException();
+        MongoTableHandle table = (MongoTableHandle) tableHandle;
+        mongoSession.renameTable(table.getSchemaTableName(), newTableName);
     }
 
     @Override
@@ -280,7 +286,7 @@ public class MongoMetadata
         List<ColumnMetadata> columns = ImmutableList.copyOf(
                 getColumnHandles(session, tableHandle).values().stream()
                         .map(MongoColumnHandle.class::cast)
-                        .map(MongoColumnHandle::toColumnMetadata)
+                        .map(column -> column.toColumnMetadata(normalizeIdentifier(session, column.getName())))
                         .collect(toList()));
 
         return new ConnectorTableMetadata(tableName, columns);
@@ -299,5 +305,29 @@ public class MongoMetadata
         return tableMetadata.getColumns().stream()
                 .map(m -> new MongoColumnHandle(m.getName(), m.getType(), m.isHidden()))
                 .collect(toList());
+    }
+
+    @Override
+    public void addColumn(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnMetadata column)
+    {
+        mongoSession.addColumn(((MongoTableHandle) tableHandle), column);
+    }
+
+    @Override
+    public void renameColumn(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle source, String target)
+    {
+        mongoSession.renameColumn(((MongoTableHandle) tableHandle), ((MongoColumnHandle) source).getName(), target);
+    }
+
+    @Override
+    public void dropColumn(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column)
+    {
+        mongoSession.dropColumn(((MongoTableHandle) tableHandle), ((MongoColumnHandle) column).getName());
+    }
+
+    @Override
+    public String normalizeIdentifier(ConnectorSession session, String identifier)
+    {
+        return mongoClientConfig.isCaseSensitiveNameMatchingEnabled() ? identifier : identifier.toLowerCase(ROOT);
     }
 }

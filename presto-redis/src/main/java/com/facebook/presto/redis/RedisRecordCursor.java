@@ -23,8 +23,8 @@ import com.facebook.presto.spi.RecordCursor;
 import io.airlift.slice.Slice;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.ScanParams;
-import redis.clients.jedis.ScanResult;
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -32,7 +32,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static com.facebook.presto.decoder.FieldValueProviders.booleanValueProvider;
@@ -40,7 +39,7 @@ import static com.facebook.presto.decoder.FieldValueProviders.bytesValueProvider
 import static com.facebook.presto.decoder.FieldValueProviders.longValueProvider;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.lang.String.format;
-import static redis.clients.jedis.ScanParams.SCAN_POINTER_START;
+import static redis.clients.jedis.params.ScanParams.SCAN_POINTER_START;
 
 public class RedisRecordCursor
         implements RecordCursor
@@ -55,7 +54,7 @@ public class RedisRecordCursor
     private final List<RedisColumnHandle> columnHandles;
     private final RedisJedisManager redisJedisManager;
     private final JedisPool jedisPool;
-    private final ScanParams scanParms;
+    private final ScanParams scanParams;
 
     private ScanResult<String> redisCursor;
     private Iterator<String> keysIterator;
@@ -85,7 +84,7 @@ public class RedisRecordCursor
         this.columnHandles = columnHandles;
         this.redisJedisManager = redisJedisManager;
         this.jedisPool = redisJedisManager.getJedisPool(split.getNodes().get(0));
-        this.scanParms = setScanParms();
+        this.scanParams = setScanParams();
         this.currentRowValues = new FieldValueProvider[columnHandles.size()];
 
         fetchKeys();
@@ -118,7 +117,7 @@ public class RedisRecordCursor
         // no more keys are unscanned when
         // when redis scan command
         // returns 0 string cursor
-        return (!redisCursor.getStringCursor().equals("0"));
+        return (!redisCursor.getCursor().equals("0"));
     }
 
     @Override
@@ -260,11 +259,11 @@ public class RedisRecordCursor
     {
     }
 
-    private ScanParams setScanParms()
+    private ScanParams setScanParams()
     {
         if (split.getKeyDataType() == RedisDataType.STRING) {
-            ScanParams scanParms = new ScanParams();
-            scanParms.count(redisJedisManager.getRedisConnectorConfig().getRedisScanCount());
+            ScanParams scanParams = new ScanParams();
+            scanParams.count(redisJedisManager.getRedisConnectorConfig().getRedisScanCount());
 
             // when Redis key string follows "schema:table:*" format
             // scan command can efficiently query tables
@@ -279,12 +278,12 @@ public class RedisRecordCursor
             if (redisJedisManager.getRedisConnectorConfig().isKeyPrefixSchemaTable()) {
                 String keyMatch = "";
                 if (!split.getSchemaName().equals("default")) {
-                    keyMatch = split.getSchemaName() + Character.toString(redisJedisManager.getRedisConnectorConfig().getRedisKeyDelimiter());
+                    keyMatch = split.getSchemaName() + redisJedisManager.getRedisConnectorConfig().getRedisKeyDelimiter();
                 }
-                keyMatch = keyMatch + split.getTableName() + Character.toString(redisJedisManager.getRedisConnectorConfig().getRedisKeyDelimiter()) + "*";
-                scanParms.match(keyMatch);
+                keyMatch = keyMatch + split.getTableName() + redisJedisManager.getRedisConnectorConfig().getRedisKeyDelimiter() + "*";
+                scanParams.match(keyMatch);
             }
-            return scanParms;
+            return scanParams;
         }
 
         return null;
@@ -299,18 +298,18 @@ public class RedisRecordCursor
                 case STRING: {
                     String cursor = SCAN_POINTER_START;
                     if (redisCursor != null) {
-                        cursor = redisCursor.getStringCursor();
+                        cursor = redisCursor.getCursor();
                     }
 
                     log.debug("Scanning new Redis keys from cursor %s . %d values read so far", cursor, totalValues);
 
-                    redisCursor = jedis.scan(cursor, scanParms);
+                    redisCursor = jedis.scan(cursor, scanParams);
                     List<String> keys = redisCursor.getResult();
                     keysIterator = keys.iterator();
                 }
                 break;
                 case ZSET:
-                    Set<String> keys = jedis.zrange(split.getKeyName(), split.getStart(), split.getEnd());
+                    List<String> keys = jedis.zrange(split.getKeyName(), split.getStart(), split.getEnd());
                     keysIterator = keys.iterator();
                     break;
                 default:

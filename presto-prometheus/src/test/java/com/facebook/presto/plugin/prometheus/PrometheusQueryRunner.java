@@ -15,10 +15,10 @@ package com.facebook.presto.plugin.prometheus;
 
 import com.facebook.airlift.log.Logger;
 import com.facebook.airlift.log.Logging;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.Session;
 import com.facebook.presto.tests.DistributedQueryRunner;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.units.Duration;
 
 import java.util.Map;
 
@@ -34,13 +34,19 @@ public class PrometheusQueryRunner
     public static DistributedQueryRunner createPrometheusQueryRunner(PrometheusServer server)
             throws Exception
     {
+        Map<String, String> properties = ImmutableMap.of(
+                "prometheus.uri", server.getUri().toString());
+        return createPrometheusQueryRunner(properties);
+    }
+
+    public static DistributedQueryRunner createPrometheusQueryRunner(Map<String, String> properties)
+            throws Exception
+    {
         DistributedQueryRunner queryRunner = null;
         try {
             queryRunner = DistributedQueryRunner.builder(createSession()).build();
 
             queryRunner.installPlugin(new PrometheusPlugin());
-            Map<String, String> properties = ImmutableMap.of(
-                    "prometheus.uri", server.getUri().toString());
             queryRunner.createCatalog("prometheus", "prometheus", properties);
             return queryRunner;
         }

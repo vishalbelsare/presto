@@ -17,17 +17,17 @@ import com.facebook.airlift.json.JsonCodec;
 import com.facebook.airlift.json.smile.SmileCodec;
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.common.type.TypeManager;
-import com.facebook.presto.hive.metastore.CachingHiveMetastore;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
+import com.facebook.presto.hive.metastore.InMemoryCachingHiveMetastore;
 import com.facebook.presto.hive.metastore.SemiTransactionalHiveMetastore;
 import com.facebook.presto.hive.statistics.MetastoreHiveStatisticsProvider;
+import com.facebook.presto.hive.statistics.QuickStatsProvider;
 import com.facebook.presto.spi.function.StandardFunctionResolution;
 import com.facebook.presto.spi.plan.FilterStatsCalculatorService;
 import com.facebook.presto.spi.relation.RowExpressionService;
 import com.google.common.util.concurrent.ListeningExecutorService;
+import jakarta.inject.Inject;
 import org.joda.time.DateTimeZone;
-
-import javax.inject.Inject;
 
 import java.util.function.Supplier;
 
@@ -42,11 +42,11 @@ public class HiveMetadataFactory
     private final boolean skipDeletionForAlter;
     private final boolean skipTargetCleanupOnRollback;
     private final boolean undoMetastoreOperationsEnabled;
-    private final boolean writesToNonManagedTablesEnabled;
     private final boolean createsOfNonManagedTablesEnabled;
     private final int maxPartitionBatchSize;
     private final long perTransactionCacheMaximumSize;
     private final boolean metastoreImpersonationEnabled;
+    private final int metastorePartitionCacheMaxColumnCount;
     private final ExtendedHiveMetastore metastore;
     private final HdfsEnvironment hdfsEnvironment;
     private final HivePartitionManager partitionManager;
@@ -67,8 +67,9 @@ public class HiveMetadataFactory
     private final PartitionObjectBuilder partitionObjectBuilder;
     private final HiveEncryptionInformationProvider encryptionInformationProvider;
     private final HivePartitionStats hivePartitionStats;
-    private final HiveFileRenamer hiveFileRenamer;
     private final ColumnConverterProvider columnConverterProvider;
+    private final QuickStatsProvider quickStatsProvider;
+    private final TableWritabilityChecker tableWritabilityChecker;
 
     @Inject
     @SuppressWarnings("deprecation")
@@ -94,8 +95,9 @@ public class HiveMetadataFactory
             PartitionObjectBuilder partitionObjectBuilder,
             HiveEncryptionInformationProvider encryptionInformationProvider,
             HivePartitionStats hivePartitionStats,
-            HiveFileRenamer hiveFileRenamer,
-            ColumnConverterProvider columnConverterProvider)
+            ColumnConverterProvider columnConverterProvider,
+            QuickStatsProvider quickStatsProvider,
+            TableWritabilityChecker tableWritabilityChecker)
     {
         this(
                 metastore,
@@ -105,12 +107,12 @@ public class HiveMetadataFactory
                 hiveClientConfig.getAllowCorruptWritesForTesting(),
                 hiveClientConfig.isSkipDeletionForAlter(),
                 hiveClientConfig.isSkipTargetCleanupOnRollback(),
-                hiveClientConfig.getWritesToNonManagedTablesEnabled(),
                 hiveClientConfig.getCreatesOfNonManagedTablesEnabled(),
                 hiveClientConfig.isUndoMetastoreOperationsEnabled(),
                 hiveClientConfig.getMaxPartitionBatchSize(),
                 metastoreClientConfig.getPerTransactionMetastoreCacheMaximumSize(),
                 metastoreClientConfig.isMetastoreImpersonationEnabled(),
+                metastoreClientConfig.getPartitionCacheColumnCountLimit(),
                 typeManager,
                 locationService,
                 functionResolution,
@@ -127,8 +129,9 @@ public class HiveMetadataFactory
                 partitionObjectBuilder,
                 encryptionInformationProvider,
                 hivePartitionStats,
-                hiveFileRenamer,
-                columnConverterProvider);
+                columnConverterProvider,
+                quickStatsProvider,
+                tableWritabilityChecker);
     }
 
     public HiveMetadataFactory(
@@ -139,12 +142,12 @@ public class HiveMetadataFactory
             boolean allowCorruptWritesForTesting,
             boolean skipDeletionForAlter,
             boolean skipTargetCleanupOnRollback,
-            boolean writesToNonManagedTablesEnabled,
             boolean createsOfNonManagedTablesEnabled,
             boolean undoMetastoreOperationsEnabled,
             int maxPartitionBatchSize,
             long perTransactionCacheMaximumSize,
             boolean metastoreImpersonationEnabled,
+            int metastorePartitionCacheMaxColumnCount,
             TypeManager typeManager,
             LocationService locationService,
             StandardFunctionResolution functionResolution,
@@ -161,18 +164,19 @@ public class HiveMetadataFactory
             PartitionObjectBuilder partitionObjectBuilder,
             HiveEncryptionInformationProvider encryptionInformationProvider,
             HivePartitionStats hivePartitionStats,
-            HiveFileRenamer hiveFileRenamer,
-            ColumnConverterProvider columnConverterProvider)
+            ColumnConverterProvider columnConverterProvider,
+            QuickStatsProvider quickStatsProvider,
+            TableWritabilityChecker tableWritabilityChecker)
     {
         this.allowCorruptWritesForTesting = allowCorruptWritesForTesting;
         this.skipDeletionForAlter = skipDeletionForAlter;
         this.skipTargetCleanupOnRollback = skipTargetCleanupOnRollback;
-        this.writesToNonManagedTablesEnabled = writesToNonManagedTablesEnabled;
         this.createsOfNonManagedTablesEnabled = createsOfNonManagedTablesEnabled;
         this.undoMetastoreOperationsEnabled = undoMetastoreOperationsEnabled;
         this.maxPartitionBatchSize = maxPartitionBatchSize;
         this.perTransactionCacheMaximumSize = perTransactionCacheMaximumSize;
         this.metastoreImpersonationEnabled = metastoreImpersonationEnabled;
+        this.metastorePartitionCacheMaxColumnCount = metastorePartitionCacheMaxColumnCount;
         this.metastore = requireNonNull(metastore, "metastore is null");
         this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
         this.partitionManager = requireNonNull(partitionManager, "partitionManager is null");
@@ -193,8 +197,9 @@ public class HiveMetadataFactory
         this.partitionObjectBuilder = requireNonNull(partitionObjectBuilder, "partitionObjectBuilder is null");
         this.encryptionInformationProvider = requireNonNull(encryptionInformationProvider, "encryptionInformationProvider is null");
         this.hivePartitionStats = requireNonNull(hivePartitionStats, "hivePartitionStats is null");
-        this.hiveFileRenamer = requireNonNull(hiveFileRenamer, "hiveFileRenamer is null");
         this.columnConverterProvider = requireNonNull(columnConverterProvider, "columnConverterProvider is null");
+        this.quickStatsProvider = requireNonNull(quickStatsProvider, "quickStatsProvider is null");
+        this.tableWritabilityChecker = requireNonNull(tableWritabilityChecker, "tableWritabilityChecker is null");
 
         if (!allowCorruptWritesForTesting && !timeZone.equals(DateTimeZone.getDefault())) {
             log.warn("Hive writes are disabled. " +
@@ -209,7 +214,7 @@ public class HiveMetadataFactory
     {
         SemiTransactionalHiveMetastore metastore = new SemiTransactionalHiveMetastore(
                 hdfsEnvironment,
-                CachingHiveMetastore.memoizeMetastore(this.metastore, metastoreImpersonationEnabled, perTransactionCacheMaximumSize), // per-transaction cache
+                InMemoryCachingHiveMetastore.memoizeMetastore(this.metastore, metastoreImpersonationEnabled, perTransactionCacheMaximumSize, metastorePartitionCacheMaxColumnCount), // per-transaction cache
                 fileRenameExecutor,
                 skipDeletionForAlter,
                 skipTargetCleanupOnRollback,
@@ -222,7 +227,6 @@ public class HiveMetadataFactory
                 partitionManager,
                 timeZone,
                 allowCorruptWritesForTesting,
-                writesToNonManagedTablesEnabled,
                 createsOfNonManagedTablesEnabled,
                 maxPartitionBatchSize,
                 typeManager,
@@ -235,12 +239,12 @@ public class HiveMetadataFactory
                 partitionUpdateSmileCodec,
                 typeTranslator,
                 prestoVersion,
-                new MetastoreHiveStatisticsProvider(metastore),
+                new MetastoreHiveStatisticsProvider(metastore, quickStatsProvider),
                 stagingFileCommitter,
                 zeroRowFileCreator,
                 partitionObjectBuilder,
                 encryptionInformationProvider,
                 hivePartitionStats,
-                hiveFileRenamer);
+                tableWritabilityChecker);
     }
 }

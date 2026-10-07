@@ -14,7 +14,6 @@
 package com.facebook.presto.hive;
 
 import com.facebook.presto.common.predicate.NullableValue;
-import com.facebook.presto.common.type.IntegerType;
 import com.facebook.presto.common.type.TestingTypeManager;
 import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.common.type.TypeSignature;
@@ -32,19 +31,19 @@ import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.testng.annotations.Test;
-import sun.reflect.generics.reflectiveObjects.NotImplementedException;
 
 import java.util.List;
 import java.util.Optional;
 
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
 import static com.facebook.presto.hive.BucketFunctionType.HIVE_COMPATIBLE;
-import static com.facebook.presto.hive.HiveMetadata.createPredicate;
 import static com.facebook.presto.hive.HiveMetadata.decodePreferredOrderingColumnsFromStorage;
 import static com.facebook.presto.hive.HiveMetadata.encodePreferredOrderingColumns;
 import static com.facebook.presto.hive.HiveStorageFormat.ORC;
 import static com.facebook.presto.hive.HiveTableProperties.PREFERRED_ORDERING_COLUMNS;
 import static com.facebook.presto.hive.HiveType.HIVE_INT;
 import static com.facebook.presto.hive.HiveType.HIVE_STRING;
+import static com.facebook.presto.hive.MetadataUtils.createPredicate;
 import static com.facebook.presto.hive.metastore.SortingColumn.Order.ASCENDING;
 import static com.facebook.presto.hive.metastore.SortingColumn.Order.DESCENDING;
 import static com.facebook.presto.hive.metastore.StorageFormat.VIEW_STORAGE_FORMAT;
@@ -85,6 +84,7 @@ public class TestHiveMetadata
                 Optional.empty());
         Column partitionColumn = new Column("ds", HIVE_STRING, Optional.empty(), Optional.empty());
         Table mockTable = new Table(
+                Optional.of("catalogName"),
                 "schema",
                 "table",
                 "user",
@@ -106,12 +106,12 @@ public class TestHiveMetadata
                 Optional.empty(),
                 Optional.empty());
 
-        ColumnMetadata actual = HiveMetadata.columnMetadataGetter(mockTable, mockTypeManager, new HiveColumnConverter()).apply(hiveColumnHandle1);
-        ColumnMetadata expected = new ColumnMetadata("c1", IntegerType.INTEGER);
+        ColumnMetadata actual = HiveMetadata.columnMetadataGetter(mockTable, mockTypeManager, new HiveColumnConverter(), ImmutableList.of()).apply(hiveColumnHandle1);
+        ColumnMetadata expected = ColumnMetadata.builder().setName("c1").setType(INTEGER).build();
         assertEquals(actual, expected);
 
-        actual = HiveMetadata.columnMetadataGetter(mockTable, mockTypeManager, new TestColumnConverter()).apply(hidden);
-        expected = ColumnMetadata.builder().setName(HiveColumnHandle.PATH_COLUMN_NAME).setType(IntegerType.INTEGER).setHidden(true).build();
+        actual = HiveMetadata.columnMetadataGetter(mockTable, mockTypeManager, new TestColumnConverter(), ImmutableList.of()).apply(hidden);
+        expected = ColumnMetadata.builder().setName(HiveColumnHandle.PATH_COLUMN_NAME).setType(INTEGER).setHidden(true).build();
         assertEquals(actual, expected);
     }
 
@@ -123,7 +123,7 @@ public class TestHiveMetadata
         for (int i = 0; i < 5_000; i++) {
             partitions.add(new HivePartition(
                     new SchemaTableName("test", "test"),
-                    Integer.toString(i),
+                    new PartitionNameWithVersion(Integer.toString(i), Optional.empty()),
                     ImmutableMap.of(TEST_COLUMN_HANDLE, NullableValue.of(VarcharType.VARCHAR, Slices.utf8Slice(Integer.toString(i))))));
         }
 
@@ -138,7 +138,7 @@ public class TestHiveMetadata
         for (int i = 0; i < 5; i++) {
             partitions.add(new HivePartition(
                     new SchemaTableName("test", "test"),
-                    Integer.toString(i),
+                    new PartitionNameWithVersion(Integer.toString(i), Optional.empty()),
                     ImmutableMap.of(TEST_COLUMN_HANDLE, NullableValue.asNull(VarcharType.VARCHAR))));
         }
 
@@ -153,13 +153,13 @@ public class TestHiveMetadata
         for (int i = 0; i < 5; i++) {
             partitions.add(new HivePartition(
                     new SchemaTableName("test", "test"),
-                    Integer.toString(i),
+                    new PartitionNameWithVersion(Integer.toString(i), Optional.empty()),
                     ImmutableMap.of(TEST_COLUMN_HANDLE, NullableValue.of(VarcharType.VARCHAR, Slices.utf8Slice(Integer.toString(i))))));
         }
 
         partitions.add(new HivePartition(
                 new SchemaTableName("test", "test"),
-                "null",
+                new PartitionNameWithVersion("null", Optional.empty()),
                 ImmutableMap.of(TEST_COLUMN_HANDLE, NullableValue.asNull(VarcharType.VARCHAR))));
 
         createPredicate(ImmutableList.of(TEST_COLUMN_HANDLE), partitions.build());
@@ -199,19 +199,19 @@ public class TestHiveMetadata
         @Override
         public Column toColumn(FieldSchema fieldSchema)
         {
-            throw new NotImplementedException();
+            throw new UnsupportedOperationException();
         }
 
         @Override
         public FieldSchema fromColumn(Column column)
         {
-            throw new NotImplementedException();
+            throw new UnsupportedOperationException();
         }
 
         @Override
         public Optional<String> getTypeMetadata(HiveType hiveType, TypeSignature typeSignature)
         {
-            throw new NotImplementedException();
+            throw new UnsupportedOperationException();
         }
 
         @Override

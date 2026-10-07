@@ -17,6 +17,10 @@ import com.facebook.presto.common.QualifiedObjectName;
 
 import static java.util.Objects.requireNonNull;
 
+/**
+ * UserDefinedType represents an enum type, a distinct type, or a primitive type with a name.
+ * Type definition is defined by user and is extracted at runtime.
+ */
 public class UserDefinedType
 {
     private final QualifiedObjectName name;
@@ -36,5 +40,20 @@ public class UserDefinedType
     public TypeSignature getPhysicalTypeSignature()
     {
         return representation;
+    }
+
+    public boolean isDistinctType()
+    {
+        return representation.isDistinctType();
+    }
+
+    public boolean isEnumType()
+    {
+        return representation.isEnum();
+    }
+
+    public boolean isPrimitiveType()
+    {
+        return !representation.isDistinctType() && representation.getTypeSignatureBase().hasStandardType();
     }
 }

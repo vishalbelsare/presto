@@ -16,6 +16,7 @@ package com.facebook.presto.common.predicate;
 import com.facebook.presto.common.function.SqlFunctionProperties;
 import com.facebook.presto.common.type.Type;
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.Objects;
@@ -36,6 +37,15 @@ public final class Range
             @JsonProperty("low") Marker low,
             @JsonProperty("high") Marker high)
     {
+        this(low, high, () -> {
+            if (low.compareTo(high) > 0) {
+                throw new IllegalArgumentException("low must be less than or equal to high");
+            }
+        });
+    }
+
+    private Range(Marker low, Marker high, Runnable extraCheck)
+    {
         requireNonNull(low, "value is null");
         requireNonNull(high, "value is null");
         if (!low.getType().equals(high.getType())) {
@@ -47,9 +57,7 @@ public final class Range
         if (high.getBound() == Marker.Bound.ABOVE) {
             throw new IllegalArgumentException("high bound must be EXACTLY or BELOW");
         }
-        if (low.compareTo(high) > 0) {
-            throw new IllegalArgumentException("low must be less than or equal to high");
-        }
+        extraCheck.run();
         this.low = low;
         this.high = high;
     }
@@ -153,6 +161,7 @@ public final class Range
         return low.getBound() == Marker.Bound.EXACTLY && low.equals(high);
     }
 
+    @JsonIgnore
     public Object getSingleValue()
     {
         if (!isSingleValue()) {
@@ -240,6 +249,16 @@ public final class Range
                 Objects.equals(this.high, other.high);
     }
 
+    @Override
+    public String toString()
+    {
+        return (low.getBound() == Marker.Bound.EXACTLY ? "[" : "(") +
+                low.getObjectValue().orElse(Double.NEGATIVE_INFINITY) +
+                ".." +
+                high.getObjectValue().orElse(Double.POSITIVE_INFINITY) +
+                (high.getBound() == Marker.Bound.EXACTLY ? "]" : ")");
+    }
+
     private void appendQuotedValue(StringBuilder buffer, Marker marker, SqlFunctionProperties properties)
     {
         buffer.append('"');
@@ -273,5 +292,22 @@ public final class Range
             buffer.append((high.getBound() == Marker.Bound.EXACTLY) ? ']' : ')');
         }
         return buffer.toString();
+    }
+
+    public Range canonicalize(boolean removeSafeConstants)
+    {
+        if (!removeSafeConstants) {
+            return this;
+        }
+
+        boolean removeConstants = low.getBound().equals(Marker.Bound.EXACTLY) && high.getBound().equals(Marker.Bound.EXACTLY);
+        Marker newLow = low.canonicalize(removeConstants);
+        Marker newHigh = high.canonicalize(removeConstants);
+        if (low == newLow && high == newHigh) {
+            return this;
+        }
+        // After removing constants, newLow and newHigh cannot be compared, and will fail the
+        // low <= high check. So we skip this check.
+        return new Range(newLow, newHigh, () -> {});
     }
 }

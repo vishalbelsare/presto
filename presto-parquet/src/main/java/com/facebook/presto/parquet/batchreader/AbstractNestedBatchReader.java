@@ -29,10 +29,14 @@ import com.facebook.presto.parquet.reader.PageReader;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntList;
 import org.apache.parquet.Preconditions;
+import org.apache.parquet.internal.filter2.columnindex.RowRanges;
 import org.apache.parquet.io.ParquetDecodingException;
+import org.joda.time.DateTimeZone;
+import org.openjdk.jol.info.ClassLayout;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Optional;
 
 import static com.facebook.presto.parquet.batchreader.decoders.Decoders.readNestedPage;
 import static com.google.common.base.Preconditions.checkArgument;
@@ -41,6 +45,8 @@ import static java.util.Objects.requireNonNull;
 public abstract class AbstractNestedBatchReader
         implements ColumnReader
 {
+    private static final int INSTANCE_SIZE = ClassLayout.parseClass(AbstractNestedBatchReader.class).instanceSize();
+
     protected final RichColumnDescriptor columnDescriptor;
 
     protected Field field;
@@ -55,20 +61,20 @@ public abstract class AbstractNestedBatchReader
     private PageReader pageReader;
     private int lastRepetitionLevel = -1;
 
-    protected abstract ColumnChunk readNestedNoNull()
-            throws IOException;
-
-    protected abstract ColumnChunk readNestedWithNull()
-            throws IOException;
-
-    protected abstract void seek()
-            throws IOException;
-
     public AbstractNestedBatchReader(RichColumnDescriptor columnDescriptor)
     {
         checkArgument(columnDescriptor.getPath().length > 1, "expected to read a nested column");
         this.columnDescriptor = requireNonNull(columnDescriptor, "columnDescriptor is null");
     }
+
+    protected abstract ColumnChunk readNestedNoNull(Optional<DateTimeZone> timezone)
+            throws IOException;
+
+    protected abstract ColumnChunk readNestedWithNull(Optional<DateTimeZone> timezone)
+            throws IOException;
+
+    protected abstract void seek()
+            throws IOException;
 
     @Override
     public boolean isInitialized()
@@ -77,17 +83,17 @@ public abstract class AbstractNestedBatchReader
     }
 
     @Override
-    public void init(PageReader pageReader, Field field)
+    public void init(PageReader pageReader, Field field, RowRanges rowRanges, Optional<DateTimeZone> timezone)
     {
         Preconditions.checkState(!isInitialized(), "already initialized");
         this.pageReader = requireNonNull(pageReader, "pageReader is null");
-        checkArgument(pageReader.getTotalValueCount() > 0, "page is empty");
+        checkArgument(pageReader.getValueCountInColumnChunk() > 0, "page is empty");
 
         this.field = requireNonNull(field, "field is null");
 
         DictionaryPage dictionaryPage = pageReader.readDictionaryPage();
         if (dictionaryPage != null) {
-            dictionary = Dictionaries.createDictionary(columnDescriptor, dictionaryPage);
+            dictionary = Dictionaries.createDictionary(columnDescriptor, dictionaryPage, timezone);
         }
     }
 
@@ -99,16 +105,16 @@ public abstract class AbstractNestedBatchReader
     }
 
     @Override
-    public ColumnChunk readNext()
+    public ColumnChunk readNext(Optional<DateTimeZone> timezone)
     {
         ColumnChunk columnChunk = null;
         try {
             seek();
             if (field.isRequired()) {
-                columnChunk = readNestedNoNull();
+                columnChunk = readNestedNoNull(timezone);
             }
             else {
-                columnChunk = readNestedWithNull();
+                columnChunk = readNestedWithNull(timezone);
             }
         }
         catch (IOException ex) {
@@ -118,6 +124,17 @@ public abstract class AbstractNestedBatchReader
         readOffset = 0;
         nextBatchSize = 0;
         return columnChunk;
+    }
+
+    @Override
+    public long getRetainedSizeInBytes()
+    {
+        return INSTANCE_SIZE +
+                (pageReader == null ? 0 : pageReader.getRetainedSizeInBytes()) +
+                (dictionary == null ? 0 : dictionary.getRetainedSizeInBytes()) +
+                (repetitionLevelDecoder == null ? 0 : repetitionLevelDecoder.getRetainedSizeInBytes()) +
+                (definitionLevelDecoder == null ? 0 : definitionLevelDecoder.getRetainedSizeInBytes()) +
+                (valuesDecoder == null ? 0 : valuesDecoder.getRetainedSizeInBytes());
     }
 
     protected void readNextPage()

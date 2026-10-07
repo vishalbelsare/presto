@@ -24,7 +24,9 @@ import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.common.type.TypeSignature;
 import com.facebook.presto.common.type.TypeSignatureParameter;
+import com.facebook.presto.common.type.VarbinaryType;
 import com.facebook.presto.spi.ColumnHandle;
+import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaNotFoundException;
 import com.facebook.presto.spi.SchemaTableName;
@@ -34,17 +36,22 @@ import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.UncheckedExecutionException;
-import com.mongodb.MongoClient;
+import com.mongodb.MongoNamespace;
 import com.mongodb.client.FindIterable;
+import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
 import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.IndexOptions;
+import com.mongodb.client.model.Updates;
 import com.mongodb.client.result.DeleteResult;
 import io.airlift.slice.Slice;
 import org.bson.Document;
+import org.bson.types.Binary;
 import org.bson.types.ObjectId;
 
 import java.util.ArrayList;
@@ -67,6 +74,7 @@ import static com.facebook.presto.mongodb.ObjectIdType.OBJECT_ID;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static com.google.common.base.Verify.verify;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.HOURS;
 import static java.util.concurrent.TimeUnit.MINUTES;
@@ -79,10 +87,13 @@ public class MongoSession
     private static final List<String> SYSTEM_TABLES = Arrays.asList("system.indexes", "system.users", "system.version");
 
     private static final String TABLE_NAME_KEY = "table";
+    private static final String COMMENT_KEY = "comment";
     private static final String FIELDS_KEY = "fields";
-    private static final String FIELDS_NAME_KEY = "name";
-    private static final String FIELDS_TYPE_KEY = "type";
+    private static final String NAME_KEY = "name";
+    private static final String TYPE_KEY = "type";
     private static final String FIELDS_HIDDEN_KEY = "hidden";
+    private static final String VIEW_TYPE_NAME = "view";
+    private static final String COLLECTION_TYPE_NAME = "collection";
 
     private static final String OR_OP = "$or";
     private static final String AND_OP = "$and";
@@ -185,13 +196,21 @@ public class MongoSession
         }
 
         MongoTableHandle tableHandle = new MongoTableHandle(tableName);
-        return new MongoTable(tableHandle, columnHandles.build(), getIndexes(tableName));
+        return new MongoTable(
+                tableHandle,
+                columnHandles.build(),
+                isView(tableMeta) ? ImmutableList.of() : getIndexes(tableName));
+    }
+
+    private static boolean isView(Document tableMeta)
+    {
+        return VIEW_TYPE_NAME.equals(tableMeta.get(TYPE_KEY));
     }
 
     private MongoColumnHandle buildColumnHandle(Document columnMeta)
     {
-        String name = columnMeta.getString(FIELDS_NAME_KEY);
-        String typeString = columnMeta.getString(FIELDS_TYPE_KEY);
+        String name = columnMeta.getString(NAME_KEY);
+        String typeString = columnMeta.getString(TYPE_KEY);
         boolean hidden = columnMeta.getBoolean(FIELDS_HIDDEN_KEY, false);
 
         Type type = typeManager.getType(TypeSignature.parseTypeSignature(typeString));
@@ -237,6 +256,29 @@ public class MongoSession
         }
 
         return iterable.iterator();
+    }
+
+    public void renameTable(SchemaTableName oldName, SchemaTableName newName)
+    {
+        String oldSchemaName = oldName.getSchemaName();
+        String oldTableName = oldName.getTableName();
+        String newSchemaName = newName.getSchemaName();
+
+        // Schema collection should always have the source table definition
+        MongoCollection<Document> oldSchema = client.getDatabase(oldSchemaName).getCollection(schemaCollection);
+        Document tableDefinition = oldSchema.findOneAndDelete(new Document(TABLE_NAME_KEY, oldTableName));
+        requireNonNull(tableDefinition, "Table definition not found in schema collection: " + oldTableName);
+
+        MongoCollection<Document> newSchema = client.getDatabase(newSchemaName).getCollection(schemaCollection);
+        tableDefinition.append(TABLE_NAME_KEY, newName.getTableName());
+        newSchema.insertOne(tableDefinition);
+
+        // Need to check explicitly because the old collection may not exist when it doesn't have any data
+        if (collectionExists(client.getDatabase(oldSchemaName), oldTableName)) {
+            getCollection(oldName).renameCollection(new MongoNamespace(newSchemaName, newName.getTableName()));
+        }
+
+        tableCache.invalidate(oldName);
     }
 
     @VisibleForTesting
@@ -359,6 +401,7 @@ public class MongoSession
             else {
                 Document metadata = new Document(TABLE_NAME_KEY, tableName);
                 metadata.append(FIELDS_KEY, guessTableFields(schemaTableName));
+                metadata.append(TYPE_KEY, guessTableType(schemaName, tableName));
 
                 schema.createIndex(new Document(TABLE_NAME_KEY, 1), new IndexOptions().unique(true));
                 schema.insertOne(metadata);
@@ -373,7 +416,7 @@ public class MongoSession
     public boolean collectionExists(MongoDatabase db, String collectionName)
     {
         for (String name : db.listCollectionNames()) {
-            if (name.equalsIgnoreCase(collectionName)) {
+            if (name.equals(collectionName)) {
                 return true;
             }
         }
@@ -426,14 +469,10 @@ public class MongoSession
         String tableName = schemaTableName.getTableName();
 
         MongoDatabase db = client.getDatabase(schemaName);
-        if (!collectionExists(db, tableName)) {
-            return false;
-        }
-
         DeleteResult result = db.getCollection(schemaCollection)
                 .deleteOne(new Document(TABLE_NAME_KEY, tableName));
 
-        return result.getDeletedCount() == 1;
+        return result.getDeletedCount() == 1 || !collectionExists(db, tableName);
     }
 
     private List<Document> guessTableFields(SchemaTableName schemaTableName)
@@ -455,8 +494,8 @@ public class MongoSession
             Optional<TypeSignature> fieldType = guessFieldType(value);
             if (fieldType.isPresent()) {
                 Document metadata = new Document();
-                metadata.append(FIELDS_NAME_KEY, key);
-                metadata.append(FIELDS_TYPE_KEY, fieldType.get().toString());
+                metadata.append(NAME_KEY, key);
+                metadata.append(TYPE_KEY, fieldType.get().toString());
                 metadata.append(FIELDS_HIDDEN_KEY,
                         key.equals("_id") && fieldType.get().equals(OBJECT_ID.getTypeSignature()));
 
@@ -468,6 +507,20 @@ public class MongoSession
         }
 
         return builder.build();
+    }
+
+    private String guessTableType(String schema, String table)
+    {
+        MongoDatabase database = client.getDatabase(schema);
+        Document doc = database.listCollections().filter(
+                new Document(ImmutableMap.of(
+                        NAME_KEY, table,
+                        TYPE_KEY, VIEW_TYPE_NAME))).first();
+
+        if (doc != null) {
+            return VIEW_TYPE_NAME;
+        }
+        return COLLECTION_TYPE_NAME;
     }
 
     private Optional<TypeSignature> guessFieldType(Object value)
@@ -494,6 +547,9 @@ public class MongoSession
         }
         else if (value instanceof ObjectId) {
             typeSignature = OBJECT_ID.getTypeSignature();
+        }
+        else if (value instanceof Binary) {
+            typeSignature = VarbinaryType.VARBINARY.getTypeSignature();
         }
         else if (value instanceof List) {
             List<Optional<TypeSignature>> subTypes = ((List<?>) value).stream()
@@ -534,5 +590,84 @@ public class MongoSession
         }
 
         return Optional.ofNullable(typeSignature);
+    }
+
+    public void addColumn(MongoTableHandle table, ColumnMetadata columnMetadata)
+    {
+        String remoteSchemaName = table.getSchemaTableName().getSchemaName();
+        String remoteTableName = table.getSchemaTableName().getTableName();
+        SchemaTableName schemaTableName = new SchemaTableName(remoteSchemaName, remoteTableName);
+
+        Document metadata = getTableMetadata(schemaTableName);
+
+        List<Document> columns = new ArrayList<>(getColumnMetadata(metadata));
+
+        Document newColumn = new Document()
+                .append(NAME_KEY, columnMetadata.getName())
+                .append(TYPE_KEY, columnMetadata.getType().getTypeSignature().toString())
+                .append(FIELDS_HIDDEN_KEY, false);
+        columnMetadata.getComment().ifPresent(comment -> newColumn.append(COMMENT_KEY, comment));
+        columns.add(newColumn);
+
+        metadata.append(FIELDS_KEY, columns);
+
+        MongoCollection<Document> schema = client.getDatabase(remoteSchemaName)
+                .getCollection(schemaCollection);
+        schema.findOneAndReplace(new Document(TABLE_NAME_KEY, remoteTableName), metadata);
+
+        tableCache.invalidate(table.getSchemaTableName());
+    }
+
+    public void renameColumn(MongoTableHandle table, String source, String target)
+    {
+        String remoteSchemaName = table.getSchemaTableName().getSchemaName();
+        String remoteTableName = table.getSchemaTableName().getTableName();
+        SchemaTableName schemaTableName = new SchemaTableName(remoteSchemaName, remoteTableName);
+
+        Document metadata = getTableMetadata(schemaTableName);
+
+        List<Document> columns = getColumnMetadata(metadata).stream()
+                .map(document -> {
+                    if (document.getString(NAME_KEY).equals(source)) {
+                        document.put(NAME_KEY, target);
+                    }
+                    return document;
+                })
+                .collect(toImmutableList());
+
+        metadata.append(FIELDS_KEY, columns);
+
+        MongoDatabase database = client.getDatabase(remoteSchemaName);
+        MongoCollection<Document> schema = database.getCollection(schemaCollection);
+        schema.findOneAndReplace(new Document(TABLE_NAME_KEY, remoteTableName), metadata);
+
+        database.getCollection(remoteTableName)
+                .updateMany(new Document(), Updates.rename(source, target));
+
+        tableCache.invalidate(table.getSchemaTableName());
+    }
+
+    public void dropColumn(MongoTableHandle table, String columnName)
+    {
+        String remoteSchemaName = table.getSchemaTableName().getSchemaName();
+        String remoteTableName = table.getSchemaTableName().getTableName();
+        SchemaTableName schemaTableName = new SchemaTableName(remoteSchemaName, remoteTableName);
+
+        Document metadata = getTableMetadata(schemaTableName);
+
+        List<Document> columns = getColumnMetadata(metadata).stream()
+                .filter(document -> !document.getString(NAME_KEY).equals(columnName))
+                .collect(toImmutableList());
+
+        metadata.append(FIELDS_KEY, columns);
+
+        MongoDatabase database = client.getDatabase(remoteSchemaName);
+        MongoCollection<Document> schema = database.getCollection(schemaCollection);
+        schema.findOneAndReplace(new Document(TABLE_NAME_KEY, remoteTableName), metadata);
+
+        database.getCollection(remoteTableName)
+                .updateMany(Filters.exists(columnName), Updates.unset(columnName));
+
+        tableCache.invalidate(table.getSchemaTableName());
     }
 }

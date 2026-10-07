@@ -15,12 +15,14 @@ package com.facebook.presto.spi.connector;
 
 import com.facebook.presto.common.block.BlockEncodingSerde;
 import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.spi.ConnectorSystemConfig;
 import com.facebook.presto.spi.NodeManager;
 import com.facebook.presto.spi.PageIndexerFactory;
 import com.facebook.presto.spi.PageSorter;
 import com.facebook.presto.spi.function.FunctionMetadataManager;
 import com.facebook.presto.spi.function.StandardFunctionResolution;
 import com.facebook.presto.spi.plan.FilterStatsCalculatorService;
+import com.facebook.presto.spi.procedure.ProcedureRegistry;
 import com.facebook.presto.spi.relation.RowExpressionService;
 
 public interface ConnectorContext
@@ -31,6 +33,11 @@ public interface ConnectorContext
     }
 
     default TypeManager getTypeManager()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    default ProcedureRegistry getProcedureRegistry()
     {
         throw new UnsupportedOperationException();
     }
@@ -66,6 +73,11 @@ public interface ConnectorContext
     }
 
     default BlockEncodingSerde getBlockEncodingSerde()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    default ConnectorSystemConfig getConnectorSystemConfig()
     {
         throw new UnsupportedOperationException();
     }

@@ -21,6 +21,7 @@ import com.facebook.presto.spi.ConnectorSession;
 import com.google.common.collect.ImmutableMap;
 
 import java.util.Map;
+import java.util.Optional;
 
 import static com.facebook.presto.hive.HiveSessionProperties.getNewPartitionUserSuppliedParameter;
 
@@ -33,10 +34,12 @@ public class HivePartitionObjectBuilder
             Table table,
             PartitionUpdate partitionUpdate,
             String prestoVersion,
-            Map<String, String> extraParameters)
+            Map<String, String> extraParameters,
+            Optional<Partition> previousPartition,
+            Optional<byte[]> rowIDPartitionComponent)
     {
         ImmutableMap.Builder extraParametersBuilder = ImmutableMap.builder()
-                .put(HiveMetadata.PRESTO_VERSION_NAME, prestoVersion)
+                .put(MetastoreUtil.PRESTO_VERSION_NAME, prestoVersion)
                 .put(MetastoreUtil.PRESTO_QUERY_ID_NAME, session.getQueryId())
                 .putAll(extraParameters);
         getNewPartitionUserSuppliedParameter(session)
@@ -44,6 +47,7 @@ public class HivePartitionObjectBuilder
                         param -> extraParametersBuilder.put("user_supplied", param));
 
         return Partition.builder()
+                .setCatalogName(table.getCatalogName())
                 .setDatabaseName(table.getDatabaseName())
                 .setTableName(table.getTableName())
                 .setColumns(table.getDataColumns())
@@ -57,6 +61,7 @@ public class HivePartitionObjectBuilder
                         .setBucketProperty(table.getStorage().getBucketProperty())
                         .setSerdeParameters(table.getStorage().getSerdeParameters())
                         .setParameters(table.getStorage().getParameters()))
+                .setRowIdPartitionComponent(rowIDPartitionComponent)
                 .build();
     }
 }

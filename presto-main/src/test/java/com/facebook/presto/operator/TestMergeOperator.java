@@ -15,10 +15,12 @@ package com.facebook.presto.operator;
 
 import com.facebook.airlift.http.client.HttpClient;
 import com.facebook.airlift.http.client.testing.TestingHttpClient;
+import com.facebook.presto.CompressionCodec;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.block.SortOrder;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.execution.Location;
+import com.facebook.presto.execution.ScheduledSplit;
 import com.facebook.presto.execution.TaskId;
 import com.facebook.presto.execution.buffer.PagesSerdeFactory;
 import com.facebook.presto.execution.buffer.TestingPagesSerdeFactory;
@@ -61,9 +63,9 @@ import static org.testng.Assert.assertTrue;
 @Test(singleThreaded = true)
 public class TestMergeOperator
 {
-    private static final String TASK_1_ID = "task1.0.0.0";
-    private static final String TASK_2_ID = "task2.0.0.0";
-    private static final String TASK_3_ID = "task3.0.0.0";
+    private static final String TASK_1_ID = "task1.0.0.0.0";
+    private static final String TASK_2_ID = "task2.0.0.0.0";
+    private static final String TASK_3_ID = "task3.0.0.0.0";
 
     private AtomicInteger operatorId = new AtomicInteger();
 
@@ -79,11 +81,13 @@ public class TestMergeOperator
     public void setUp()
     {
         executor = newSingleThreadScheduledExecutor(daemonThreadsNamed("test-merge-operator-%s"));
-        serdeFactory = new TestingPagesSerdeFactory();
+        serdeFactory = new TestingPagesSerdeFactory(CompressionCodec.LZ4);
 
         taskBuffers = CacheBuilder.newBuilder().build(CacheLoader.from(TestingTaskBuffer::new));
         httpClient = new TestingHttpClient(new TestingExchangeHttpClientHandler(taskBuffers), executor);
-        exchangeClientFactory = new ExchangeClientFactory(new ExchangeClientConfig(), httpClient, new TestingDriftClient<>(), executor);
+        exchangeClientFactory = new ExchangeClientFactory(
+                new ExchangeClientConfig(),
+                new HttpShuffleClientProvider(httpClient), executor);
         orderingCompiler = new OrderingCompiler();
     }
 
@@ -113,7 +117,7 @@ public class TestMergeOperator
         assertFalse(operator.isFinished());
         assertFalse(operator.isBlocked().isDone());
 
-        operator.addSplit(createRemoteSplit(TASK_1_ID));
+        operator.addSplit(new ScheduledSplit(0, operator.getSourceId(), createRemoteSplit(TASK_1_ID)));
         assertFalse(operator.isFinished());
         assertFalse(operator.isBlocked().isDone());
 
@@ -155,8 +159,8 @@ public class TestMergeOperator
     {
         ImmutableList<Type> types = ImmutableList.of(BIGINT, INTEGER);
         MergeOperator operator = createMergeOperator(types, ImmutableList.of(1, 0), ImmutableList.of(1, 0), ImmutableList.of(DESC_NULLS_FIRST, ASC_NULLS_FIRST));
-        operator.addSplit(createRemoteSplit(TASK_1_ID));
-        operator.addSplit(createRemoteSplit(TASK_2_ID));
+        operator.addSplit(new ScheduledSplit(0, operator.getSourceId(), createRemoteSplit(TASK_1_ID)));
+        operator.addSplit(new ScheduledSplit(1, operator.getSourceId(), createRemoteSplit(TASK_2_ID)));
         operator.noMoreSplits();
 
         List<Page> task1Pages = rowPagesBuilder(types)
@@ -205,9 +209,9 @@ public class TestMergeOperator
         List<Type> types = ImmutableList.of(BIGINT, BIGINT, BIGINT);
 
         MergeOperator operator = createMergeOperator(types, ImmutableList.of(0, 1, 2), ImmutableList.of(0), ImmutableList.of(ASC_NULLS_FIRST));
-        operator.addSplit(createRemoteSplit(TASK_1_ID));
-        operator.addSplit(createRemoteSplit(TASK_2_ID));
-        operator.addSplit(createRemoteSplit(TASK_3_ID));
+        operator.addSplit(new ScheduledSplit(0, operator.getSourceId(), createRemoteSplit(TASK_1_ID)));
+        operator.addSplit(new ScheduledSplit(1, operator.getSourceId(), createRemoteSplit(TASK_2_ID)));
+        operator.addSplit(new ScheduledSplit(2, operator.getSourceId(), createRemoteSplit(TASK_3_ID)));
         operator.noMoreSplits();
 
         List<Page> source1Pages = rowPagesBuilder(types)

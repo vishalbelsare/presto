@@ -4,6 +4,13 @@ Google Sheets connector
 
 The Google Sheets connector allows reading `Google Sheets <https://www.google.com/sheets/about/>`_ spreadsheets as tables in Presto.
 
+.. note::
+
+    Before configuring this connector, verify that the Google Sheets connector
+    plugin has been deployed to the Presto plugin directory. If the plugin is
+    not deployed, Presto will fail to start when this catalog is configured.
+    See :doc:`/installation/deploy-custom-plugins` for more information.
+
 Configuration
 -------------
 
@@ -99,6 +106,5 @@ fetching the sheet data for every table, unless it is already cached.
 SQL support
 -----------
 
-The connector provides :ref:`globally available <sql-globally-available>` and
-:ref:`read operation <sql-read-operations>` statements to access data and
+The connector provides globally available and read operation statements to access data and
 metadata in Google Sheets.

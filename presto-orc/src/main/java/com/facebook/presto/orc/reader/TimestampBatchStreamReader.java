@@ -20,19 +20,17 @@ import com.facebook.presto.common.type.TimestampType;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.orc.DecodeTimestampOptions;
 import com.facebook.presto.orc.OrcCorruptionException;
-import com.facebook.presto.orc.OrcRecordReaderOptions;
 import com.facebook.presto.orc.StreamDescriptor;
 import com.facebook.presto.orc.Stripe;
 import com.facebook.presto.orc.stream.BooleanInputStream;
 import com.facebook.presto.orc.stream.InputStreamSource;
 import com.facebook.presto.orc.stream.InputStreamSources;
 import com.facebook.presto.orc.stream.LongInputStream;
-import org.joda.time.DateTimeZone;
+import jakarta.annotation.Nullable;
 import org.openjdk.jol.info.ClassLayout;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
+import java.time.ZoneId;
 import java.util.Optional;
 
 import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
@@ -41,7 +39,8 @@ import static com.facebook.presto.orc.metadata.Stream.StreamKind.PRESENT;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.SECONDARY;
 import static com.facebook.presto.orc.reader.ApacheHiveTimestampDecoder.decodeTimestamp;
 import static com.facebook.presto.orc.reader.ReaderUtils.verifyStreamType;
-import static com.facebook.presto.orc.stream.MissingInputStreamSource.missingStreamSource;
+import static com.facebook.presto.orc.stream.MissingInputStreamSource.getBooleanMissingStreamSource;
+import static com.facebook.presto.orc.stream.MissingInputStreamSource.getLongMissingStreamSource;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
@@ -55,25 +54,26 @@ public class TimestampBatchStreamReader
     private int readOffset;
     private int nextBatchSize;
 
-    private InputStreamSource<BooleanInputStream> presentStreamSource = missingStreamSource(BooleanInputStream.class);
+    private InputStreamSource<BooleanInputStream> presentStreamSource = getBooleanMissingStreamSource();
     @Nullable
     private BooleanInputStream presentStream;
 
-    private InputStreamSource<LongInputStream> secondsStreamSource = missingStreamSource(LongInputStream.class);
+    private InputStreamSource<LongInputStream> secondsStreamSource = getLongMissingStreamSource();
     @Nullable
     private LongInputStream secondsStream;
 
-    private InputStreamSource<LongInputStream> nanosStreamSource = missingStreamSource(LongInputStream.class);
+    private InputStreamSource<LongInputStream> nanosStreamSource = getLongMissingStreamSource();
     @Nullable
     private LongInputStream nanosStream;
 
     private boolean rowGroupOpen;
-    private final DecodeTimestampOptions decodeTimestampOptions;
+    private final boolean enableMicroPrecision;
+    private DecodeTimestampOptions decodeTimestampOptions;
 
-    public TimestampBatchStreamReader(Type type, StreamDescriptor streamDescriptor, DateTimeZone hiveStorageTimeZone, OrcRecordReaderOptions decodeTimestampOptions)
+    public TimestampBatchStreamReader(Type type, StreamDescriptor streamDescriptor, boolean enableMicroPrecision)
             throws OrcCorruptionException
     {
-        this.decodeTimestampOptions = new DecodeTimestampOptions(hiveStorageTimeZone, decodeTimestampOptions.enableTimestampMicroPrecision());
+        this.enableMicroPrecision = enableMicroPrecision;
         requireNonNull(type, "type is null");
         verifyStreamType(streamDescriptor, type, TimestampType.class::isInstance);
         this.streamDescriptor = requireNonNull(streamDescriptor, "stream is null");
@@ -191,11 +191,13 @@ public class TimestampBatchStreamReader
     }
 
     @Override
-    public void startStripe(Stripe stripe)
+    public void startStripe(ZoneId timezone, Stripe stripe)
     {
-        presentStreamSource = missingStreamSource(BooleanInputStream.class);
-        secondsStreamSource = missingStreamSource(LongInputStream.class);
-        nanosStreamSource = missingStreamSource(LongInputStream.class);
+        decodeTimestampOptions = new DecodeTimestampOptions(timezone, enableMicroPrecision);
+
+        presentStreamSource = getBooleanMissingStreamSource();
+        secondsStreamSource = getLongMissingStreamSource();
+        nanosStreamSource = getLongMissingStreamSource();
 
         readOffset = 0;
         nextBatchSize = 0;

@@ -30,7 +30,7 @@ import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.Value;
 import org.apache.accumulo.core.iterators.FirstEntryInRowIterator;
 import org.apache.accumulo.core.iterators.user.WholeRowIterator;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.io.Text;
 
 import java.io.IOException;
@@ -281,7 +281,7 @@ public class AccumuloRecordCursor
      * so we can configure Accumulo to only give us the first key/value pair in the row
      *
      * @param rowIdName Row ID column name
-     * @return True if scanner should retriev eonly row IDs, false otherwise
+     * @return True if scanner should retrieve only row IDs, false otherwise
      */
     private boolean retrieveOnlyRowIds(String rowIdName)
     {

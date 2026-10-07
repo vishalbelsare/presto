@@ -14,7 +14,9 @@
 package com.facebook.presto.hive.metastore.thrift;
 
 import com.facebook.presto.hive.authentication.HiveMetastoreAuthentication;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.net.HostAndPort;
+import org.apache.thrift.TConfiguration;
 import org.apache.thrift.transport.TSocket;
 import org.apache.thrift.transport.TTransport;
 import org.apache.thrift.transport.TTransportException;
@@ -92,7 +94,8 @@ public final class Transport
         return new TTransportException(e.getType(), String.format("%s: %s", address, e.getMessage()), e);
     }
 
-    private static class TTransportWrapper
+    @VisibleForTesting
+    static class TTransportWrapper
             extends TTransport
     {
         private final TTransport transport;
@@ -212,6 +215,45 @@ public final class Transport
         {
             try {
                 transport.flush();
+            }
+            catch (TTransportException e) {
+                throw rewriteException(e, address);
+            }
+        }
+
+        @Override
+        public TConfiguration getConfiguration()
+        {
+            TConfiguration config = transport.getConfiguration();
+            // Hive's TFilterTransport (parent of TUGIAssumingTransport used in Kerberos auth) was compiled
+            // against pre-0.21 libthrift and its getConfiguration() unconditionally returns null.
+            // libthrift 0.21 introduced TTransport.getConfiguration() as an abstract method and
+            // TProtocol.incrementRecursionDepth() as a guard against deep recursion.
+            // libthrift 0.24 wired incrementRecursionDepth() into TProtocol.writeStruct(), which
+            // unconditionally calls getConfiguration().getRecursionLimit() — causing a NullPointerException
+            // at runtime when writing nested Thrift objects (e.g. update_table_column_statistics) over a
+            // Kerberos SASL connection. Fall back to TConfiguration.DEFAULT to restore safe behaviour.
+            return config != null ? config : TConfiguration.DEFAULT;
+        }
+
+        @Override
+        public void updateKnownMessageSize(long size)
+                throws TTransportException
+        {
+            try {
+                transport.updateKnownMessageSize(size);
+            }
+            catch (TTransportException e) {
+                throw rewriteException(e, address);
+            }
+        }
+
+        @Override
+        public void checkReadBytesAvailable(long numBytes)
+                throws TTransportException
+        {
+            try {
+                transport.checkReadBytesAvailable(numBytes);
             }
             catch (TTransportException e) {
                 throw rewriteException(e, address);

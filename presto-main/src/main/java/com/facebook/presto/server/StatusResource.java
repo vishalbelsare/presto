@@ -17,22 +17,21 @@ import com.facebook.airlift.node.NodeInfo;
 import com.facebook.presto.client.NodeVersion;
 import com.facebook.presto.memory.LocalMemoryManager;
 import com.sun.management.OperatingSystemMXBean;
-
-import javax.annotation.security.RolesAllowed;
-import javax.inject.Inject;
-import javax.ws.rs.GET;
-import javax.ws.rs.HEAD;
-import javax.ws.rs.Path;
-import javax.ws.rs.Produces;
-import javax.ws.rs.core.Response;
+import jakarta.annotation.security.RolesAllowed;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.HEAD;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.core.Response;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
 
+import static com.facebook.airlift.units.Duration.nanosSince;
 import static com.facebook.presto.server.security.RoleType.INTERNAL;
-import static io.airlift.units.Duration.nanosSince;
+import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 import static java.util.Objects.requireNonNull;
-import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 
 @Path("/v1/status")
 @RolesAllowed(INTERNAL)
@@ -91,6 +90,8 @@ public class StatusResource
                 operatingSystemMXBean == null ? 0 : operatingSystemMXBean.getSystemCpuLoad(),
                 memoryMXBean.getHeapMemoryUsage().getUsed(),
                 memoryMXBean.getHeapMemoryUsage().getMax(),
-                memoryMXBean.getNonHeapMemoryUsage().getUsed());
+                memoryMXBean.getNonHeapMemoryUsage().getUsed(),
+                0L, // asyncDataCacheBytes: native-only (Prestissimo AsyncDataCache); not applicable on JVM
+                0L); // queryMemoryBytes: native-only; JVM query memory is on-heap
     }
 }

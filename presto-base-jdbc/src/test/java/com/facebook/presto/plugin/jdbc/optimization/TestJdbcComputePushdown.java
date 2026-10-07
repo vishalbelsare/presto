@@ -98,14 +98,14 @@ public class TestJdbcComputePushdown
     {
         this.sqlToRowExpressionTranslator = new TestingRowExpressionTranslator(METADATA);
         FunctionAndTypeManager functionAndTypeManager = METADATA.getFunctionAndTypeManager();
-        StandardFunctionResolution functionResolution = new FunctionResolution(functionAndTypeManager);
+        StandardFunctionResolution functionResolution = new FunctionResolution(functionAndTypeManager.getFunctionAndTypeResolver());
         DeterminismEvaluator determinismEvaluator = new RowExpressionDeterminismEvaluator(functionAndTypeManager);
 
         this.jdbcComputePushdown = new JdbcComputePushdown(
                 functionAndTypeManager,
                 functionResolution,
                 determinismEvaluator,
-                new RowExpressionOptimizer(METADATA),
+                (ConnectorSession session) -> new RowExpressionOptimizer(METADATA),
                 "'",
                 getFunctionTranslators());
     }
@@ -245,12 +245,12 @@ public class TestJdbcComputePushdown
 
     private static JdbcColumnHandle integerJdbcColumnHandle(String name)
     {
-        return new JdbcColumnHandle(CONNECTOR_ID, name, new JdbcTypeHandle(Types.BIGINT, 10, 0), BIGINT, false, Optional.empty());
+        return new JdbcColumnHandle(CONNECTOR_ID, name, new JdbcTypeHandle(Types.BIGINT, "integer", 10, 0), BIGINT, false, Optional.empty());
     }
 
     private static JdbcColumnHandle booleanJdbcColumnHandle(String name)
     {
-        return new JdbcColumnHandle(CONNECTOR_ID, name, new JdbcTypeHandle(Types.BOOLEAN, 1, 0), BOOLEAN, false, Optional.empty());
+        return new JdbcColumnHandle(CONNECTOR_ID, name, new JdbcTypeHandle(Types.BOOLEAN, "boolean", 1, 0), BOOLEAN, false, Optional.empty());
     }
 
     private static JdbcColumnHandle getColumnHandleForVariable(String name, Type type)

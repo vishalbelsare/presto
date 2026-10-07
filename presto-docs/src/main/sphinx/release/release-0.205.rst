@@ -9,7 +9,7 @@ General Changes
   Previously, row expressions that included spaces would fail to parse.
   For example: ``cast(row(timestamp '2018-06-01') AS row(timestamp with time zone))``.
 * Fix distributed planning failure for complex queries when using bucketed execution.
-* Fix :func:`ST_ExteriorRing` to only accept polygons.
+* Fix :func:`!ST_ExteriorRing` to only accept polygons.
   Previously, it erroneously accepted other geometries.
 * Add the ``task.min-drivers-per-task`` and ``task.max-drivers-per-task`` config options.
   The former specifies the guaranteed minimum number of drivers a task will run concurrently
@@ -50,7 +50,7 @@ JDBC Driver Changes
 -------------------
 
 * Add support for prepared statements.
-* Add partial query cancellation via ``partialCancel()`` on ``PrestoStatement``.
+* Add partial query cancellation with ``partialCancel()`` on ``PrestoStatement``.
 * Use ``VARCHAR`` rather than ``LONGNVARCHAR`` for the Presto ``varchar`` type.
 * Use ``VARBINARY`` rather than ``LONGVARBINARY`` for the Presto ``varbinary`` type.
 

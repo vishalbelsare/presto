@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.memory;
 
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.execution.QueryState;
 import com.facebook.presto.server.BasicQueryInfo;
 import com.facebook.presto.server.BasicQueryStats;
@@ -21,8 +23,6 @@ import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
 import org.joda.time.DateTime;
 import org.testng.annotations.Test;
 
@@ -46,23 +46,27 @@ public class TestClusterMemoryLeakDetector
         QueryId testQuery = new QueryId("test");
         ClusterMemoryLeakDetector leakDetector = new ClusterMemoryLeakDetector();
 
-        leakDetector.checkForMemoryLeaks(() -> ImmutableList.of(), ImmutableMap.of());
+        leakDetector.checkForMemoryLeaks(ImmutableMap.of(), ImmutableMap.of());
+        assertEquals(leakDetector.getNumberOfLeakedQueries(), 0);
+
+        // the leak detector should be okay with a missing basic query info and treat that as a running query
+        leakDetector.checkForMemoryLeaks(ImmutableMap.of(testQuery, Optional.empty()), ImmutableMap.of(testQuery, 1L));
         assertEquals(leakDetector.getNumberOfLeakedQueries(), 0);
 
         // the leak detector should report no leaked queries as the query is still running
-        leakDetector.checkForMemoryLeaks(() -> ImmutableList.of(createQueryInfo(testQuery.getId(), RUNNING)), ImmutableMap.of(testQuery, 1L));
+        leakDetector.checkForMemoryLeaks(ImmutableMap.of(testQuery, Optional.of(createQueryInfo(testQuery.getId(), RUNNING))), ImmutableMap.of(testQuery, 1L));
         assertEquals(leakDetector.getNumberOfLeakedQueries(), 0);
 
         // the leak detector should report exactly one leaked query since the query is finished, and its end time is way in the past
-        leakDetector.checkForMemoryLeaks(() -> ImmutableList.of(createQueryInfo(testQuery.getId(), FINISHED)), ImmutableMap.of(testQuery, 1L));
+        leakDetector.checkForMemoryLeaks(ImmutableMap.of(testQuery, Optional.of(createQueryInfo(testQuery.getId(), FINISHED))), ImmutableMap.of(testQuery, 1L));
         assertEquals(leakDetector.getNumberOfLeakedQueries(), 1);
 
         // the leak detector should report no leaked queries as the query doesn't have any memory reservation
-        leakDetector.checkForMemoryLeaks(() -> ImmutableList.of(createQueryInfo(testQuery.getId(), FINISHED)), ImmutableMap.of(testQuery, 0L));
+        leakDetector.checkForMemoryLeaks(ImmutableMap.of(testQuery, Optional.of(createQueryInfo(testQuery.getId(), FINISHED))), ImmutableMap.of(testQuery, 0L));
         assertEquals(leakDetector.getNumberOfLeakedQueries(), 0);
 
         // the leak detector should report exactly one leaked query since the coordinator doesn't know of any query
-        leakDetector.checkForMemoryLeaks(() -> ImmutableList.of(), ImmutableMap.of(testQuery, 1L));
+        leakDetector.checkForMemoryLeaks(ImmutableMap.of(), ImmutableMap.of(testQuery, 1L));
         assertEquals(leakDetector.getNumberOfLeakedQueries(), 1);
     }
 
@@ -78,18 +82,28 @@ public class TestClusterMemoryLeakDetector
                 URI.create("1"),
                 "",
                 new BasicQueryStats(
-                        DateTime.parse("1991-09-06T05:00-05:30"),
-                        DateTime.parse("1991-09-06T05:01-05:30"),
+                        DateTime.parse("1991-09-06T05:00-05:30").getMillis(),
+                        DateTime.parse("1991-09-06T05:01-05:30").getMillis(),
                         Duration.valueOf("4m"),
                         Duration.valueOf("8m"),
                         Duration.valueOf("7m"),
                         Duration.valueOf("34m"),
+                        Duration.valueOf("10m"),
                         11,
                         12,
                         13,
                         14,
                         15,
                         100,
+                        13,
+                        14,
+                        15,
+                        100,
+                        13,
+                        14,
+                        15,
+                        100,
+                        DataSize.valueOf("21GB"),
                         DataSize.valueOf("21GB"),
                         22,
                         23,
@@ -108,6 +122,7 @@ public class TestClusterMemoryLeakDetector
                         OptionalDouble.of(20)),
                 null,
                 Optional.empty(),
-                ImmutableList.of());
+                ImmutableList.of(),
+                Optional.empty());
     }
 }

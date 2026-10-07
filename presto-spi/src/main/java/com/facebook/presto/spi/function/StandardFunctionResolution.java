@@ -48,6 +48,8 @@ public interface StandardFunctionResolution
 
     boolean isComparisonFunction(FunctionHandle functionHandle);
 
+    boolean isEqualsFunction(FunctionHandle functionHandle);
+
     FunctionHandle betweenFunction(Type valueType, Type lowerBoundType, Type upperBoundType);
 
     boolean isBetweenFunction(FunctionHandle functionHandle);
@@ -58,17 +60,45 @@ public interface StandardFunctionResolution
 
     boolean isCastFunction(FunctionHandle functionHandle);
 
+    FunctionHandle lookupCast(String castType, Type fromType, Type toType);
+
+    boolean isTryFunction(FunctionHandle functionHandle);
+
+    boolean isFailFunction(FunctionHandle functionHandle);
+
     boolean isCountFunction(FunctionHandle functionHandle);
+
+    boolean isCountIfFunction(FunctionHandle functionHandle);
 
     FunctionHandle countFunction();
 
     FunctionHandle countFunction(Type valueType);
 
+    FunctionHandle arbitraryFunction(Type valueType);
+
     boolean isMaxFunction(FunctionHandle functionHandle);
 
     FunctionHandle maxFunction(Type valueType);
 
+    FunctionHandle greatestFunction(List<Type> valueTypes);
+
     boolean isMinFunction(FunctionHandle functionHandle);
 
     FunctionHandle minFunction(Type valueType);
+
+    FunctionHandle leastFunction(List<Type> valueTypes);
+
+    boolean isApproximateCountDistinctFunction(FunctionHandle functionHandle);
+
+    FunctionHandle approximateCountDistinctFunction(Type valueType);
+
+    boolean isApproximateSetFunction(FunctionHandle functionHandle);
+
+    FunctionHandle approximateSetFunction(Type valueType);
+
+    FunctionHandle lookupBuiltInFunction(String functionName, List<Type> inputTypes);
+
+    FunctionHandle lookupFunction(String catalog, String schema, String functionName, List<Type> inputTypes);
+
+    boolean isArrayConstructor(FunctionHandle functionHandle);
 }

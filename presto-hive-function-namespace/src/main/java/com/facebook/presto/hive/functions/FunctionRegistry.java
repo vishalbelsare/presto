@@ -17,6 +17,35 @@ package com.facebook.presto.hive.functions;
 import org.apache.hadoop.hive.ql.exec.FunctionInfo;
 import org.apache.hadoop.hive.ql.exec.Registry;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
+import org.apache.hadoop.hive.ql.udf.UDFAcos;
+import org.apache.hadoop.hive.ql.udf.UDFAsin;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFAverage;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFCollectList;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFCollectSet;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFComputeStats;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFContextNGrams;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFCorrelation;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFCount;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFCovariance;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFCovarianceSample;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFCumeDist;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFDenseRank;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFFirstValue;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFHistogramNumeric;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFLastValue;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFMax;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFMin;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFNTile;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFPercentRank;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFPercentileApprox;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFRank;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFRowNumber;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFStd;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFStdSample;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFSum;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFVariance;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFVarianceSample;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFnGrams;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFAbs;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFAddMonths;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFAesDecrypt;
@@ -35,6 +64,7 @@ import org.apache.hadoop.hive.ql.udf.generic.GenericUDFCharacterLength;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFCoalesce;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFConcat;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFConcatWS;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDFCurrentDatabase;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFCurrentDate;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFCurrentGroups;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFCurrentTimestamp;
@@ -85,7 +115,6 @@ import org.apache.hadoop.hive.ql.udf.generic.GenericUDFMurmurHash;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFNamedStruct;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFNextDay;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFNullif;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFNvl;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPFalse;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPNegative;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPNotFalse;
@@ -136,7 +165,6 @@ import org.apache.hadoop.hive.ql.udf.generic.GenericUDFUnixTimeStamp;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFUpper;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFWhen;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFWidthBucket;
-import org.apache.hadoop.hive.ql.udf.generic.UDFCurrentDB;
 import org.apache.hadoop.hive.ql.udf.xml.GenericUDFXPath;
 
 import java.util.Set;
@@ -192,7 +220,7 @@ public final class FunctionRegistry
         system.registerGenericUDF("likeall", GenericUDFLikeAll.class);
         system.registerGenericUDF("rlike", GenericUDFRegExp.class);
         system.registerGenericUDF("regexp", GenericUDFRegExp.class);
-        system.registerGenericUDF("nvl", GenericUDFNvl.class);
+        system.registerGenericUDF("nvl", GenericUDFCoalesce.class); //HIVE-20961
         system.registerGenericUDF("split", GenericUDFSplit.class);
         system.registerGenericUDF("str_to_map", GenericUDFStringToMap.class);
         system.registerGenericUDF("translate", GenericUDFTranslate.class);
@@ -211,7 +239,7 @@ public final class FunctionRegistry
         system.registerGenericUDF("months_between", GenericUDFMonthsBetween.class);
         system.registerGenericUDF("xpath", GenericUDFXPath.class);
         system.registerGenericUDF("grouping", GenericUDFGrouping.class);
-        system.registerGenericUDF("current_database", UDFCurrentDB.class);
+        system.registerGenericUDF("current_database", GenericUDFCurrentDatabase.class);
         system.registerGenericUDF("current_date", GenericUDFCurrentDate.class);
         system.registerGenericUDF("current_timestamp", GenericUDFCurrentTimestamp.class);
         system.registerGenericUDF("current_user", GenericUDFCurrentUser.class);
@@ -278,6 +306,42 @@ public final class FunctionRegistry
         system.registerGenericUDF("to_epoch_milli", GenericUDFEpochMilli.class);
         system.registerGenericUDF("lead", GenericUDFLead.class);
         system.registerGenericUDF("lag", GenericUDFLag.class);
+
+        // register UDF
+        system.registerUDF("asin", UDFAsin.class, false);
+        system.registerUDF("acos", UDFAcos.class, false);
+
+        // Aggregate functions
+        system.registerGenericUDAF("max", new GenericUDAFMax());
+        system.registerGenericUDAF("min", new GenericUDAFMin());
+        system.registerGenericUDAF("sum", new GenericUDAFSum());
+        system.registerGenericUDAF("count", new GenericUDAFCount());
+        system.registerGenericUDAF("avg", new GenericUDAFAverage());
+        system.registerGenericUDAF("std", new GenericUDAFStd());
+        system.registerGenericUDAF("stddev", new GenericUDAFStd());
+        system.registerGenericUDAF("stddev_pop", new GenericUDAFStd());
+        system.registerGenericUDAF("stddev_samp", new GenericUDAFStdSample());
+        system.registerGenericUDAF("variance", new GenericUDAFVariance());
+        system.registerGenericUDAF("var_pop", new GenericUDAFVariance());
+        system.registerGenericUDAF("var_samp", new GenericUDAFVarianceSample());
+        system.registerGenericUDAF("covar_pop", new GenericUDAFCovariance());
+        system.registerGenericUDAF("covar_samp", new GenericUDAFCovarianceSample());
+        system.registerGenericUDAF("corr", new GenericUDAFCorrelation());
+        system.registerGenericUDAF("histogram_numeric", new GenericUDAFHistogramNumeric());
+        system.registerGenericUDAF("percentile_approx", new GenericUDAFPercentileApprox());
+        system.registerGenericUDAF("collect_set", new GenericUDAFCollectSet());
+        system.registerGenericUDAF("collect_list", new GenericUDAFCollectList());
+        system.registerGenericUDAF("ngrams", new GenericUDAFnGrams());
+        system.registerGenericUDAF("context_ngrams", new GenericUDAFContextNGrams());
+        system.registerGenericUDAF("compute_stats", new GenericUDAFComputeStats());
+        system.registerGenericUDAF("row_number", new GenericUDAFRowNumber());
+        system.registerGenericUDAF("rank", new GenericUDAFRank());
+        system.registerGenericUDAF("dense_rank", new GenericUDAFDenseRank());
+        system.registerGenericUDAF("percent_rank", new GenericUDAFPercentRank());
+        system.registerGenericUDAF("cume_dist", new GenericUDAFCumeDist());
+        system.registerGenericUDAF("ntile", new GenericUDAFNTile());
+        system.registerGenericUDAF("first_value", new GenericUDAFFirstValue());
+        system.registerGenericUDAF("last_value", new GenericUDAFLastValue());
     }
 
     public static FunctionInfo getFunctionInfo(String functionName) throws SemanticException

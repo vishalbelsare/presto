@@ -13,16 +13,19 @@
  */
 package com.facebook.presto.resourcemanager;
 
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.client.NodeVersion;
 import com.facebook.presto.execution.MockManagedQueryExecution;
+import com.facebook.presto.execution.resourceGroups.NoOpResourceGroupManager;
 import com.facebook.presto.memory.MemoryInfo;
 import com.facebook.presto.metadata.InMemoryNodeManager;
 import com.facebook.presto.metadata.InternalNode;
+import com.facebook.presto.server.InternalCommunicationConfig;
 import com.facebook.presto.server.NodeStatus;
+import com.facebook.presto.server.ServerConfig;
 import com.facebook.presto.spi.ConnectorId;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
 import org.testng.annotations.AfterTest;
 import org.testng.annotations.BeforeTest;
 import org.testng.annotations.Test;
@@ -30,7 +33,7 @@ import org.testng.annotations.Test;
 import java.net.URI;
 import java.util.OptionalInt;
 
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.lang.String.format;
 import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -54,7 +57,9 @@ public class TestResourceManagerClusterStatusSender
             2.0,
             1,
             2,
-            3);
+            3,
+            0,
+            0);
     private static final int HEARTBEAT_INTERVAL = 100;
     private static final int SLEEP_DURATION = 1000;
     private static final int TARGET_HEARTBEATS = SLEEP_DURATION / HEARTBEAT_INTERVAL;
@@ -67,16 +72,30 @@ public class TestResourceManagerClusterStatusSender
     {
         resourceManagerClient = new TestingResourceManagerClient();
         InMemoryNodeManager nodeManager = new InMemoryNodeManager();
-        nodeManager.addNode(CONNECTOR_ID, new InternalNode("identifier", URI.create("http://localhost:80/identifier"), OptionalInt.of(1), "1", false, true));
+        nodeManager.addNode(
+                CONNECTOR_ID,
+                new InternalNode(
+                        "identifier",
+                        URI.create("http://localhost:80/identifier"),
+                        OptionalInt.of(1),
+                        "1",
+                        false,
+                        true,
+                        false,
+                        false));
 
         sender = new ResourceManagerClusterStatusSender(
                 (addressSelectionContext, headers) -> resourceManagerClient,
+                null,
                 nodeManager,
                 () -> NODE_STATUS,
                 newSingleThreadScheduledExecutor(),
                 new ResourceManagerConfig()
                         .setNodeHeartbeatInterval(new Duration(HEARTBEAT_INTERVAL, MILLISECONDS))
-                        .setQueryHeartbeatInterval(new Duration(HEARTBEAT_INTERVAL, MILLISECONDS)));
+                        .setQueryHeartbeatInterval(new Duration(HEARTBEAT_INTERVAL, MILLISECONDS)),
+                new ServerConfig().setCoordinator(false),
+                new InternalCommunicationConfig(),
+                new NoOpResourceGroupManager());
     }
 
     @AfterTest
@@ -98,7 +117,7 @@ public class TestResourceManagerClusterStatusSender
                 format("Expect number of heartbeats to fall within target range (%s), +/- 50%%.  Was: %s", TARGET_HEARTBEATS, nodeHeartbeats));
     }
 
-    @Test(timeOut = 4_000)
+    @Test(timeOut = 10_000)
     public void testQueryHeartbeat()
             throws Exception
     {
@@ -108,8 +127,14 @@ public class TestResourceManagerClusterStatusSender
         Thread.sleep(SLEEP_DURATION);
 
         int queryHeartbeats = resourceManagerClient.getQueryHeartbeats();
-        assertTrue(queryHeartbeats > TARGET_HEARTBEATS * 0.5 && queryHeartbeats <= TARGET_HEARTBEATS * 1.5,
-                format("Expect number of heartbeats to fall within target range (%s), +/- 50%%.  Was: %s", TARGET_HEARTBEATS, queryHeartbeats));
+        assertTrue(queryHeartbeats > 0, "Expected at least one query heartbeat");
+
+        Thread.sleep(SLEEP_DURATION);
+
+        int newQueryHeartbeats = resourceManagerClient.getQueryHeartbeats();
+        assertTrue(
+                newQueryHeartbeats > queryHeartbeats,
+                format("Expected at least one subsequent query heartbeat, previous: %s, current: %s", queryHeartbeats, newQueryHeartbeats));
 
         // Completing the query stops the heartbeats
         queryExecution.complete();

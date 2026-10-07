@@ -14,13 +14,11 @@
 package com.facebook.presto.orc.writer;
 
 import com.facebook.presto.common.block.Block;
-import com.facebook.presto.common.type.Type;
 import com.facebook.presto.orc.ColumnWriterOptions;
 import com.facebook.presto.orc.DictionaryCompressionOptimizer.DictionaryColumn;
 import com.facebook.presto.orc.DwrfDataEncryptor;
 import com.facebook.presto.orc.OrcEncoding;
-import com.facebook.presto.orc.checkpoint.BooleanStreamCheckpoint;
-import com.facebook.presto.orc.checkpoint.LongStreamCheckpoint;
+import com.facebook.presto.orc.checkpoint.StreamCheckpoint;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
 import com.facebook.presto.orc.metadata.CompressedMetadataWriter;
 import com.facebook.presto.orc.metadata.MetadataWriter;
@@ -49,6 +47,7 @@ import static com.facebook.presto.common.array.Arrays.ensureCapacity;
 import static com.facebook.presto.orc.DictionaryCompressionOptimizer.estimateIndexBytesPerValue;
 import static com.facebook.presto.orc.metadata.CompressionKind.NONE;
 import static com.facebook.presto.orc.stream.LongOutputStream.createDataOutputStream;
+import static com.facebook.presto.orc.writer.ColumnWriterUtils.buildRowGroupIndexes;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static io.airlift.slice.SizeOf.sizeOf;
@@ -65,19 +64,20 @@ public abstract class DictionaryColumnWriter
     private static final int EXPECTED_ROW_GROUP_SEGMENT_SIZE = 10_000;
 
     protected final int column;
-    protected final Type type;
+    protected final int sequence;
     protected final ColumnWriterOptions columnWriterOptions;
     protected final Optional<DwrfDataEncryptor> dwrfEncryptor;
     protected final OrcEncoding orcEncoding;
     protected final MetadataWriter metadataWriter;
+    protected long rawSize;
 
     private final CompressedMetadataWriter compressedMetadataWriter;
     private final List<DictionaryRowGroup> rowGroups = new ArrayList<>();
+    private final DictionaryRowGroupBuilder rowGroupBuilder = new DictionaryRowGroupBuilder();
     private final int preserveDirectEncodingStripeCount;
 
-    private LongOutputStream dataStream;
     private PresentOutputStream presentStream;
-    private DictionaryRowGroupBuilder rowGroupBuilder = new DictionaryRowGroupBuilder();
+    private LongOutputStream dataStream;
     private int[] rowGroupIndexes;
     private int rowGroupOffset;
     private long rawBytesEstimate;
@@ -91,15 +91,16 @@ public abstract class DictionaryColumnWriter
 
     public DictionaryColumnWriter(
             int column,
-            Type type,
+            int sequence,
             ColumnWriterOptions columnWriterOptions,
             Optional<DwrfDataEncryptor> dwrfEncryptor,
             OrcEncoding orcEncoding,
             MetadataWriter metadataWriter)
     {
         checkArgument(column >= 0, "column is negative");
+        checkArgument(sequence >= 0, "sequence is negative");
         this.column = column;
-        this.type = requireNonNull(type, "type is null");
+        this.sequence = sequence;
         this.columnWriterOptions = requireNonNull(columnWriterOptions, "columnWriterOptions is null");
         this.dwrfEncryptor = requireNonNull(dwrfEncryptor, "dwrfEncryptor is null");
         this.orcEncoding = requireNonNull(orcEncoding, "orcEncoding is null");
@@ -137,32 +138,35 @@ public abstract class DictionaryColumnWriter
      */
     protected abstract Optional<int[]> writeDictionary();
 
-    protected abstract void writePresentAndDataStreams(
+    protected abstract void beginDataRowGroup();
+
+    protected abstract void movePresentStreamToDirectWriter(PresentOutputStream presentStream);
+
+    protected abstract void updateRawSizeInDirectWriter(long rawSize);
+
+    protected abstract void writeDataStreams(
             int rowGroupValueCount,
             byte[] rowGroupIndexes,
             Optional<int[]> originalDictionaryToSortedIndex,
-            PresentOutputStream presentStream,
             LongOutputStream dataStream);
 
-    protected abstract void writePresentAndDataStreams(
+    protected abstract void writeDataStreams(
             int rowGroupValueCount,
             short[] rowGroupIndexes,
             Optional<int[]> originalDictionaryToSortedIndex,
-            PresentOutputStream presentStream,
             LongOutputStream dataStream);
 
-    protected abstract void writePresentAndDataStreams(
+    protected abstract void writeDataStreams(
             int rowGroupValueCount,
             int[] rowGroupIndexes,
             Optional<int[]> originalDictionaryToSortedIndex,
-            PresentOutputStream presentStream,
             LongOutputStream dataStream);
 
     protected abstract void resetDictionary();
 
     protected abstract void closeDictionary();
 
-    protected abstract List<StreamDataOutput> getDictionaryStreams(int column);
+    protected abstract List<StreamDataOutput> getDictionaryStreams(int column, int sequence);
 
     protected abstract ColumnStatistics createColumnStatistics();
 
@@ -243,21 +247,22 @@ public abstract class DictionaryColumnWriter
         checkState(!closed);
         checkState(!directEncoded);
         ColumnWriter directWriter = createDirectColumnWriter();
-        checkState(directWriter.getBufferedBytes() == 0);
+        checkState(directWriter.getBufferedBytes() == 0, "direct writer should have no data");
 
         for (DictionaryRowGroup rowGroup : rowGroups) {
-            directWriter.beginRowGroup();
+            beginDataRowGroup();
             // todo we should be able to pass the stats down to avoid recalculating min and max
             boolean success = tryConvertRowGroupToDirect(rowGroup.getByteSegments(), rowGroup.getShortSegments(), rowGroup.getIntSegments(), maxDirectBytes);
 
             if (!success) {
                 return resetDirectWriter(directWriter);
             }
+            updateRawSizeInDirectWriter(rowGroup.getColumnStatistics().getRawSize());
             directWriter.finishRowGroup();
         }
 
         if (inRowGroup) {
-            directWriter.beginRowGroup();
+            beginDataRowGroup();
             boolean success = tryConvertRowGroupToDirect(
                     rowGroupBuilder.getByteSegments(),
                     rowGroupBuilder.getShortSegments(),
@@ -275,6 +280,12 @@ public abstract class DictionaryColumnWriter
         else {
             checkState(rowGroupOffset == 0);
         }
+
+        // Conversion to DirectStream succeeded, Transfer the present stream to direct writer and assign
+        // this a new PresentStream, so one writer is responsible for one present stream.
+        movePresentStreamToDirectWriter(presentStream);
+        updateRawSizeInDirectWriter(rawSize);
+        presentStream = new PresentOutputStream(columnWriterOptions, dwrfEncryptor);
 
         // free the dictionary
         rawBytesEstimate = 0;
@@ -315,6 +326,9 @@ public abstract class DictionaryColumnWriter
         if (directEncoded) {
             getDirectColumnWriter().beginRowGroup();
         }
+        else {
+            presentStream.recordCheckpoint();
+        }
     }
 
     @Override
@@ -328,16 +342,22 @@ public abstract class DictionaryColumnWriter
         }
 
         rowGroupIndexes = ensureCapacity(rowGroupIndexes, rowGroupOffset + block.getPositionCount(), MEDIUM, PRESERVE);
+
+        for (int position = 0; position < block.getPositionCount(); position++) {
+            presentStream.writeBoolean(!block.isNull(position));
+        }
         BlockStatistics blockStatistics = addBlockToDictionary(block, rowGroupOffset, rowGroupIndexes);
         totalNonNullValueCount += blockStatistics.getNonNullValueCount();
         rawBytesEstimate += blockStatistics.getRawBytesEstimate();
-        rowGroupOffset += block.getPositionCount();
+        rowGroupOffset += blockStatistics.getNonNullValueCount();
         totalValueCount += block.getPositionCount();
         if (rowGroupOffset >= EXPECTED_ROW_GROUP_SEGMENT_SIZE) {
             rowGroupBuilder.addIndexes(getDictionaryEntries() - 1, rowGroupIndexes, rowGroupOffset);
             rowGroupOffset = 0;
         }
-        return blockStatistics.getRawBytesIncludingNulls();
+        long rawSize = blockStatistics.getRawBytesIncludingNulls();
+        this.rawSize += rawSize;
+        return rawSize;
     }
 
     @Override
@@ -364,6 +384,8 @@ public abstract class DictionaryColumnWriter
         }
         rowGroupOffset = 0;
         rowGroupBuilder.reset();
+        rawSize = 0;
+
         return ImmutableMap.of(column, statistics);
     }
 
@@ -401,7 +423,6 @@ public abstract class DictionaryColumnWriter
 
         Optional<int[]> originalDictionaryToSortedIndex = writeDictionary();
         if (!rowGroups.isEmpty()) {
-            presentStream.recordCheckpoint();
             dataStream.recordCheckpoint();
         }
         for (DictionaryRowGroup rowGroup : rowGroups) {
@@ -410,11 +431,10 @@ public abstract class DictionaryColumnWriter
             byte[][] byteSegments = rowGroup.getByteSegments();
             if (byteSegments != null) {
                 for (byte[] byteIndexes : byteSegments) {
-                    writePresentAndDataStreams(
+                    writeDataStreams(
                             byteIndexes.length,
                             byteIndexes,
                             originalDictionaryToSortedIndex,
-                            presentStream,
                             dataStream);
                 }
             }
@@ -422,11 +442,10 @@ public abstract class DictionaryColumnWriter
             short[][] shortSegments = rowGroup.getShortSegments();
             if (shortSegments != null) {
                 for (short[] shortIndexes : shortSegments) {
-                    writePresentAndDataStreams(
+                    writeDataStreams(
                             shortIndexes.length,
                             shortIndexes,
                             originalDictionaryToSortedIndex,
-                            presentStream,
                             dataStream);
                 }
             }
@@ -434,16 +453,14 @@ public abstract class DictionaryColumnWriter
             int[][] intSegments = rowGroup.getIntSegments();
             if (intSegments != null) {
                 for (int[] integerIndexes : intSegments) {
-                    writePresentAndDataStreams(
+                    writeDataStreams(
                             integerIndexes.length,
                             integerIndexes,
                             originalDictionaryToSortedIndex,
-                            presentStream,
                             dataStream);
                 }
             }
 
-            presentStream.recordCheckpoint();
             dataStream.recordCheckpoint();
         }
 
@@ -453,41 +470,21 @@ public abstract class DictionaryColumnWriter
     }
 
     @Override
-    public List<StreamDataOutput> getIndexStreams()
+    public List<StreamDataOutput> getIndexStreams(Optional<List<? extends StreamCheckpoint>> prependCheckpoints)
             throws IOException
     {
         checkState(closed);
 
         if (directEncoded) {
-            return getDirectColumnWriter().getIndexStreams();
+            return getDirectColumnWriter().getIndexStreams(prependCheckpoints);
         }
 
-        ImmutableList.Builder<RowGroupIndex> rowGroupIndexes = ImmutableList.builder();
-        List<LongStreamCheckpoint> dataCheckpoints = dataStream.getCheckpoints();
-        Optional<List<BooleanStreamCheckpoint>> presentCheckpoints = presentStream.getCheckpoints();
-        for (int i = 0; i < rowGroups.size(); i++) {
-            int groupId = i;
-            ColumnStatistics columnStatistics = rowGroups.get(groupId).getColumnStatistics();
-            LongStreamCheckpoint dataCheckpoint = dataCheckpoints.get(groupId);
-            Optional<BooleanStreamCheckpoint> presentCheckpoint = presentCheckpoints.map(checkpoints -> checkpoints.get(groupId));
-            List<Integer> positions = createSliceColumnPositionList(columnWriterOptions.getCompressionKind() != NONE, dataCheckpoint, presentCheckpoint);
-            rowGroupIndexes.add(new RowGroupIndex(positions, columnStatistics));
-        }
-
-        Slice slice = compressedMetadataWriter.writeRowIndexes(rowGroupIndexes.build());
-        Stream stream = new Stream(column, StreamKind.ROW_INDEX, slice.length(), false);
+        boolean compressed = columnWriterOptions.getCompressionKind() != NONE;
+        List<ColumnStatistics> rowGroupColumnStatistics = rowGroups.stream().map(DictionaryRowGroup::getColumnStatistics).collect(toList());
+        List<RowGroupIndex> rowGroupIndexes = buildRowGroupIndexes(compressed, rowGroupColumnStatistics, prependCheckpoints, presentStream, dataStream);
+        Slice slice = compressedMetadataWriter.writeRowIndexes(rowGroupIndexes);
+        Stream stream = new Stream(column, sequence, StreamKind.ROW_INDEX, slice.length(), false);
         return ImmutableList.of(new StreamDataOutput(slice, stream));
-    }
-
-    private static List<Integer> createSliceColumnPositionList(
-            boolean compressed,
-            LongStreamCheckpoint dataCheckpoint,
-            Optional<BooleanStreamCheckpoint> presentCheckpoint)
-    {
-        ImmutableList.Builder<Integer> positionList = ImmutableList.builder();
-        presentCheckpoint.ifPresent(booleanStreamCheckpoint -> positionList.addAll(booleanStreamCheckpoint.toPositionList(compressed)));
-        positionList.addAll(dataCheckpoint.toPositionList(compressed));
-        return positionList.build();
     }
 
     @Override
@@ -500,9 +497,9 @@ public abstract class DictionaryColumnWriter
 
         // actually write data
         ImmutableList.Builder<StreamDataOutput> outputDataStreams = ImmutableList.builder();
-        presentStream.getStreamDataOutput(column).ifPresent(outputDataStreams::add);
-        outputDataStreams.add(dataStream.getStreamDataOutput(column));
-        outputDataStreams.addAll(getDictionaryStreams(column));
+        presentStream.getStreamDataOutput(column, sequence).ifPresent(outputDataStreams::add);
+        outputDataStreams.add(dataStream.getStreamDataOutput(column, sequence));
+        outputDataStreams.addAll(getDictionaryStreams(column, sequence));
         return outputDataStreams.build();
     }
 
@@ -548,18 +545,19 @@ public abstract class DictionaryColumnWriter
     {
         checkState(closed);
         closed = false;
+        presentStream.reset();
         // Dictionary data is held in memory, until the Stripe is flushed. OrcOutputStream maintains the
         // allocated buffer and reuses the buffer for writing data. For Direct writer, OrcOutputStream
         // behavior avoids the reallocation of the buffers by maintaining the pool. For Dictionary writer,
         // OrcOutputStream doubles the memory requirement in most cases (one for dictionary and one for
         // OrcOutputBuffer). To avoid this, the streams are reallocated for every stripe.
-        this.dataStream = createDataOutputStream(columnWriterOptions, dwrfEncryptor, orcEncoding);
-        this.presentStream = new PresentOutputStream(columnWriterOptions, dwrfEncryptor);
+        dataStream = createDataOutputStream(columnWriterOptions, dwrfEncryptor, orcEncoding);
         resetDictionary();
         resetRowGroups();
         rawBytesEstimate = 0;
         totalValueCount = 0;
         totalNonNullValueCount = 0;
+        rawSize = 0;
 
         if (directEncoded) {
             getDirectColumnWriter().reset();

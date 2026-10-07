@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.tests.cassandra;
 
-import io.airlift.units.Duration;
+import com.facebook.airlift.units.Duration;
 import io.prestodb.tempto.ProductTest;
 import io.prestodb.tempto.Requirement;
 import io.prestodb.tempto.RequirementsProvider;
@@ -116,7 +116,7 @@ public class TestInsertIntoCassandraTable
                         -32768,
                         "text value",
                         -128,
-                        Timestamp.valueOf(LocalDateTime.of(9999, 12, 31, 23, 59, 59)),
+                        Timestamp.valueOf(LocalDateTime.of(9999, 12, 31, 23, 59, 59, 0)),
                         null,
                         null,
                         "varchar value",
@@ -140,12 +140,12 @@ public class TestInsertIntoCassandraTable
     }
 
     @Test(groups = CASSANDRA)
-    public void testInsertIntoValuesToCassandraMaterizedView()
+    public void testInsertIntoValuesToCassandraMaterializedView()
             throws Exception
     {
         TableName table = mutableTablesState().get(CASSANDRA_INSERT_TABLE).getTableName();
-        onCasssandra(format("DROP MATERIALIZED VIEW IF EXISTS %s.%s", KEY_SPACE, CASSANDRA_MATERIALIZED_VIEW));
-        onCasssandra(format("CREATE MATERIALIZED VIEW %s.%s AS " +
+        onCassandra(format("DROP MATERIALIZED VIEW IF EXISTS %s.%s", KEY_SPACE, CASSANDRA_MATERIALIZED_VIEW));
+        onCassandra(format("CREATE MATERIALIZED VIEW %s.%s AS " +
                         "SELECT * FROM %s " +
                         "WHERE b IS NOT NULL " +
                         "PRIMARY KEY (a, b) " +
@@ -164,10 +164,10 @@ public class TestInsertIntoCassandraTable
         assertThat(() -> query(format("DROP TABLE %s.%s.%s", CONNECTOR_NAME, KEY_SPACE, CASSANDRA_MATERIALIZED_VIEW)))
                 .failsWithMessage("Dropping materialized views not yet supported");
 
-        onCasssandra(format("DROP MATERIALIZED VIEW IF EXISTS %s.%s", KEY_SPACE, CASSANDRA_MATERIALIZED_VIEW));
+        onCassandra(format("DROP MATERIALIZED VIEW IF EXISTS %s.%s", KEY_SPACE, CASSANDRA_MATERIALIZED_VIEW));
     }
 
-    private void onCasssandra(String query)
+    private void onCassandra(String query)
     {
         CassandraQueryExecutor queryExecutor = new CassandraQueryExecutor(configuration);
         queryExecutor.executeQuery(query);

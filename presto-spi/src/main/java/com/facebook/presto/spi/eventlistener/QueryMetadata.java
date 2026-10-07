@@ -28,6 +28,8 @@ public class QueryMetadata
     private final Optional<String> tracingId;
 
     private final String query;
+    private final String queryHash;
+    private final Optional<String> preparedQuery;
     private final String queryState;
 
     private final URI uri;
@@ -36,32 +38,42 @@ public class QueryMetadata
 
     private final Optional<String> jsonPlan;
 
+    private final Optional<String> graphvizPlan;
     private final Optional<String> payload;
 
     private final List<String> runtimeOptimizedStages;
+    private final Optional<String> updateQueryType;
 
     public QueryMetadata(
             String queryId,
             Optional<String> transactionId,
             String query,
+            String queryHash,
+            Optional<String> preparedQuery,
             String queryState,
             URI uri,
             Optional<String> plan,
             Optional<String> jsonPlan,
+            Optional<String> graphvizPlan,
             Optional<String> payload,
             List<String> runtimeOptimizedStages,
-            Optional<String> tracingId)
+            Optional<String> tracingId,
+            Optional<String> updateQueryType)
     {
         this.queryId = requireNonNull(queryId, "queryId is null");
         this.transactionId = requireNonNull(transactionId, "transactionId is null");
         this.query = requireNonNull(query, "query is null");
+        this.queryHash = requireNonNull(queryHash, "queryHash is null");
+        this.preparedQuery = requireNonNull(preparedQuery, "preparedQuery is null");
         this.queryState = requireNonNull(queryState, "queryState is null");
         this.uri = requireNonNull(uri, "uri is null");
         this.plan = requireNonNull(plan, "plan is null");
         this.jsonPlan = requireNonNull(jsonPlan, "jsonPlan is null");
+        this.graphvizPlan = requireNonNull(graphvizPlan, "graphvizPlan is null");
         this.payload = requireNonNull(payload, "payload is null");
         this.runtimeOptimizedStages = requireNonNull(runtimeOptimizedStages, "runtimeOptimizedStages is null");
         this.tracingId = requireNonNull(tracingId, "tracingId is null");
+        this.updateQueryType = requireNonNull(updateQueryType, "updateQueryType is null");
     }
 
     @JsonProperty
@@ -80,6 +92,18 @@ public class QueryMetadata
     public String getQuery()
     {
         return query;
+    }
+
+    @JsonProperty
+    public String getQueryHash()
+    {
+        return queryHash;
+    }
+
+    @JsonProperty
+    public Optional<String> getPreparedQuery()
+    {
+        return preparedQuery;
     }
 
     @JsonProperty
@@ -107,6 +131,12 @@ public class QueryMetadata
     }
 
     @JsonProperty
+    public Optional<String> getGraphvizPlan()
+    {
+        return graphvizPlan;
+    }
+
+    @JsonProperty
     public Optional<String> getPayload()
     {
         return payload;
@@ -122,5 +152,10 @@ public class QueryMetadata
     public Optional<String> getTracingId()
     {
         return tracingId;
+    }
+
+    public Optional<String> getUpdateQueryType()
+    {
+        return updateQueryType;
     }
 }

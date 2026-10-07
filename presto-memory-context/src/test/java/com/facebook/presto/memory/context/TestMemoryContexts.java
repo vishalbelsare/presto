@@ -13,17 +13,17 @@
  */
 package com.facebook.presto.memory.context;
 
+import com.facebook.airlift.units.DataSize;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
-import io.airlift.units.DataSize;
 import org.testng.annotations.Test;
 
 import java.io.IOException;
 
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static com.facebook.presto.memory.context.AggregatedMemoryContext.newRootAggregatedMemoryContext;
 import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotEquals;
@@ -122,7 +122,7 @@ public class TestMemoryContexts
     }
 
     @Test
-    public void testHieararchicalMemoryContexts()
+    public void testHierarchicalMemoryContexts()
     {
         TestMemoryReservationHandler reservationHandler = new TestMemoryReservationHandler(1_000, 1_000);
         AggregatedMemoryContext parentContext = newRootAggregatedMemoryContext(reservationHandler, GUARANTEED_MEMORY);

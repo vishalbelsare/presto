@@ -6,6 +6,8 @@ The following table lists all of the keywords that are reserved in Presto,
 along with their status in the SQL standard. These reserved keywords must
 be quoted (using double quotes) in order to be used as an identifier.
 
+The use of `$` as a prefix for column names is reserved. This is a convention only and it is not enforced. 
+
 ============================== ============= =============
 Keyword                        SQL:2016      SQL-92
 ============================== ============= =============
@@ -33,7 +35,6 @@ Keyword                        SQL:2016      SQL-92
 ``END``                        reserved      reserved
 ``ESCAPE``                     reserved      reserved
 ``EXCEPT``                     reserved      reserved
-``EXECUTE``                    reserved      reserved
 ``EXISTS``                     reserved      reserved
 ``EXTRACT``                    reserved      reserved
 ``FALSE``                      reserved      reserved

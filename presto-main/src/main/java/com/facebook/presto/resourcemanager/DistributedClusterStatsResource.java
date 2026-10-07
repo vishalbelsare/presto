@@ -13,29 +13,33 @@
  */
 package com.facebook.presto.resourcemanager;
 
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.execution.QueryState;
 import com.facebook.presto.execution.scheduler.NodeSchedulerConfig;
 import com.facebook.presto.metadata.InternalNodeManager;
 import com.facebook.presto.server.BasicQueryInfo;
-import com.facebook.presto.server.ClusterStatsResource;
+import com.facebook.presto.server.ClusterStatsResource.ClusterStats;
+import com.facebook.presto.server.ServerConfig;
 import com.facebook.presto.spi.NodeState;
 import com.facebook.presto.spi.memory.MemoryPoolId;
 import com.facebook.presto.spi.memory.MemoryPoolInfo;
-
-import javax.annotation.security.RolesAllowed;
-import javax.inject.Inject;
-import javax.ws.rs.GET;
-import javax.ws.rs.Path;
-import javax.ws.rs.Produces;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response;
+import jakarta.annotation.security.RolesAllowed;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
 
 import java.util.Map;
+import java.util.function.Supplier;
 
 import static com.facebook.presto.server.security.RoleType.ADMIN;
 import static com.facebook.presto.server.security.RoleType.USER;
+import static com.google.common.base.Suppliers.memoizeWithExpiration;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 @Path("/v1/cluster")
@@ -45,18 +49,33 @@ public class DistributedClusterStatsResource
     private final boolean isIncludeCoordinator;
     private final ResourceManagerClusterStateProvider clusterStateProvider;
     private final InternalNodeManager internalNodeManager;
+    private final Supplier<ClusterStats> clusterStatsSupplier;
+    private final String clusterTag;
 
     @Inject
-    public DistributedClusterStatsResource(NodeSchedulerConfig nodeSchedulerConfig, ResourceManagerClusterStateProvider clusterStateProvider, InternalNodeManager internalNodeManager)
+    public DistributedClusterStatsResource(
+            NodeSchedulerConfig nodeSchedulerConfig,
+            ServerConfig serverConfig,
+            ResourceManagerClusterStateProvider clusterStateProvider,
+            InternalNodeManager internalNodeManager)
     {
         this.isIncludeCoordinator = requireNonNull(nodeSchedulerConfig, "nodeSchedulerConfig is null").isIncludeCoordinator();
         this.clusterStateProvider = requireNonNull(clusterStateProvider, "nodeStateManager is null");
         this.internalNodeManager = requireNonNull(internalNodeManager, "internalNodeManager is null");
+        ServerConfig config = requireNonNull(serverConfig, "serverConfig is null");
+        this.clusterTag = config.getClusterTag();
+        Duration expirationDuration = config.getClusterStatsExpirationDuration();
+        this.clusterStatsSupplier = expirationDuration.getValue() > 0 ? memoizeWithExpiration(this::calculateClusterStats, expirationDuration.toMillis(), MILLISECONDS) : this::calculateClusterStats;
     }
 
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     public Response getClusterStats()
+    {
+        return Response.ok(clusterStatsSupplier.get()).build();
+    }
+
+    private ClusterStats calculateClusterStats()
     {
         long runningQueries = 0;
         long blockedQueries = 0;
@@ -99,8 +118,7 @@ public class DistributedClusterStatsResource
                 runningTasks += query.getQueryStats().getRunningTasks();
             }
         }
-        //TODO compute adjusted queue size on RM
-        return Response.ok(new ClusterStatsResource.ClusterStats(
+        return new ClusterStats(
                 runningQueries,
                 blockedQueries,
                 queuedQueries,
@@ -111,8 +129,8 @@ public class DistributedClusterStatsResource
                 totalInputRows,
                 totalInputBytes,
                 totalCpuTimeSecs,
-                0))
-                .build();
+                clusterStateProvider.getAdjustedQueueSize(),
+                clusterTag);
     }
 
     @GET

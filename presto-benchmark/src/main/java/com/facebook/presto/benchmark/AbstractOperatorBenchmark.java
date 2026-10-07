@@ -15,9 +15,11 @@ package com.facebook.presto.benchmark;
 
 import com.facebook.airlift.stats.CpuTimer;
 import com.facebook.airlift.stats.TestingGcMonitor;
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.Session;
 import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.transaction.TransactionId;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.execution.Lifespan;
 import com.facebook.presto.execution.TaskId;
@@ -39,7 +41,6 @@ import com.facebook.presto.operator.TaskStats;
 import com.facebook.presto.operator.project.InputPageProjection;
 import com.facebook.presto.operator.project.PageProcessor;
 import com.facebook.presto.operator.project.PageProjectionWithOutputs;
-import com.facebook.presto.security.AllowAllAccessControl;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorPageSource;
 import com.facebook.presto.spi.QueryId;
@@ -49,16 +50,14 @@ import com.facebook.presto.spi.memory.MemoryPoolId;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
+import com.facebook.presto.spi.security.AllowAllAccessControl;
 import com.facebook.presto.spiller.SpillSpaceTracker;
 import com.facebook.presto.split.SplitSource;
 import com.facebook.presto.sql.gen.PageFunctionCompiler;
-import com.facebook.presto.sql.planner.optimizations.HashGenerationOptimizer;
 import com.facebook.presto.testing.LocalQueryRunner;
-import com.facebook.presto.transaction.TransactionId;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
-import io.airlift.units.DataSize;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -69,20 +68,21 @@ import java.util.Optional;
 import static com.facebook.airlift.concurrent.MoreFutures.getFutureValue;
 import static com.facebook.airlift.json.JsonCodec.listJsonCodec;
 import static com.facebook.airlift.stats.CpuTimer.CpuDuration;
+import static com.facebook.airlift.units.DataSize.Unit.BYTE;
+import static com.facebook.airlift.units.DataSize.Unit.GIGABYTE;
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static com.facebook.presto.SystemSessionProperties.getFilterAndProjectMinOutputPageRowCount;
 import static com.facebook.presto.SystemSessionProperties.getFilterAndProjectMinOutputPageSize;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.spi.connector.ConnectorSplitManager.SplitSchedulingStrategy.UNGROUPED_SCHEDULING;
 import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
+import static com.facebook.presto.sql.planner.PlannerUtils.getHashExpression;
 import static com.facebook.presto.sql.relational.VariableToChannelTranslator.translate;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.airlift.units.DataSize.Unit.BYTE;
-import static io.airlift.units.DataSize.Unit.GIGABYTE;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
@@ -138,7 +138,7 @@ public abstract class AbstractOperatorBenchmark
         // look up the table
         Metadata metadata = localQueryRunner.getMetadata();
         QualifiedObjectName qualifiedTableName = new QualifiedObjectName(session.getCatalog().get(), session.getSchema().get(), tableName);
-        TableHandle tableHandle = metadata.getTableHandle(session, qualifiedTableName)
+        TableHandle tableHandle = metadata.getMetadataResolver(session).getTableHandle(qualifiedTableName)
                 .orElseThrow(() -> new IllegalArgumentException(format("Table %s does not exist", qualifiedTableName)));
 
         Map<String, ColumnHandle> allColumnHandles = metadata.getColumnHandles(session, tableHandle);
@@ -156,7 +156,7 @@ public abstract class AbstractOperatorBenchmark
         // look up the table
         Metadata metadata = localQueryRunner.getMetadata();
         QualifiedObjectName qualifiedTableName = new QualifiedObjectName(session.getCatalog().get(), session.getSchema().get(), tableName);
-        TableHandle tableHandle = metadata.getTableHandle(session, qualifiedTableName).orElse(null);
+        TableHandle tableHandle = metadata.getMetadataResolver(session).getTableHandle(qualifiedTableName).orElse(null);
         checkArgument(tableHandle != null, "Table %s does not exist", qualifiedTableName);
 
         // lookup the columns
@@ -177,7 +177,7 @@ public abstract class AbstractOperatorBenchmark
             public Operator createOperator(DriverContext driverContext)
             {
                 OperatorContext operatorContext = driverContext.addOperatorContext(operatorId, planNodeId, "BenchmarkSource");
-                ConnectorPageSource pageSource = localQueryRunner.getPageSourceManager().createPageSource(session, split, tableHandle.withDynamicFilter(TupleDomain::all), columnHandles);
+                ConnectorPageSource pageSource = localQueryRunner.getPageSourceManager().createPageSource(session, split, tableHandle.withDynamicFilter(TupleDomain::all), columnHandles, operatorContext.getRuntimeStats());
                 return new PageSourceOperator(pageSource, operatorContext);
             }
 
@@ -222,7 +222,7 @@ public abstract class AbstractOperatorBenchmark
             projections.add(new PageProjectionWithOutputs(new InputPageProjection(channel), new int[] {channel}));
         }
 
-        Optional<RowExpression> hashExpression = HashGenerationOptimizer.getHashExpression(localQueryRunner.getMetadata().getFunctionAndTypeManager(), variables.build());
+        Optional<RowExpression> hashExpression = getHashExpression(localQueryRunner.getMetadata().getFunctionAndTypeManager(), variables.build());
         verify(hashExpression.isPresent());
         RowExpression translatedHashExpression = translate(hashExpression.get(), variableToInputMapping.build());
 
@@ -287,7 +287,7 @@ public abstract class AbstractOperatorBenchmark
                 spillSpaceTracker,
                 listJsonCodec(TaskMemoryReservationSummary.class))
                 .addTaskContext(
-                        new TaskStateMachine(new TaskId("query", 0, 0, 0), localQueryRunner.getExecutor()),
+                        new TaskStateMachine(new TaskId("query", 0, 0, 0, 0), localQueryRunner.getExecutor()),
                         session,
                         Optional.empty(),
                         false,

@@ -19,6 +19,7 @@ import com.facebook.presto.tests.AbstractTestDistributedQueries;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.intellij.lang.annotations.Language;
+import org.testng.annotations.Optional;
 import org.testng.annotations.Test;
 
 import static com.facebook.presto.accumulo.AccumuloQueryRunner.createAccumuloQueryRunner;
@@ -35,6 +36,7 @@ import static org.testng.Assert.assertTrue;
  * This is the same for any test cases that were creating tables with duplicate rows,
  * so some test cases are overridden from the base class and slightly modified to add an additional UUID column.
  */
+@Test(singleThreaded = true)
 public class TestAccumuloDistributedQueries
         extends AbstractTestDistributedQueries
 {
@@ -100,10 +102,29 @@ public class TestAccumuloDistributedQueries
                 "SELECT 0");
     }
 
+    @Test
+    @Override
+    public void testSubfieldAccessControl()
+    {
+        // disabled as accumulo doesn't support complex types
+    }
+
     @Override
     public void testDelete()
     {
         // Deletes are not supported by the connector
+    }
+
+    @Override
+    public void testUpdate()
+    {
+        // Updates are not supported by the connector
+    }
+
+    @Override
+    public void testNonAutoCommitTransactionWithRollback()
+    {
+        // This connector do not support rollback for insert actions
     }
 
     @Override
@@ -175,6 +196,12 @@ public class TestAccumuloDistributedQueries
     {
         // Override because of extra UUID column in lineitem table, cannot SELECT *
         // Cannot munge test to pass due to aliased data set 'x' containing duplicate orderkey and comment columns
+    }
+
+    @Test
+    public void testShardedJoinOptimization()
+    {
+        // Override because of extra UUID column in lineitem table, cannot SELECT *
     }
 
     public void testProbeFilteredLeftJoin()
@@ -304,7 +331,7 @@ public class TestAccumuloDistributedQueries
     }
 
     @Override
-    public void testShowColumns()
+    public void testShowColumns(@Optional("PARQUET") String storageFormat)
     {
         // Override base class because table descriptions for Accumulo connector include comments
         MaterializedResult actual = computeActual("SHOW COLUMNS FROM orders");
@@ -376,5 +403,23 @@ public class TestAccumuloDistributedQueries
     public void testDescribeOutputNamedAndUnnamed()
     {
         // this connector uses a non-canonical type for varchar columns in tpch
+    }
+
+    @Override
+    @Test(enabled = false)
+    public void testStringFilters()
+    {
+        // Type not supported for Accumulo: CHAR(10).
+        // VARCHAR(10) fails and this test is disabled for now. See https://github.com/prestodb/presto/issues/19288
+        assertUpdate("CREATE TABLE test_varcharn_filter (shipmode VARCHAR(10))");
+        assertTrue(getQueryRunner().tableExists(getSession(), "test_varcharn_filter"));
+        assertTableColumnNames("test_varcharn_filter", "shipmode");
+        assertUpdate("INSERT INTO test_varcharn_filter SELECT shipmode FROM lineitem", 60175);
+
+        assertQuery("SELECT count(*) FROM test_varcharn_filter WHERE shipmode = 'AIR'", "VALUES (8491)");
+        assertQuery("SELECT count(*) FROM test_varcharn_filter WHERE shipmode = 'AIR    '", "VALUES (0)");
+        assertQuery("SELECT count(*) FROM test_varcharn_filter WHERE shipmode = 'AIR       '", "VALUES (0)");
+        assertQuery("SELECT count(*) FROM test_varcharn_filter WHERE shipmode = 'AIR            '", "VALUES (0)");
+        assertQuery("SELECT count(*) FROM test_varcharn_filter WHERE shipmode = 'NONEXIST'", "VALUES (0)");
     }
 }

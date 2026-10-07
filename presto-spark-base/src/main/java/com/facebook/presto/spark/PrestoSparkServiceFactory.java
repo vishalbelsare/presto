@@ -16,16 +16,24 @@ package com.facebook.presto.spark;
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.spark.classloader_interface.IPrestoSparkService;
 import com.facebook.presto.spark.classloader_interface.IPrestoSparkServiceFactory;
+import com.facebook.presto.spark.classloader_interface.PrestoSparkBootstrapTimer;
 import com.facebook.presto.spark.classloader_interface.PrestoSparkConfiguration;
 import com.facebook.presto.spark.classloader_interface.SparkProcessType;
+import com.facebook.presto.spark.execution.nativeprocess.NativeExecutionModule;
+import com.facebook.presto.spark.execution.property.NativeExecutionConfigModule;
 import com.facebook.presto.sql.parser.SqlParserOptions;
+import com.fasterxml.jackson.core.StreamReadConstraints;
+import com.fasterxml.jackson.core.StreamWriteConstraints;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.inject.Injector;
 import com.google.inject.Module;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
+import static com.facebook.presto.spark.classloader_interface.PrestoSparkConfiguration.METADATA_STORAGE_TYPE_LOCAL;
 import static com.google.common.base.Preconditions.checkArgument;
 
 public class PrestoSparkServiceFactory
@@ -34,8 +42,10 @@ public class PrestoSparkServiceFactory
     private final Logger log = Logger.get(PrestoSparkServiceFactory.class);
 
     @Override
-    public IPrestoSparkService createService(SparkProcessType sparkProcessType, PrestoSparkConfiguration configuration)
+    public IPrestoSparkService createService(SparkProcessType sparkProcessType, PrestoSparkConfiguration configuration, PrestoSparkBootstrapTimer bootstrapTimer)
     {
+        overrideJacksonStreamConstraints();
+        bootstrapTimer.beginPrestoSparkServiceCreation();
         ImmutableMap.Builder<String, String> properties = ImmutableMap.builder();
         properties.putAll(configuration.getConfigProperties());
         properties.put("plugin.dir", configuration.getPluginsDirectoryPath());
@@ -49,19 +59,44 @@ public class PrestoSparkServiceFactory
                 configuration.getSessionPropertyConfigurationProperties(),
                 configuration.getFunctionNamespaceProperties(),
                 configuration.getTempStorageProperties(),
+                configuration.getExpressionManagerProperties(),
                 getSqlParserOptions(),
                 getAdditionalModules(configuration));
 
-        Injector injector = prestoSparkInjectorFactory.create();
+        Injector injector = prestoSparkInjectorFactory.create(bootstrapTimer);
         PrestoSparkService prestoSparkService = injector.getInstance(PrestoSparkService.class);
+        bootstrapTimer.endPrestoSparkServiceCreation();
         log.info("Initialized");
         return prestoSparkService;
     }
 
+    // Presto on Spark bootstraps here instead of PrestoServer.run(); relax Jackson's default read
+    // name-length and write nesting-depth limits so large plan fragments (de)serialize. Mutates
+    // JVM-global Jackson defaults, so it must run before any JsonFactory is constructed.
+    static void overrideJacksonStreamConstraints()
+    {
+        StreamReadConstraints.overrideDefaultStreamReadConstraints(
+                StreamReadConstraints.builder().maxNameLength(Integer.MAX_VALUE).build());
+        StreamWriteConstraints.overrideDefaultStreamWriteConstraints(
+                StreamWriteConstraints.builder().maxNestingDepth(Integer.MAX_VALUE).build());
+    }
+
     protected List<Module> getAdditionalModules(PrestoSparkConfiguration configuration)
     {
-        checkArgument("LOCAL".equals(configuration.getMetadataStorageType().toUpperCase()), "only local metadata storage is supported");
-        return ImmutableList.of(new PrestoSparkLocalMetadataStorageModule());
+        checkArgument(
+                METADATA_STORAGE_TYPE_LOCAL.equalsIgnoreCase(configuration.getMetadataStorageType()),
+                "only local metadata storage is supported");
+
+        Map<String, String> nativeWorkerConfigs = new HashMap<>(
+                configuration.getNativeWorkerConfigProperties().orElse(ImmutableMap.of()));
+        nativeWorkerConfigs.put("node.environment", "spark");
+        return ImmutableList.of(
+                new PrestoSparkLocalMetadataStorageModule(),
+                // TODO: Need to let NativeExecutionModule addition be controlled by configuration
+                //  as well.
+                new NativeExecutionModule(),
+                new NativeExecutionConfigModule(nativeWorkerConfigs,
+                        configuration.getNativeWorkerCatalogProperties().orElse(ImmutableMap.of())));
     }
 
     protected SqlParserOptions getSqlParserOptions()

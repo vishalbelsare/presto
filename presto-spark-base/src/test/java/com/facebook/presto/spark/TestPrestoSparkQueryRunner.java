@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.spark;
 
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.Session;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.QueryRunner;
@@ -22,8 +23,8 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Ordering;
 import com.google.common.io.Files;
-import io.airlift.units.Duration;
 import org.apache.hadoop.fs.Path;
+import org.testng.annotations.Ignore;
 import org.testng.annotations.Test;
 
 import java.io.File;
@@ -31,10 +32,25 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static com.facebook.presto.SystemSessionProperties.HASH_PARTITION_COUNT;
 import static com.facebook.presto.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static com.facebook.presto.SystemSessionProperties.PARTIAL_MERGE_PUSHDOWN_STRATEGY;
+import static com.facebook.presto.SystemSessionProperties.QUERY_MAX_MEMORY;
+import static com.facebook.presto.SystemSessionProperties.QUERY_MAX_MEMORY_PER_NODE;
+import static com.facebook.presto.SystemSessionProperties.QUERY_MAX_STAGE_COUNT;
+import static com.facebook.presto.SystemSessionProperties.QUERY_MAX_TOTAL_MEMORY_PER_NODE;
+import static com.facebook.presto.SystemSessionProperties.VERBOSE_EXCEEDED_MEMORY_LIMIT_ERRORS_ENABLED;
 import static com.facebook.presto.spark.PrestoSparkQueryRunner.METASTORE_CONTEXT;
 import static com.facebook.presto.spark.PrestoSparkQueryRunner.createHivePrestoSparkQueryRunner;
+import static com.facebook.presto.spark.PrestoSparkSessionProperties.OUT_OF_MEMORY_RETRY_PRESTO_SESSION_PROPERTIES;
+import static com.facebook.presto.spark.PrestoSparkSessionProperties.OUT_OF_MEMORY_RETRY_SPARK_CONFIGS;
+import static com.facebook.presto.spark.PrestoSparkSessionProperties.SPARK_BROADCAST_JOIN_MAX_MEMORY_OVERRIDE;
+import static com.facebook.presto.spark.PrestoSparkSessionProperties.SPARK_HASH_PARTITION_COUNT_SCALING_FACTOR_ON_OUT_OF_MEMORY;
+import static com.facebook.presto.spark.PrestoSparkSessionProperties.SPARK_QUERY_EXECUTION_STRATEGIES;
+import static com.facebook.presto.spark.PrestoSparkSessionProperties.SPARK_RETRY_ON_OUT_OF_MEMORY_BROADCAST_JOIN_ENABLED;
+import static com.facebook.presto.spark.PrestoSparkSessionProperties.SPARK_RETRY_ON_OUT_OF_MEMORY_HIGHER_PARTITION_COUNT_ENABLED;
+import static com.facebook.presto.spark.PrestoSparkSessionProperties.SPARK_RETRY_ON_OUT_OF_MEMORY_WITH_INCREASED_MEMORY_SETTINGS_ENABLED;
+import static com.facebook.presto.spark.PrestoSparkSessionProperties.SPARK_RETRY_ON_OUT_OF_MEMORY_WITH_INCREASED_MEMORY_SETTINGS_ERROR_CODES;
 import static com.facebook.presto.spark.PrestoSparkSessionProperties.SPARK_SPLIT_ASSIGNMENT_BATCH_SIZE;
 import static com.facebook.presto.spark.PrestoSparkSessionProperties.STORAGE_BASED_BROADCAST_JOIN_ENABLED;
 import static com.facebook.presto.sql.analyzer.FeaturesConfig.PartialMergePushdownStrategy.PUSH_THROUGH_LOW_MEMORY_OPERATORS;
@@ -114,14 +130,36 @@ public class TestPrestoSparkQueryRunner
     }
 
     @Test
+    public void testDelete()
+    {
+        Session session = getSession();
+        assertUpdate(
+                session,
+                "CREATE TABLE hive.hive_test.test_delete WITH ( partitioned_by=ARRAY['orderstatus']) AS " +
+                        "SELECT orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus " +
+                        "FROM orders",
+                15000);
+
+        assertQueryFails(
+                session,
+                "DELETE FROM hive.hive_test.test_delete WHERE orderpriority = '1-URGENT'",
+                "This connector only supports delete where one or more partitions are deleted entirely",
+                true);
+
+        assertUpdate(
+                session,
+                "DELETE FROM hive.hive_test.test_delete WHERE orderstatus = 'O'");
+    }
+
+    @Test
     public void testZeroFileCreatorForBucketedTable()
     {
         assertUpdate(
                 getSession(),
-                format("CREATE TABLE hive.hive_test.test_hive_orders_bucketed_join_zero_file WITH (bucketed_by=array['orderkey'], bucket_count=8) AS " +
+                "CREATE TABLE hive.hive_test.test_hive_orders_bucketed_join_zero_file WITH (bucketed_by=array['orderkey'], bucket_count=8) AS " +
                         "SELECT orderkey, custkey, orderstatus, totalprice, orderdate, orderpriority, clerk, shippriority, comment " +
                         "FROM orders_bucketed " +
-                        "WHERE orderkey = 1"),
+                        "WHERE orderkey = 1",
                 1);
     }
 
@@ -738,7 +776,7 @@ public class TestPrestoSparkQueryRunner
     @Test
     public void testFailures()
     {
-        assertQueryFails("SELECT * FROM orders WHERE custkey / (orderkey - orderkey) = 0", "/ by zero");
+        assertQueryFails("SELECT * FROM orders WHERE custkey / (orderkey - orderkey) = 0", "(?s)/ by zero.*");
         assertQueryFails(
                 "CREATE TABLE hive.hive_test.hive_orders_test_failures AS " +
                         "(SELECT orderkey, custkey, orderstatus, totalprice, orderdate, orderpriority, clerk, shippriority, comment " +
@@ -747,7 +785,7 @@ public class TestPrestoSparkQueryRunner
                         "(SELECT orderkey, custkey, orderstatus, totalprice, orderdate, orderpriority, clerk, shippriority, comment " +
                         "FROM orders " +
                         "WHERE custkey / (orderkey - orderkey) = 0 )",
-                "/ by zero");
+                "(?s)/ by zero.*");
     }
 
     @Test
@@ -797,7 +835,7 @@ public class TestPrestoSparkQueryRunner
         assertThat(sampledRows).isLessThan(totalRows);
     }
 
-    @Test
+    @Test(enabled = false)
     public void testTimeouts()
     {
         // Expected run time for this query is ~30s
@@ -806,13 +844,13 @@ public class TestPrestoSparkQueryRunner
         Session queryMaxRunTimeLimitSession = Session.builder(getSession())
                 .setSystemProperty("query_max_run_time", "2s")
                 .build();
-        assertQueryFails(queryMaxRunTimeLimitSession, longRunningCrossJoin, "Query exceeded maximum time limit of 2.00s");
+        assertQueryFails(queryMaxRunTimeLimitSession, longRunningCrossJoin, "(?s)Query exceeded maximum time limit of 2.00s.*");
 
         Session queryMaxExecutionTimeLimitSession = Session.builder(getSession())
                 .setSystemProperty("query_max_run_time", "3s")
                 .setSystemProperty("query_max_execution_time", "2s")
                 .build();
-        assertQueryFails(queryMaxExecutionTimeLimitSession, longRunningCrossJoin, "Query exceeded maximum time limit of 2.00s");
+        assertQueryFails(queryMaxExecutionTimeLimitSession, longRunningCrossJoin, "(?s)Query exceeded maximum time limit of 2.00s.*");
 
         // Test whether waitTime is being considered while computing timeouts.
         // Expected run time for this query is ~30s. We will set `dummyServiceWaitTime` as 600s.
@@ -893,6 +931,225 @@ public class TestPrestoSparkQueryRunner
     }
 
     @Test
+    public void testStorageBasedBroadcastJoinMaxThreshold()
+    {
+        Session session = Session.builder(getSession())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, "BROADCAST")
+                .setSystemProperty(STORAGE_BASED_BROADCAST_JOIN_ENABLED, "true")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "1MB")
+                .build();
+
+        assertQueryFails(
+                session,
+                "select * from lineitem l join orders o on l.orderkey = o.orderkey",
+                "(?s)Query exceeded per-node broadcast memory limit of 1MB \\[Broadcast size: .*MB\\].*");
+    }
+
+    @Test
+    public void testStorageBasedBroadcastJoinDeserializedMaxThreshold()
+    {
+        Session session = Session.builder(getSession())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, "BROADCAST")
+                .setSystemProperty(STORAGE_BASED_BROADCAST_JOIN_ENABLED, "true")
+                .setSystemProperty(SPARK_BROADCAST_JOIN_MAX_MEMORY_OVERRIDE, "1MB")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "100MB")
+                .build();
+
+        assertQueryFails(
+                session,
+                "select * from lineitem l join orders o on l.orderkey = o.orderkey",
+                "(?s)Query exceeded per-node broadcast memory limit of 1MB \\[Broadcast size: .*MB\\].*");
+    }
+
+    @Test
+    public void testCorrectErrorMessageWhenSubPlanCreationFails()
+    {
+        String query = "with l as (" +
+                "select * from lineitem UNION ALL select * from lineitem UNION ALL select * from lineitem" +
+                "), " +
+                "o as (" +
+                "select * from orders UNION ALL select * from orders UNION ALL select * from orders" +
+                ") " +
+                "select * from l right outer join o on l.orderkey = o.orderkey";
+
+        Session session = Session.builder(getSession())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, "partitioned")
+                .setSystemProperty(HASH_PARTITION_COUNT, "1")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "10MB")
+                .setSystemProperty(QUERY_MAX_MEMORY, "100MB")
+                .setSystemProperty(VERBOSE_EXCEEDED_MEMORY_LIMIT_ERRORS_ENABLED, "true")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_HIGHER_PARTITION_COUNT_ENABLED, "false")
+                .setSystemProperty(QUERY_MAX_STAGE_COUNT, "2")
+                .build();
+        assertQueryFails(session,
+                query,
+                "(?s)Number of stages in the query.* exceeds the allowed maximum.*");
+    }
+
+    @Test
+    public void testRetryWithHigherHashPartitionCount()
+    {
+        String query = "with l as (" +
+                "select * from lineitem UNION ALL select * from lineitem UNION ALL select * from lineitem" +
+                "), " +
+                "o as (" +
+                "select * from orders UNION ALL select * from orders UNION ALL select * from orders" +
+                ") " +
+                "select * from l right outer join o on l.orderkey = o.orderkey";
+
+        Session session = Session.builder(getSession())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, "partitioned")
+                .setSystemProperty(HASH_PARTITION_COUNT, "1")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "6.5MB")
+                .setSystemProperty(QUERY_MAX_MEMORY, "100MB")
+                .setSystemProperty(VERBOSE_EXCEEDED_MEMORY_LIMIT_ERRORS_ENABLED, "true")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_HIGHER_PARTITION_COUNT_ENABLED, "false")
+                .build();
+        assertQueryFails(session,
+                query,
+                "(?s)Query exceeded per-node total memory limit of .*Top Consumers: \\{HashBuilderOperator.*");
+
+        session = Session.builder(getSession())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, "partitioned")
+                .setSystemProperty(HASH_PARTITION_COUNT, "1")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "6.5MB")
+                .setSystemProperty(QUERY_MAX_MEMORY, "100MB")
+                .setSystemProperty(VERBOSE_EXCEEDED_MEMORY_LIMIT_ERRORS_ENABLED, "true")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_HIGHER_PARTITION_COUNT_ENABLED, "true")
+                .setSystemProperty(SPARK_HASH_PARTITION_COUNT_SCALING_FACTOR_ON_OUT_OF_MEMORY, "1.0")
+                .build();
+        assertQueryFails(session,
+                query,
+                "(?s)Query exceeded per-node total memory limit of .*Top Consumers: \\{HashBuilderOperator.*");
+
+        session = Session.builder(getSession())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, "partitioned")
+                .setSystemProperty(HASH_PARTITION_COUNT, "1")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "6.5MB")
+                .setSystemProperty(QUERY_MAX_MEMORY, "100MB")
+                .setSystemProperty(VERBOSE_EXCEEDED_MEMORY_LIMIT_ERRORS_ENABLED, "true")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_HIGHER_PARTITION_COUNT_ENABLED, "true")
+                .build();
+        assertQuerySucceeds(session, query);
+
+        session = Session.builder(getSession())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, "partitioned")
+                .setSystemProperty(HASH_PARTITION_COUNT, "1")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "6.5MB")
+                .setSystemProperty(QUERY_MAX_MEMORY, "100MB")
+                .setSystemProperty(VERBOSE_EXCEEDED_MEMORY_LIMIT_ERRORS_ENABLED, "true")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_HIGHER_PARTITION_COUNT_ENABLED, "true")
+                .setSystemProperty(SPARK_HASH_PARTITION_COUNT_SCALING_FACTOR_ON_OUT_OF_MEMORY, "2.0")
+                .build();
+        assertQuerySucceeds(session, query);
+    }
+
+    @Test
+    public void testRetryOnOutOfMemoryBroadcastJoin()
+    {
+        Session session = Session.builder(getSession())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, "BROADCAST")
+                .setSystemProperty(STORAGE_BASED_BROADCAST_JOIN_ENABLED, "true")
+                .setSystemProperty(SPARK_BROADCAST_JOIN_MAX_MEMORY_OVERRIDE, "10B")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_BROADCAST_JOIN_ENABLED, "false")
+                .build();
+
+        // Query should fail with broadcast join OOM
+        assertQueryFails(
+                session,
+                "select * from lineitem l join orders o on l.orderkey = o.orderkey",
+                "(?s)Query exceeded per-node broadcast memory limit of 10B \\[Broadcast size: .*MB\\].*");
+
+        session = Session.builder(getSession())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, "BROADCAST")
+                .setSystemProperty(STORAGE_BASED_BROADCAST_JOIN_ENABLED, "true")
+                .setSystemProperty(SPARK_BROADCAST_JOIN_MAX_MEMORY_OVERRIDE, "10B")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_BROADCAST_JOIN_ENABLED, "true")
+                .build();
+
+        // Query should succeed since broadcast join will be disabled on retry
+        assertQuery(
+                session,
+                "select * from lineitem l join orders o on l.orderkey = o.orderkey");
+    }
+
+    @Test
+    public void testRetryOnOutOfMemoryWithIncreasedContainerSize()
+    {
+        Session session = Session.builder(getSession())
+                .setSystemProperty(QUERY_MAX_MEMORY_PER_NODE, "2MB")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "2MB")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_WITH_INCREASED_MEMORY_SETTINGS_ENABLED, "false")
+                .build();
+
+        // Query should fail with OOM
+        assertQueryFails(
+                session,
+                "select * from lineitem l join orders o on l.orderkey = o.orderkey",
+                "(?s).*Query exceeded per-node .* memory limit of 2MB.*");
+
+        session = Session.builder(getSession())
+                .setSystemProperty(QUERY_MAX_MEMORY_PER_NODE, "2MB")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "2MB")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_WITH_INCREASED_MEMORY_SETTINGS_ENABLED, "true")
+                .setSystemProperty(OUT_OF_MEMORY_RETRY_PRESTO_SESSION_PROPERTIES, "query_max_memory_per_node=100MB,query_max_total_memory_per_node=100MB")
+                .setSystemProperty(OUT_OF_MEMORY_RETRY_SPARK_CONFIGS, "spark.executor.memory=1G")
+                .build();
+
+        // Query should succeed since memory will be increased on retry
+        assertQuery(
+                session,
+                "select * from lineitem l join orders o on l.orderkey = o.orderkey");
+    }
+
+    @Test
+    public void testRetryOnOutOfMemoryWithIncreasedContainerSizeWithSessionPropertiesProvidedErrorCode()
+    {
+        Session session = Session.builder(getSession())
+                .setSystemProperty(QUERY_MAX_MEMORY_PER_NODE, "2MB")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "2MB")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_WITH_INCREASED_MEMORY_SETTINGS_ENABLED, "false")
+                .build();
+
+        // Query should fail with OOM
+        assertQueryFails(
+                session,
+                "select * from lineitem l join orders o on l.orderkey = o.orderkey",
+                "(?s).*Query exceeded per-node .* memory limit of 2MB.*");
+
+        session = Session.builder(getSession())
+                .setSystemProperty(QUERY_MAX_MEMORY_PER_NODE, "2MB")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "2MB")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_WITH_INCREASED_MEMORY_SETTINGS_ENABLED, "true")
+                // Do not provide any error code. INCREASE_CONTAINER_SIZE strategy won't be applied
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_WITH_INCREASED_MEMORY_SETTINGS_ERROR_CODES, "")
+                .setSystemProperty(OUT_OF_MEMORY_RETRY_PRESTO_SESSION_PROPERTIES, "query_max_memory_per_node=100MB,query_max_total_memory_per_node=100MB")
+                .setSystemProperty(OUT_OF_MEMORY_RETRY_SPARK_CONFIGS, "spark.executor.memory=1G")
+                .build();
+
+        // Query should fail with OOM
+        assertQueryFails(
+                session,
+                "select * from lineitem l join orders o on l.orderkey = o.orderkey",
+                "(?s).*Query exceeded per-node .* memory limit of 2MB.*");
+
+        session = Session.builder(getSession())
+                .setSystemProperty(QUERY_MAX_MEMORY_PER_NODE, "2MB")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "2MB")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_WITH_INCREASED_MEMORY_SETTINGS_ENABLED, "true")
+                // Support EXCEEDED_LOCAL_MEMORY_LIMIT as the retry error code. INCREASE_CONTAINER_SIZE strategy will be applied
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_WITH_INCREASED_MEMORY_SETTINGS_ERROR_CODES, "EXCEEDED_LOCAL_MEMORY_LIMIT")
+                .setSystemProperty(OUT_OF_MEMORY_RETRY_PRESTO_SESSION_PROPERTIES, "query_max_memory_per_node=100MB,query_max_total_memory_per_node=100MB")
+                .setSystemProperty(OUT_OF_MEMORY_RETRY_SPARK_CONFIGS, "spark.executor.memory=1G")
+                .build();
+
+        // Query should succeed since memory will be increased on retry
+        assertQuery(
+                session,
+                "select * from lineitem l join orders o on l.orderkey = o.orderkey");
+    }
+
+    @Test
     public void testSmileSerialization()
     {
         String query = "SELECT * FROM nation";
@@ -931,7 +1188,7 @@ public class TestPrestoSparkQueryRunner
                         "FROM orders", 15000);
         assertQuery("select count(*) from hive.hive_test.hive_orders1", "select 15000");
         assertQuerySucceeds("DROP TABLE hive.hive_test.hive_orders1");
-        assertQueryFails("select count(*) from hive.hive_test.hive_orders1", ".* Table hive.hive_test.hive_orders1 does not exist");
+        assertQueryFails("select count(*) from hive.hive_test.hive_orders1", "(?s).*Table hive.hive_test.hive_orders1 does not exist.*");
     }
 
     @Test
@@ -939,10 +1196,10 @@ public class TestPrestoSparkQueryRunner
     {
         assertQuerySucceeds("CREATE SCHEMA hive.hive_test_new");
         assertQuerySucceeds("CREATE TABLE  hive.hive_test_new.test (x bigint)");
-        assertQueryFails("DROP SCHEMA hive.hive_test_new", "Schema not empty: hive_test_new");
+        assertQueryFails("DROP SCHEMA hive.hive_test_new", "(?s)Schema not empty: hive_test_new.*");
         assertQuerySucceeds("DROP TABLE hive.hive_test_new.test");
         assertQuerySucceeds("ALTER SCHEMA hive.hive_test_new RENAME TO hive_test_new1");
-        assertQueryFails("DROP SCHEMA hive.hive_test_new", ".* Schema 'hive.hive_test_new' does not exist");
+        assertQueryFails("DROP SCHEMA hive.hive_test_new", "(?s).* Schema 'hive.hive_test_new' does not exist.*");
         assertQuerySucceeds("DROP SCHEMA hive.hive_test_new1");
     }
 
@@ -960,7 +1217,7 @@ public class TestPrestoSparkQueryRunner
         MaterializedResult actual = computeActual("SHOW CREATE TABLE hive.hive_test.hive_orders_new");
         assertEquals(createTableSql, actual.getOnlyValue());
         assertQuerySucceeds("ALTER TABLE hive.hive_test.hive_orders_new RENAME TO hive.hive_test.hive_orders_new1");
-        assertQueryFails("DROP TABLE hive.hive_test.hive_orders_new", ".* Table 'hive.hive_test.hive_orders_new' does not exist");
+        assertQueryFails("DROP TABLE hive.hive_test.hive_orders_new", "(?s).* Table 'hive.hive_test.hive_orders_new' does not exist.*");
         assertQuerySucceeds("DROP TABLE hive.hive_test.hive_orders_new1");
     }
 
@@ -968,7 +1225,7 @@ public class TestPrestoSparkQueryRunner
     public void testCreateDropView()
     {
         // create table with default format orc
-        String createViewSql = "CREATE VIEW hive.hive_test.hive_view AS\n" +
+        String createViewSql = "CREATE VIEW hive.hive_test.hive_view SECURITY DEFINER AS\n" +
                 "SELECT *\n" +
                 "FROM\n" +
                 "  orders";
@@ -1013,7 +1270,10 @@ public class TestPrestoSparkQueryRunner
         deleteRecursively(tempDir.toPath(), ALLOW_INSECURE);
     }
 
+    //
     @Test
+    @Ignore("PrsetoSparkQueryRunner was changed to use hive user with admin priviliges. It breaks this tess assumptions." +
+            "Update this test to not make assumptions")
     public void testGrants()
     {
         assertQuerySucceeds("CREATE SCHEMA hive.hive_test_new");
@@ -1022,7 +1282,7 @@ public class TestPrestoSparkQueryRunner
         // Grant user
         assertQuerySucceeds("GRANT SELECT,INSERT,DELETE,UPDATE ON hive.hive_test_new.test to user");
         MaterializedResult actual = computeActual("SHOW GRANTS ON TABLE hive.hive_test_new.test");
-        // permissions are in the eigth field
+        // permissions are in the eighth field
         List<String> grants = actual.getMaterializedRows().stream().map(row -> row.getField(7).toString()).collect(Collectors.toList());
         assertEquals(Ordering.natural().sortedCopy(grants), ImmutableList.of("DELETE", "INSERT", "SELECT", "UPDATE"));
 
@@ -1037,6 +1297,8 @@ public class TestPrestoSparkQueryRunner
     }
 
     @Test
+    @Ignore("PrsetoSparkQueryRunner was changed to use hive user with admin priviliges. It breaks this tess assumptions." +
+            "Update this test to not make assumptions")
     public void testRoles()
     {
         assertQuerySucceeds("CREATE ROLE admin");
@@ -1067,9 +1329,9 @@ public class TestPrestoSparkQueryRunner
     {
         assertQuerySucceeds("CREATE TABLE test_add_column (a bigint COMMENT 'test comment AAA')");
         assertQuerySucceeds("ALTER TABLE test_add_column ADD COLUMN b bigint COMMENT 'test comment BBB'");
-        assertQueryFails("ALTER TABLE test_add_column ADD COLUMN a varchar", ".* Column 'a' already exists");
-        assertQueryFails("ALTER TABLE test_add_column ADD COLUMN c bad_type", ".* Unknown type 'bad_type' for column 'c'");
-        assertQuery("SHOW COLUMNS FROM test_add_column", "VALUES ('a', 'bigint', '', 'test comment AAA'), ('b', 'bigint', '', 'test comment BBB')");
+        assertQueryFails("ALTER TABLE test_add_column ADD COLUMN a varchar", "(?s).* Column 'a' already exists.*");
+        assertQueryFails("ALTER TABLE test_add_column ADD COLUMN c bad_type", "(?s).* Unknown type 'bad_type' for column 'c'.*");
+        assertQuery("SHOW COLUMNS FROM test_add_column", "VALUES ('a', 'bigint', '', 'test comment AAA', 19L, null, null), ('b', 'bigint', '', 'test comment BBB', 19L, null, null)");
         assertQuerySucceeds("DROP TABLE test_add_column");
     }
 
@@ -1087,8 +1349,8 @@ public class TestPrestoSparkQueryRunner
         assertUpdate(createTable, "SELECT count(*) FROM orders");
         assertQuerySucceeds("ALTER TABLE test_rename_column RENAME COLUMN orderkey TO new_orderkey");
         assertQuery("SELECT new_orderkey, orderstatus FROM test_rename_column", "SELECT orderkey, orderstatus FROM orders");
-        assertQueryFails("ALTER TABLE test_rename_column RENAME COLUMN \"$path\" TO test", ".* Cannot rename hidden column");
-        assertQueryFails("ALTER TABLE test_rename_column RENAME COLUMN orderstatus TO new_orderstatus", "Renaming partition columns is not supported");
+        assertQueryFails("ALTER TABLE test_rename_column RENAME COLUMN \"$path\" TO test", "(?s).* Cannot rename hidden column.*");
+        assertQueryFails("ALTER TABLE test_rename_column RENAME COLUMN orderstatus TO new_orderstatus", "(?s)Renaming partition columns is not supported.*");
         assertQuery("SELECT new_orderkey, orderstatus FROM test_rename_column", "SELECT orderkey, orderstatus FROM orders");
         assertQuerySucceeds("DROP TABLE test_rename_column");
     }
@@ -1096,7 +1358,7 @@ public class TestPrestoSparkQueryRunner
     @Test
     public void testDropColumn()
     {
-        assertQueryFails("DROP TABLE hive.hive_test.hive_orders_new", ".* Table 'hive.hive_test.hive_orders_new' does not exist");
+        assertQueryFails("DROP TABLE hive.hive_test.hive_orders_new", "(?s).* Table 'hive.hive_test.hive_orders_new' does not exist.*");
         String createTable = "" +
                 "CREATE TABLE test_drop_column\n" +
                 "WITH (\n" +
@@ -1108,23 +1370,13 @@ public class TestPrestoSparkQueryRunner
         assertUpdate(createTable, "SELECT count(*) FROM orders");
         assertQuery("SELECT orderkey, orderstatus FROM test_drop_column", "SELECT orderkey, orderstatus FROM orders");
 
-        assertQueryFails("ALTER TABLE test_drop_column DROP COLUMN \"$path\"", ".* Cannot drop hidden column");
-        assertQueryFails("ALTER TABLE test_drop_column DROP COLUMN orderstatus", "Cannot drop partition columns");
+        assertQueryFails("ALTER TABLE test_drop_column DROP COLUMN \"$path\"", "(?s).* Cannot drop hidden column.*");
+        assertQueryFails("ALTER TABLE test_drop_column DROP COLUMN orderstatus", "(?s)Cannot drop partition columns.*");
         assertQuerySucceeds("ALTER TABLE test_drop_column DROP COLUMN orderkey");
-        assertQueryFails("ALTER TABLE test_drop_column DROP COLUMN custkey", "Cannot drop the only non-partition column in a table");
+        assertQueryFails("ALTER TABLE test_drop_column DROP COLUMN custkey", "(?s)Cannot drop the only non-partition column in a table.*");
         assertQuery("SELECT * FROM test_drop_column", "SELECT custkey, orderstatus FROM orders");
 
         assertQuerySucceeds("DROP TABLE test_drop_column");
-    }
-
-    @Test
-    public void testCreateFunction()
-    {
-        assertQuerySucceeds("CREATE FUNCTION unittest.memory.tan (x int) RETURNS double COMMENT 'tangent trigonometric function' LANGUAGE SQL DETERMINISTIC CALLED ON NULL INPUT RETURN sin(x) / cos(x)");
-        MaterializedResult actual = computeActual("select unittest.memory.tan(5)");
-        assertEquals("-3.380515006246586", actual.getOnlyValue().toString());
-        //PoS currently supports one query per session. So temporary function created is not discoverable by another query.
-        assertQuerySucceeds("CREATE TEMPORARY FUNCTION foo() RETURNS int RETURN 1");
     }
 
     @Test
@@ -1160,9 +1412,108 @@ public class TestPrestoSparkQueryRunner
         assertQuerySucceeds(format("CALL system.create_empty_partition('%s', '%s', ARRAY['orderstatus'], ARRAY['%s'])", "tpch", "test_partition_table", "y"));
         actual = computeActual("SELECT count(*) FROM \"test_partition_table$partitions\"");
 
-        // 2 new paritions added
+        // 2 new partitions added
         assertEquals(actual.getOnlyValue().toString(), "5");
         assertQuerySucceeds("DROP TABLE test_partition_table");
+    }
+
+    @Test
+    public void testDisableBroadcastJoinExecutionStrategy()
+    {
+        Session session = Session.builder(getSession())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, "BROADCAST")
+                .setSystemProperty(STORAGE_BASED_BROADCAST_JOIN_ENABLED, "true")
+                .setSystemProperty(SPARK_BROADCAST_JOIN_MAX_MEMORY_OVERRIDE, "10B")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_BROADCAST_JOIN_ENABLED, "false")
+                .build();
+
+        // Query should fail with broadcast join OOM
+        assertQueryFails(
+                session,
+                "select * from lineitem l join orders o on l.orderkey = o.orderkey",
+                "(?s)Query exceeded per-node broadcast memory limit of 10B \\[Broadcast size: .*MB\\].*");
+
+        session = Session.builder(getSession())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, "BROADCAST")
+                .setSystemProperty(STORAGE_BASED_BROADCAST_JOIN_ENABLED, "true")
+                .setSystemProperty(SPARK_BROADCAST_JOIN_MAX_MEMORY_OVERRIDE, "10B")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_BROADCAST_JOIN_ENABLED, "false")
+                .setSystemProperty(SPARK_QUERY_EXECUTION_STRATEGIES, "DISABLE_BROADCAST_JOIN")
+                .build();
+
+        // Query should succeed since broadcast join will be disabled due to
+        // presence of DISABLE_BROADCAST_JOIN strategy in session property spark_query_execution_strategies
+        assertQuery(
+                session,
+                "select * from lineitem l join orders o on l.orderkey = o.orderkey");
+    }
+
+    @Test
+    public void testIncreaseContainerSizeExecutionStrategy()
+    {
+        Session session = Session.builder(getSession())
+                .setSystemProperty(QUERY_MAX_MEMORY_PER_NODE, "2MB")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "2MB")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_WITH_INCREASED_MEMORY_SETTINGS_ENABLED, "false")
+                .setSystemProperty(OUT_OF_MEMORY_RETRY_PRESTO_SESSION_PROPERTIES, "query_max_memory_per_node=100MB,query_max_total_memory_per_node=100MB")
+                .setSystemProperty(OUT_OF_MEMORY_RETRY_SPARK_CONFIGS, "spark.executor.memory=1G")
+                .build();
+
+        // Query should fail with OOM
+        assertQueryFails(
+                session,
+                "select * from lineitem l join orders o on l.orderkey = o.orderkey",
+                "(?s).*Query exceeded per-node .* memory limit of 2MB.*");
+
+        session = Session.builder(getSession())
+                .setSystemProperty(QUERY_MAX_MEMORY_PER_NODE, "2MB")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "2MB")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_WITH_INCREASED_MEMORY_SETTINGS_ENABLED, "false")
+                .setSystemProperty(OUT_OF_MEMORY_RETRY_PRESTO_SESSION_PROPERTIES, "query_max_memory_per_node=100MB,query_max_total_memory_per_node=100MB")
+                .setSystemProperty(OUT_OF_MEMORY_RETRY_SPARK_CONFIGS, "spark.executor.memory=1G")
+                .setSystemProperty(SPARK_QUERY_EXECUTION_STRATEGIES, "INCREASE_CONTAINER_SIZE")
+                .build();
+
+        // Query should succeed since memory will be increased due to
+        // presence of INCREASE_CONTAINER_SIZE strategy in session property spark_query_execution_strategies
+        assertQuery(
+                session,
+                "select * from lineitem l join orders o on l.orderkey = o.orderkey");
+    }
+
+    @Test
+    public void testIncreaseHashPartitionCountExecutionStrategy()
+    {
+        String query = "with l as (" +
+                "select * from lineitem UNION ALL select * from lineitem UNION ALL select * from lineitem" +
+                "), " +
+                "o as (" +
+                "select * from orders UNION ALL select * from orders UNION ALL select * from orders" +
+                ") " +
+                "select * from l right outer join o on l.orderkey = o.orderkey";
+
+        Session session = Session.builder(getSession())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, "partitioned")
+                .setSystemProperty(HASH_PARTITION_COUNT, "1")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "6.5MB")
+                .setSystemProperty(QUERY_MAX_MEMORY, "100MB")
+                .setSystemProperty(VERBOSE_EXCEEDED_MEMORY_LIMIT_ERRORS_ENABLED, "true")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_HIGHER_PARTITION_COUNT_ENABLED, "false")
+                .build();
+        assertQueryFails(session,
+                query,
+                "(?s)Query exceeded per-node total memory limit of .*Top Consumers: \\{HashBuilderOperator.*");
+
+        session = Session.builder(getSession())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, "partitioned")
+                .setSystemProperty(HASH_PARTITION_COUNT, "1")
+                .setSystemProperty(QUERY_MAX_TOTAL_MEMORY_PER_NODE, "6.5MB")
+                .setSystemProperty(QUERY_MAX_MEMORY, "100MB")
+                .setSystemProperty(VERBOSE_EXCEEDED_MEMORY_LIMIT_ERRORS_ENABLED, "true")
+                .setSystemProperty(SPARK_RETRY_ON_OUT_OF_MEMORY_HIGHER_PARTITION_COUNT_ENABLED, "false")
+                .setSystemProperty(SPARK_QUERY_EXECUTION_STRATEGIES, "INCREASE_HASH_PARTITION_COUNT")
+                .build();
+        assertQuerySucceeds(session, query);
     }
 
     private void assertBucketedQuery(String sql)

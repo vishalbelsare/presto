@@ -42,14 +42,17 @@ public final class PrestoHeaders
     public static final String PRESTO_SESSION_FUNCTION = "X-Presto-Session-Function";
     public static final String PRESTO_ADDED_SESSION_FUNCTION = "X-Presto-Added-Session-Functions";
     public static final String PRESTO_REMOVED_SESSION_FUNCTION = "X-Presto-Removed-Session-Function";
+    public static final String PRESTO_RETRY_QUERY = "X-Presto-Retry-Query";
 
     public static final String PRESTO_CURRENT_STATE = "X-Presto-Current-State";
     public static final String PRESTO_MAX_WAIT = "X-Presto-Max-Wait";
     public static final String PRESTO_MAX_SIZE = "X-Presto-Max-Size";
+    public static final String PRESTO_BUFFER_REMAINING_BYTES = "X-Presto-Buffer-Remaining-Bytes";
     public static final String PRESTO_TASK_INSTANCE_ID = "X-Presto-Task-Instance-Id";
     public static final String PRESTO_PAGE_TOKEN = "X-Presto-Page-Sequence-Id";
     public static final String PRESTO_PAGE_NEXT_TOKEN = "X-Presto-Page-End-Sequence-Id";
     public static final String PRESTO_BUFFER_COMPLETE = "X-Presto-Buffer-Complete";
+    public static final String PRESTO_PREFIX_URL = "X-Presto-Prefix-Url";
 
     private PrestoHeaders() {}
 }

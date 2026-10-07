@@ -13,30 +13,39 @@
  */
 package com.facebook.presto.parquet.writer;
 
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.parquet.writer.ColumnWriter.BufferData;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.OutputStreamSliceOutput;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
-import io.airlift.units.DataSize;
 import org.apache.parquet.column.ParquetProperties;
+import org.apache.parquet.column.ParquetProperties.Builder;
 import org.apache.parquet.format.ColumnMetaData;
 import org.apache.parquet.format.FileMetaData;
+import org.apache.parquet.format.KeyValue;
 import org.apache.parquet.format.RowGroup;
+import org.apache.parquet.format.SchemaElement;
 import org.apache.parquet.format.Util;
+import org.apache.parquet.format.converter.ParquetMetadataConverter;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
+import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 import org.apache.parquet.schema.MessageType;
+import org.joda.time.DateTimeZone;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.List;
+import java.util.Map;
 
 import static com.facebook.presto.parquet.writer.ParquetDataOutput.createDataOutput;
+import static com.facebook.presto.parquet.writer.ParquetWriterOptions.DEFAULT_MAX_PAGE_SIZE;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -47,7 +56,6 @@ import static java.lang.Math.min;
 import static java.lang.Math.toIntExact;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.util.Objects.requireNonNull;
-import static org.apache.parquet.column.ParquetProperties.WriterVersion.PARQUET_2_0;
 import static org.apache.parquet.hadoop.metadata.CompressionCodecName.BROTLI;
 import static org.apache.parquet.hadoop.metadata.CompressionCodecName.GZIP;
 import static org.apache.parquet.hadoop.metadata.CompressionCodecName.LZ4;
@@ -60,6 +68,7 @@ public class ParquetWriter
         implements Closeable
 {
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(ParquetWriter.class).instanceSize();
+    private static final ParquetMetadataConverter METADATA_CONVERTER = new ParquetMetadataConverter();
 
     private static final int CHUNK_MAX_BYTES = toIntExact(DataSize.valueOf("128MB").toBytes());
     private static final int DEFAULT_ROW_GROUP_MAX_ROW_COUNT = 10_000;
@@ -70,6 +79,8 @@ public class ParquetWriter
     private final ParquetWriterOptions writerOption;
     private final List<String> names;
     private final MessageType messageType;
+    private final DateTimeZone writerTimezone;
+    private final String prestoVersion;
 
     private final int chunkMaxLogicalBytes;
 
@@ -81,7 +92,15 @@ public class ParquetWriter
 
     public static final Slice MAGIC = wrappedBuffer("PAR1".getBytes(US_ASCII));
 
-    public ParquetWriter(OutputStream outputStream, List<String> columnNames, List<Type> types, ParquetWriterOptions writerOption, String compressionCodecClass)
+    public ParquetWriter(OutputStream outputStream,
+            MessageType messageType,
+            Map<List<String>, Type> primitiveTypes,
+            List<String> columnNames,
+            List<Type> types,
+            ParquetWriterOptions writerOption,
+            String compressionCodecClass,
+            DateTimeZone writerTimezone,
+            String prestoVersion)
     {
         this.outputStream = new OutputStreamSliceOutput(requireNonNull(outputStream, "outputstream is null"));
         this.names = ImmutableList.copyOf(requireNonNull(columnNames, "columnNames is null"));
@@ -90,22 +109,34 @@ public class ParquetWriter
 
         checkArgument(types.size() == columnNames.size(), "type size %s is not equal to name size %s", types.size(), columnNames.size());
 
-        ParquetSchemaConverter parquetSchemaConverter = new ParquetSchemaConverter(types, columnNames);
-        this.messageType = parquetSchemaConverter.getMessageType();
+        this.messageType = requireNonNull(messageType, "messageType is null");
 
-        ParquetProperties parquetProperties = ParquetProperties.builder()
-                .withWriterVersion(PARQUET_2_0)
+        Builder parquetPropertiesBuilder = ParquetProperties.builder()
+                .withWriterVersion(writerOption.getWriterVersion())
                 .withPageSize(writerOption.getMaxPageSize())
-                .build();
+                .withDictionaryPageSize(writerOption.getMaxDictionaryPageSize());
+
+        // It's not thread-safe to share a single `ValuesWriterFactory` between all `ParquetProperties` instances with different page options.
+        // So set a separate `ValuesWriterFactory` instance to `ParquetProperties` with non-default page options on its creation,
+        //  and share a single `ValuesWriterFactory` instance between all `ParquetProperties` instances with default page options.
+        if (!DEFAULT_MAX_PAGE_SIZE.equals(DataSize.succinctBytes(writerOption.getMaxPageSize())) ||
+                !DEFAULT_MAX_PAGE_SIZE.equals(DataSize.succinctBytes(writerOption.getMaxDictionaryPageSize()))) {
+            parquetPropertiesBuilder.withValuesWriterFactory(ParquetWriters.getValuesWriterFactory(writerOption.getWriterVersion()));
+        }
+        ParquetProperties parquetProperties = parquetPropertiesBuilder.build();
         CompressionCodecName compressionCodecName = getCompressionCodecName(compressionCodecClass);
-        this.columnWriters = ParquetWriters.getColumnWriters(messageType, parquetSchemaConverter.getPrimitiveTypes(), parquetProperties, compressionCodecName);
+        this.columnWriters = ParquetWriters.getColumnWriters(messageType, primitiveTypes, parquetProperties, compressionCodecName);
 
         this.chunkMaxLogicalBytes = max(1, CHUNK_MAX_BYTES / 2);
+
+        this.writerTimezone = requireNonNull(writerTimezone, "writerTimezone is null");
+
+        this.prestoVersion = requireNonNull(prestoVersion, "prestoVersion is null");
     }
 
     public long getWrittenBytes()
     {
-        return outputStream.size();
+        return outputStream.longSize();
     }
 
     public long getBufferedBytes()
@@ -167,7 +198,7 @@ public class ParquetWriter
         if (bufferedBytes >= writerOption.getMaxRowGroupSize()) {
             columnWriters.forEach(ColumnWriter::close);
             flush();
-            columnWriters.forEach(ColumnWriter::reset);
+            columnWriters.forEach(ColumnWriter::resetChunk);
             rows = 0;
         }
     }
@@ -211,7 +242,7 @@ public class ParquetWriter
         List<BufferData> bufferDataList = builder.build();
 
         // update stats
-        long stripeStartOffset = outputStream.size();
+        long stripeStartOffset = outputStream.longSize();
         List<ColumnMetaData> metadatas = bufferDataList.stream()
                 .map(BufferData::getMetaData)
                 .collect(toImmutableList());
@@ -228,7 +259,7 @@ public class ParquetWriter
             throws IOException
     {
         checkState(closed);
-        Slice footer = getFooter(rowGroupBuilder.build(), messageType);
+        Slice footer = getFooter(rowGroupBuilder.build(), messageType, writerTimezone, prestoVersion);
         createDataOutput(footer).writeData(outputStream);
 
         Slice footerSize = Slices.allocate(SIZE_OF_INT);
@@ -238,19 +269,40 @@ public class ParquetWriter
         createDataOutput(MAGIC).writeData(outputStream);
     }
 
-    static Slice getFooter(List<RowGroup> rowGroups, MessageType messageType)
+    static Slice getFooter(List<RowGroup> rowGroups, MessageType messageType, DateTimeZone writerTimezone, String prestoVersion)
             throws IOException
     {
         FileMetaData fileMetaData = new FileMetaData();
         fileMetaData.setVersion(1);
-        fileMetaData.setSchema(MessageTypeConverter.toParquetSchema(messageType));
         long totalRows = rowGroups.stream().mapToLong(RowGroup::getNum_rows).sum();
         fileMetaData.setNum_rows(totalRows);
         fileMetaData.setRow_groups(ImmutableList.copyOf(rowGroups));
 
+        // Apache Hive will skip timezone conversion if createdBy does not start with parquet-mr
+        // https://github.com/apache/hive/blob/3af4517eb8cfd9407ad34ed78a0b48b57dfaa264/ql/src/java/org/apache/hadoop/hive/ql/io/parquet/ParquetRecordReaderBase.java#L156
+        // Add "(build n/a)" suffix since it's required by Parquet's VersionParser
+        // https://github.com/apache/parquet-java/blob/eb65987333a6bb2ae729b88eef0d6f941a7c1867/parquet-common/src/main/java/org/apache/parquet/VersionParser.java#L34
+        String createdBy = "parquet-mr-presto version " + prestoVersion + " (build n/a)";
+        fileMetaData.setCreated_by(createdBy);
+
+        fileMetaData.setSchema(getParquetSchema(fileMetaData.getCreated_by(), messageType));
+
+        fileMetaData.setKey_value_metadata(ImmutableList.of(new KeyValue("writer.time.zone").setValue(writerTimezone.getID())));
+
         DynamicSliceOutput dynamicSliceOutput = new DynamicSliceOutput(40);
         Util.writeFileMetaData(fileMetaData, dynamicSliceOutput);
         return dynamicSliceOutput.slice();
+    }
+
+    private static List<SchemaElement> getParquetSchema(String createdBy, MessageType messageType)
+    {
+        org.apache.parquet.hadoop.metadata.FileMetaData parquetMetaDataInput = new org.apache.parquet.hadoop.metadata.FileMetaData(
+                messageType,
+                ImmutableMap.of(),
+                createdBy);
+
+        FileMetaData parquetMetaData = METADATA_CONVERTER.toParquetMetadata(1, new ParquetMetadata(parquetMetaDataInput, ImmutableList.of()));
+        return parquetMetaData.getSchema();
     }
 
     private void updateRowGroups(List<ColumnMetaData> columnMetaData)
@@ -302,9 +354,15 @@ public class ParquetWriter
         else if (compressionCodecClass.equals("org.apache.hadoop.io.compress.Lz4Codec")) {
             return LZ4;
         }
-        else if (compressionCodecClass.equals("org.apache.hadoop.io.compress.ZStandardCodec")) {
+        else if (compressionCodecClass.equals("org.apache.hadoop.io.compress.ZStandardCodec") ||
+                compressionCodecClass.equals("org.apache.parquet.hadoop.codec.ZstandardCodec")) {
             return ZSTD;
         }
         throw new IllegalArgumentException("Invalid compressionCodec: " + compressionCodecClass);
+    }
+
+    public boolean isClosed()
+    {
+        return closed;
     }
 }

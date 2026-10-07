@@ -16,7 +16,9 @@ package com.facebook.presto.sql.tree;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 
+import java.util.Deque;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Optional;
 
@@ -93,10 +95,17 @@ public final class ExpressionTreeRewriter<C>
                 }
             }
 
-            List<Expression> items = rewrite(node.getItems(), context);
+            ImmutableList.Builder<Row.Field> builder = ImmutableList.builder();
+            for (Row.Field field : node.getFields()) {
+                Expression expression = rewrite(field.getExpression(), context.get());
+                builder.add(field.getExpression() == expression
+                        ? field
+                        : new Row.Field(field.getLocation(), field.getName(), expression));
+            }
+            List<Row.Field> fields = builder.build();
 
-            if (!sameElements(node.getItems(), items)) {
-                return new Row(items);
+            if (!sameElements(node.getFields(), fields)) {
+                return new Row(fields);
             }
 
             return node;
@@ -250,11 +259,57 @@ public final class ExpressionTreeRewriter<C>
                 }
             }
 
-            Expression left = rewrite(node.getLeft(), context.get());
-            Expression right = rewrite(node.getRight(), context.get());
+            // It's common to have a large number of chained AND or OR. So we do it iteratively here to avoid stack overflow
+            LogicalBinaryExpression.Operator operator = node.getOperator();
+            Deque<LogicalBinaryExpression> nodesToVisit = new LinkedList<>();
+            ImmutableList.Builder<Expression> childrenBuilder = ImmutableList.builder();
+            LogicalBinaryExpression currentNode = node;
 
-            if (left != node.getLeft() || right != node.getRight()) {
-                return new LogicalBinaryExpression(node.getOperator(), left, right);
+            // First collect all the left children that are the same operator for a left-leaning tree
+            nodesToVisit.push(node);
+            while (currentNode.getLeft() instanceof LogicalBinaryExpression && ((LogicalBinaryExpression) currentNode.getLeft()).getOperator() == operator) {
+                nodesToVisit.push((LogicalBinaryExpression) currentNode.getLeft());
+                currentNode = nodesToVisit.peek();
+            }
+
+            // Now rewrite the last child
+            currentNode = nodesToVisit.pop();
+            Expression rewrittenLeft = rewrite(currentNode.getLeft(), context.get());
+            while (!nodesToVisit.isEmpty()) {
+                Expression newRight = rewrite(currentNode.getRight(), context.get());
+                if (newRight != currentNode.getRight() || rewrittenLeft != currentNode.getLeft()) {
+                    rewrittenLeft = new LogicalBinaryExpression(operator, rewrittenLeft, newRight);
+                }
+                else {
+                    rewrittenLeft = currentNode;
+                }
+                currentNode = nodesToVisit.pop();
+            }
+
+            // Now collect all the right children that are the same operator for a right-leaning tree
+            nodesToVisit.push(node);
+            currentNode = node;
+            while (currentNode.getRight() instanceof LogicalBinaryExpression && ((LogicalBinaryExpression) currentNode.getRight()).getOperator() == operator) {
+                nodesToVisit.push((LogicalBinaryExpression) currentNode.getRight());
+                currentNode = nodesToVisit.peek();
+            }
+
+            // Now rewrite the last child
+            currentNode = nodesToVisit.pop();
+            Expression rewrittenRight = rewrite(currentNode.getRight(), context.get());
+            while (!nodesToVisit.isEmpty()) {
+                Expression newLeft = rewrite(currentNode.getLeft(), context.get());
+                if (rewrittenRight != currentNode.getRight() || newLeft != currentNode.getLeft()) {
+                    rewrittenRight = new LogicalBinaryExpression(operator, newLeft, rewrittenRight);
+                }
+                else {
+                    rewrittenRight = currentNode;
+                }
+                currentNode = nodesToVisit.pop();
+            }
+
+            if (node.getLeft() != rewrittenLeft || node.getRight() != rewrittenRight) {
+                return new LogicalBinaryExpression(operator, rewrittenLeft, rewrittenRight);
             }
 
             return node;
@@ -493,53 +548,59 @@ public final class ExpressionTreeRewriter<C>
             if (node.getWindow().isPresent()) {
                 Window window = node.getWindow().get();
 
-                List<Expression> partitionBy = rewrite(window.getPartitionBy(), context);
+                if (window instanceof WindowSpecification) {
+                    WindowSpecification windowSpecification = (WindowSpecification) window;
 
-                Optional<OrderBy> orderBy = Optional.empty();
-                if (window.getOrderBy().isPresent()) {
-                    orderBy = Optional.of(rewriteOrderBy(window.getOrderBy().get(), context));
-                }
+                    List<Expression> partitionBy = rewrite(windowSpecification.getPartitionBy(), context);
 
-                Optional<WindowFrame> rewrittenFrame = window.getFrame();
-                if (rewrittenFrame.isPresent()) {
-                    WindowFrame frame = rewrittenFrame.get();
-
-                    FrameBound start = frame.getStart();
-                    if (start.getValue().isPresent()) {
-                        Expression value = rewrite(start.getValue().get(), context.get());
-                        if (value != start.getValue().get()) {
-                            start = new FrameBound(start.getType(), value);
-                        }
+                    Optional<OrderBy> orderBy = Optional.empty();
+                    if (windowSpecification.getOrderBy().isPresent()) {
+                        orderBy = Optional.of(rewriteOrderBy(windowSpecification.getOrderBy().get(), context));
                     }
 
-                    Optional<FrameBound> rewrittenEnd = frame.getEnd();
-                    if (rewrittenEnd.isPresent()) {
-                        Optional<Expression> value = rewrittenEnd.get().getValue();
-                        if (value.isPresent()) {
-                            Expression rewrittenValue = rewrite(value.get(), context.get());
-                            if (rewrittenValue != value.get()) {
-                                rewrittenEnd = Optional.of(new FrameBound(rewrittenEnd.get().getType(), rewrittenValue));
+                    Optional<WindowFrame> rewrittenFrame = windowSpecification.getFrame();
+                    if (rewrittenFrame.isPresent()) {
+                        WindowFrame frame = rewrittenFrame.get();
+
+                        FrameBound start = frame.getStart();
+                        if (start.getValue().isPresent()) {
+                            Expression value = rewrite(start.getValue().get(), context.get());
+                            if (value != start.getValue().get()) {
+                                start = new FrameBound(start.getType(), value);
                             }
                         }
+
+                        Optional<FrameBound> rewrittenEnd = frame.getEnd();
+                        if (rewrittenEnd.isPresent()) {
+                            Optional<Expression> value = rewrittenEnd.get().getValue();
+                            if (value.isPresent()) {
+                                Expression rewrittenValue = rewrite(value.get(), context.get());
+                                if (rewrittenValue != value.get()) {
+                                    rewrittenEnd = Optional.of(new FrameBound(rewrittenEnd.get().getType(), rewrittenValue));
+                                }
+                            }
+                        }
+
+                        if ((frame.getStart() != start) || !sameElements(frame.getEnd(), rewrittenEnd)) {
+                            rewrittenFrame = Optional.of(new WindowFrame(frame.getType(), start, rewrittenEnd));
+                        }
                     }
 
-                    if ((frame.getStart() != start) || !sameElements(frame.getEnd(), rewrittenEnd)) {
-                        rewrittenFrame = Optional.of(new WindowFrame(frame.getType(), start, rewrittenEnd));
+                    if (!sameElements(windowSpecification.getPartitionBy(), partitionBy) ||
+                            !sameElements(windowSpecification.getOrderBy(), orderBy) ||
+                            !sameElements(windowSpecification.getFrame(), rewrittenFrame)) {
+                        rewrittenWindow = Optional.of(new WindowSpecification(windowSpecification.getExistingWindowName(), partitionBy, orderBy, rewrittenFrame));
                     }
-                }
-
-                if (!sameElements(window.getPartitionBy(), partitionBy) ||
-                        !sameElements(window.getOrderBy(), orderBy) ||
-                        !sameElements(window.getFrame(), rewrittenFrame)) {
-                    rewrittenWindow = Optional.of(new Window(partitionBy, orderBy, rewrittenFrame));
                 }
             }
 
             List<Expression> arguments = rewrite(node.getArguments(), context);
 
+            Optional<OrderBy> orderBy = node.getOrderBy().map(x -> rewriteOrderBy(x, context));
+
             if (!sameElements(node.getArguments(), arguments) || !sameElements(rewrittenWindow, node.getWindow())
-                    || !sameElements(filter, node.getFilter())) {
-                return new FunctionCall(node.getName(), rewrittenWindow, filter, node.getOrderBy().map(orderBy -> rewriteOrderBy(orderBy, context)), node.isDistinct(), node.isIgnoreNulls(), arguments);
+                    || !sameElements(filter, node.getFilter()) || !sameElements(orderBy, node.getOrderBy())) {
+                return new FunctionCall(node.getName(), rewrittenWindow, filter, orderBy, node.isDistinct(), node.isIgnoreNulls(), arguments);
             }
             return node;
         }

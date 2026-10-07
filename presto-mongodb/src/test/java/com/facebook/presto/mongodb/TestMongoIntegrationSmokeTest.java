@@ -19,7 +19,9 @@ import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestIntegrationSmokeTest;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.mongodb.client.MongoCollection;
 import org.bson.Document;
+import org.bson.types.ObjectId;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
@@ -76,7 +78,9 @@ public class TestMongoIntegrationSmokeTest
                 ", true _boolean" +
                 ", DATE '1980-05-07' _date" +
                 ", TIMESTAMP '1980-05-07 11:22:33.456' _timestamp" +
-                ", ObjectId('ffffffffffffffffffffffff') _objectid";
+                ", ObjectId('ffffffffffffffffffffffff') _objectid" +
+                ", cast(ObjectId('ffffffffffffffffffffffff') as varchar) _objectid_string" +
+                ", JSON '{\"name\":\"alice\"}' _json";
 
         assertUpdate(query, 1);
 
@@ -90,6 +94,8 @@ public class TestMongoIntegrationSmokeTest
         assertEquals(row.getField(4), true);
         assertEquals(row.getField(5), LocalDate.of(1980, 5, 7));
         assertEquals(row.getField(6), LocalDateTime.of(1980, 5, 7, 11, 22, 33, 456_000_000));
+        assertEquals(row.getField(8), "ffffffffffffffffffffffff");
+        assertEquals(row.getField(9), "{\"name\":\"alice\"}");
         assertUpdate("DROP TABLE test_types_table");
 
         assertFalse(getQueryRunner().tableExists(getSession(), "test_types_table"));
@@ -111,6 +117,7 @@ public class TestMongoIntegrationSmokeTest
                 ", ts  timestamp" +
                 ", tm time" +
                 ", objid objectid" +
+                ", _json json" +
                 ")";
         getQueryRunner().execute(getSession(), createSql);
 
@@ -125,7 +132,8 @@ public class TestMongoIntegrationSmokeTest
                 ", DATE '1980-05-07' _date" +
                 ", TIMESTAMP '1980-05-07 11:22:33.456' _timestamp" +
                 ", TIME '11:22:33.456' _time" +
-                ", ObjectId('ffffffffffffffffffffffff') _objectid";
+                ", ObjectId('ffffffffffffffffffffffff') _objectid" +
+                ", JSON '{\"name\":\"alice\"}' _json";
         getQueryRunner().execute(getSession(), insertSql);
 
         MaterializedResult results = getQueryRunner().execute(getSession(), "SELECT * FROM test_insert_types_table").toTestTypes();
@@ -139,6 +147,8 @@ public class TestMongoIntegrationSmokeTest
         assertEquals(row.getField(5), LocalDate.of(1980, 5, 7));
         assertEquals(row.getField(6), LocalDateTime.of(1980, 5, 7, 11, 22, 33, 456_000_000));
         assertEquals(row.getField(7), LocalTime.of(11, 22, 33, 456_000_000));
+        assertEquals(new ObjectId((byte[]) row.getField(8)), new ObjectId("ffffffffffffffffffffffff"));
+        assertEquals(row.getField(9).toString(), "{\"name\":\"alice\"}");
         assertUpdate("DROP TABLE test_insert_types_table");
         assertFalse(getQueryRunner().tableExists(getSession(), "test_insert_types_table"));
     }
@@ -210,13 +220,13 @@ public class TestMongoIntegrationSmokeTest
         assertUpdate("CREATE TABLE test.tmp_map9 (col VARCHAR)");
         mongoQueryRunner.getMongoClient().getDatabase("test").getCollection("tmp_map9").insertOne(new Document(
                 ImmutableMap.of("col", new Document(ImmutableMap.of("key1", "value1", "key2", "value2")))));
-        assertQuery("SELECT col FROM test.tmp_map9", "SELECT '{ \"key1\" : \"value1\", \"key2\" : \"value2\" }'");
+        assertQuery("SELECT col FROM test.tmp_map9", "SELECT '{\"key1\": \"value1\", \"key2\": \"value2\"}'");
 
         assertUpdate("CREATE TABLE test.tmp_map10 (col VARCHAR)");
         mongoQueryRunner.getMongoClient().getDatabase("test").getCollection("tmp_map10").insertOne(new Document(
                 ImmutableMap.of("col", ImmutableList.of(new Document(ImmutableMap.of("key1", "value1", "key2", "value2")),
                         new Document(ImmutableMap.of("key3", "value3", "key4", "value4"))))));
-        assertQuery("SELECT col FROM test.tmp_map10", "SELECT '[{ \"key1\" : \"value1\", \"key2\" : \"value2\" }, { \"key3\" : \"value3\", \"key4\" : \"value4\" }]'");
+        assertQuery("SELECT col FROM test.tmp_map10", "SELECT '[{\"key1\": \"value1\", \"key2\": \"value2\"}, {\"key3\": \"value3\", \"key4\": \"value4\"}]'");
 
         assertUpdate("CREATE TABLE test.tmp_map11 (col VARCHAR)");
         mongoQueryRunner.getMongoClient().getDatabase("test").getCollection("tmp_map11").insertOne(new Document(
@@ -244,11 +254,80 @@ public class TestMongoIntegrationSmokeTest
         assertOneNotNullResult("SELECT id FROM tmp_objectid WHERE id = ObjectId('ffffffffffffffffffffffff')");
     }
 
+    @Test
+    public void testBinarys()
+    {
+        assertUpdate("CREATE TABLE tmp_binary AS SELECT cast('value' as varbinary) AS _varbinary", 1);
+        assertOneNotNullResult("SELECT _varbinary FROM tmp_binary");
+
+        MaterializedResult results = getQueryRunner().execute(getSession(), "SELECT _varbinary FROM tmp_binary").toTestTypes();
+        assertEquals(results.getRowCount(), 1);
+
+        MaterializedRow row = results.getMaterializedRows().get(0);
+        assertEquals(row.getField(0), "value".getBytes(UTF_8));
+    }
+
     private void assertOneNotNullResult(String query)
     {
         MaterializedResult results = getQueryRunner().execute(getSession(), query).toTestTypes();
         assertEquals(results.getRowCount(), 1);
         assertEquals(results.getMaterializedRows().get(0).getFieldCount(), 1);
         assertNotNull(results.getMaterializedRows().get(0).getField(0));
+    }
+
+    @Test
+    public void testRenameTable()
+    {
+        assertUpdate("CREATE TABLE test_rename.tmp_rename_table (value bigint)");
+        MongoCollection<Document> collection = mongoQueryRunner.getMongoClient().getDatabase("test_rename").getCollection("tmp_rename_table");
+        collection.insertOne(new Document(ImmutableMap.of("value", 1)));
+        assertQuery("SHOW TABLES IN test_rename", "SELECT 'tmp_rename_table'");
+        assertQuery("SELECT value FROM test_rename.tmp_rename_table", "SELECT 1");
+
+        assertUpdate("ALTER TABLE test_rename.tmp_rename_table RENAME TO test_rename.tmp_rename_new_table");
+
+        assertQuery("SHOW TABLES IN test_rename", "SELECT 'tmp_rename_new_table'");
+        assertQuery("SELECT value FROM test_rename.tmp_rename_new_table", "SELECT 1");
+        assertUpdate("DROP TABLE test_rename.tmp_rename_new_table");
+    }
+
+    @Test
+    public void testAlterTable()
+    {
+        assertUpdate("CREATE TABLE test_alter.tmp_alter_table (value bigint)");
+        MongoCollection<Document> collection = mongoQueryRunner.getMongoClient().getDatabase("test_alter").getCollection("tmp_alter_table");
+        collection.insertOne(new Document(ImmutableMap.of("value", 1)));
+
+        assertUpdate("ALTER TABLE test_alter.tmp_alter_table ADD COLUMN email varchar");
+        collection.insertOne(new Document(ImmutableMap.of("value", 2, "email", "example@example.com")));
+        assertQuery("SELECT email from test_alter.tmp_alter_table WHERE email IS NOT NULL", "SELECT 'example@example.com'");
+        assertUpdate("ALTER TABLE test_alter.tmp_alter_table RENAME COLUMN email TO email_id");
+        assertQuery("SELECT email_id from test_alter.tmp_alter_table WHERE email_id IS NOT NULL", "SELECT 'example@example.com'");
+        assertUpdate("ALTER TABLE test_alter.tmp_alter_table DROP COLUMN email_id");
+    }
+
+    @Test
+    public void testJson()
+    {
+        assertUpdate("CREATE TABLE test_json (id INT, col JSON)");
+
+        assertUpdate("INSERT INTO test_json VALUES (1, JSON '{\"name\":\"alice\"}')", 1);
+        assertQuery("SELECT json_extract_scalar(col, '$.name') FROM test_json WHERE id = 1", "SELECT 'alice'");
+
+        assertUpdate("INSERT INTO test_json VALUES (2, JSON '{\"numbers\":[1, 2, 3]}')", 1);
+        assertQuery("SELECT json_extract(col, '$.numbers[0]') FROM test_json WHERE id = 2", "SELECT 1");
+
+        assertUpdate("INSERT INTO test_json VALUES (3, NULL)", 1);
+        assertQuery("SELECT col FROM test_json WHERE id = 3", "SELECT NULL");
+
+        assertQueryFails(
+                "CREATE TABLE test_json_scalar AS SELECT JSON '1' AS col",
+                "Can't convert json to MongoDB Document.*");
+
+        assertQueryFails(
+                "CREATE TABLE test_json_array AS SELECT JSON '[\"a\", \"b\", \"c\"]' AS col",
+                "Can't convert json to MongoDB Document.*");
+
+        assertUpdate("DROP TABLE test_json");
     }
 }

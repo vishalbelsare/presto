@@ -17,8 +17,7 @@ import com.facebook.presto.spi.SourceLocation;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import javax.annotation.concurrent.Immutable;
+import com.google.errorprone.annotations.Immutable;
 
 import java.util.List;
 import java.util.Objects;
@@ -50,7 +49,18 @@ public final class ProjectNode
             @JsonProperty("assignments") Assignments assignments,
             @JsonProperty("locality") Locality locality)
     {
-        super(sourceLocation, id);
+        this(sourceLocation, id, Optional.empty(), source, assignments, locality);
+    }
+
+    public ProjectNode(
+            Optional<SourceLocation> sourceLocation,
+            PlanNodeId id,
+            Optional<PlanNode> statsEquivalentPlanNode,
+            PlanNode source,
+            Assignments assignments,
+            Locality locality)
+    {
+        super(sourceLocation, id, statsEquivalentPlanNode);
 
         requireNonNull(source, "source is null");
         requireNonNull(assignments, "assignments is null");
@@ -98,13 +108,26 @@ public final class ProjectNode
     }
 
     @Override
+    public PlanNode assignStatsEquivalentPlanNode(Optional<PlanNode> statsEquivalentPlanNode)
+    {
+        return new ProjectNode(getSourceLocation(), getId(), statsEquivalentPlanNode, source, assignments, locality);
+    }
+
+    @Override
     public PlanNode replaceChildren(List<PlanNode> newChildren)
     {
         requireNonNull(newChildren, "newChildren list is null");
         if (newChildren.size() != 1) {
             throw new IllegalArgumentException("newChildren list has multiple items");
         }
-        return new ProjectNode(getSourceLocation(), getId(), newChildren.get(0), assignments, locality);
+        return new ProjectNode(getSourceLocation(), getId(), getStatsEquivalentPlanNode(), newChildren.get(0), assignments, locality);
+    }
+
+    @Override
+    public LogicalProperties computeLogicalProperties(LogicalPropertiesProvider logicalPropertiesProvider)
+    {
+        requireNonNull(logicalPropertiesProvider, "logicalPropertiesProvider cannot be null.");
+        return logicalPropertiesProvider.getProjectProperties(this);
     }
 
     @Override

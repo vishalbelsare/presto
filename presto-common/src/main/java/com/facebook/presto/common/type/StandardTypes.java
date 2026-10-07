@@ -33,10 +33,14 @@ public final class StandardTypes
     public static final String HYPER_LOG_LOG = "HyperLogLog";
     public static final String QDIGEST = "qdigest";
     public static final String TDIGEST = "tdigest";
+    public static final String KLL_SKETCH = "kllsketch";
+    public static final String K_HYPER_LOG_LOG = "KHyperLogLog";
     public static final String P4_HYPER_LOG_LOG = "P4HyperLogLog";
+    public static final String SETDIGEST = "SetDigest";
     public static final String INTERVAL_DAY_TO_SECOND = "interval day to second";
     public static final String INTERVAL_YEAR_TO_MONTH = "interval year to month";
     public static final String TIMESTAMP = "timestamp";
+    public static final String TIMESTAMP_MICROSECONDS = "timestamp microseconds";
     public static final String TIMESTAMP_WITH_TIME_ZONE = "timestamp with time zone";
     public static final String TIME = "time";
     public static final String TIME_WITH_TIME_ZONE = "time with time zone";
@@ -50,12 +54,22 @@ public final class StandardTypes
     public static final String IPADDRESS = "ipaddress";
     public static final String IPPREFIX = "ipprefix";
     public static final String GEOMETRY = "Geometry";
+    public static final String SPHERICAL_GEOGRAPHY = "SphericalGeography";
     public static final String BING_TILE = "BingTile";
     public static final String BIGINT_ENUM = "BigintEnum";
     public static final String VARCHAR_ENUM = "VarcharEnum";
+    public static final String DISTINCT_TYPE = "DistinctType";
     public static final String UUID = "uuid";
+    public static final String UNKNOWN = "unknown";
+    // Internal sentinel usable ONLY as the tail type of a variable-arity function signature. It means
+    // "each trailing argument may be any type, bound independently" (no unification across the tail,
+    // unlike a shared type variable). It is not a registered Type and never reaches execution -- the
+    // dispatcher folds the tail into a single JSON argument. The __NAME__ form marks it as internal.
+    public static final String ANY = "__ANY__";
 
     private StandardTypes() {}
+
+    public static final Set<String> USER_DEFINED_TYPES = unmodifiableSet(new HashSet<>(asList(BIGINT_ENUM, VARCHAR_ENUM, DISTINCT_TYPE)));
 
     public static final Set<String> PARAMETRIC_TYPES = unmodifiableSet(new HashSet<>(asList(
             VARCHAR,
@@ -66,6 +80,8 @@ public final class StandardTypes
             MAP,
             QDIGEST,
             TDIGEST,
+            KLL_SKETCH,
             BIGINT_ENUM,
-            VARCHAR_ENUM)));
+            VARCHAR_ENUM,
+            DISTINCT_TYPE)));
 }

@@ -27,13 +27,12 @@ import com.facebook.presto.orc.stream.InputStreamSource;
 import com.facebook.presto.orc.stream.InputStreamSources;
 import com.facebook.presto.orc.stream.LongInputStream;
 import com.google.common.io.Closer;
-import org.joda.time.DateTimeZone;
+import jakarta.annotation.Nullable;
 import org.openjdk.jol.info.ClassLayout;
-
-import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.time.ZoneId;
 import java.util.Optional;
 
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.LENGTH;
@@ -42,7 +41,8 @@ import static com.facebook.presto.orc.reader.BatchStreamReaders.createStreamRead
 import static com.facebook.presto.orc.reader.ReaderUtils.convertLengthVectorToOffsetVector;
 import static com.facebook.presto.orc.reader.ReaderUtils.unpackLengthNulls;
 import static com.facebook.presto.orc.reader.ReaderUtils.verifyStreamType;
-import static com.facebook.presto.orc.stream.MissingInputStreamSource.missingStreamSource;
+import static com.facebook.presto.orc.stream.MissingInputStreamSource.getBooleanMissingStreamSource;
+import static com.facebook.presto.orc.stream.MissingInputStreamSource.getLongMissingStreamSource;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
@@ -60,24 +60,24 @@ public class ListBatchStreamReader
     private int readOffset;
     private int nextBatchSize;
 
-    private InputStreamSource<BooleanInputStream> presentStreamSource = missingStreamSource(BooleanInputStream.class);
+    private InputStreamSource<BooleanInputStream> presentStreamSource = getBooleanMissingStreamSource();
     @Nullable
     private BooleanInputStream presentStream;
 
-    private InputStreamSource<LongInputStream> lengthStreamSource = missingStreamSource(LongInputStream.class);
+    private InputStreamSource<LongInputStream> lengthStreamSource = getLongMissingStreamSource();
     @Nullable
     private LongInputStream lengthStream;
 
     private boolean rowGroupOpen;
 
-    public ListBatchStreamReader(Type type, StreamDescriptor streamDescriptor, DateTimeZone hiveStorageTimeZone, OrcRecordReaderOptions options, OrcAggregatedMemoryContext systemMemoryContext)
+    public ListBatchStreamReader(Type type, StreamDescriptor streamDescriptor, OrcRecordReaderOptions options, OrcAggregatedMemoryContext systemMemoryContext)
             throws OrcCorruptionException
     {
         requireNonNull(type, "type is null");
         verifyStreamType(streamDescriptor, type, ArrayType.class::isInstance);
         elementType = ((ArrayType) type).getElementType();
         this.streamDescriptor = requireNonNull(streamDescriptor, "stream is null");
-        this.elementStreamReader = createStreamReader(elementType, streamDescriptor.getNestedStreams().get(0), hiveStorageTimeZone, options, systemMemoryContext);
+        this.elementStreamReader = createStreamReader(elementType, streamDescriptor.getNestedStreams().get(0), options, systemMemoryContext);
     }
 
     @Override
@@ -162,11 +162,11 @@ public class ListBatchStreamReader
     }
 
     @Override
-    public void startStripe(Stripe stripe)
+    public void startStripe(ZoneId timezone, Stripe stripe)
             throws IOException
     {
-        presentStreamSource = missingStreamSource(BooleanInputStream.class);
-        lengthStreamSource = missingStreamSource(LongInputStream.class);
+        presentStreamSource = getBooleanMissingStreamSource();
+        lengthStreamSource = getLongMissingStreamSource();
 
         readOffset = 0;
         nextBatchSize = 0;
@@ -176,7 +176,7 @@ public class ListBatchStreamReader
 
         rowGroupOpen = false;
 
-        elementStreamReader.startStripe(stripe);
+        elementStreamReader.startStripe(timezone, stripe);
     }
 
     @Override

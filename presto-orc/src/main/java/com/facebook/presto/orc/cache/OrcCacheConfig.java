@@ -15,19 +15,20 @@ package com.facebook.presto.orc.cache;
 
 import com.facebook.airlift.configuration.Config;
 import com.facebook.airlift.configuration.ConfigDescription;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
-import io.airlift.units.MinDataSize;
-import io.airlift.units.MinDuration;
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
+import com.facebook.airlift.units.MinDataSize;
+import com.facebook.airlift.units.MinDuration;
 
+import static com.facebook.airlift.units.DataSize.Unit.BYTE;
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static com.facebook.presto.orc.OrcDataSourceUtils.EXPECTED_FOOTER_SIZE_IN_BYTES;
-import static io.airlift.units.DataSize.Unit.BYTE;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class OrcCacheConfig
 {
     private boolean fileTailCacheEnabled;
-    private DataSize fileTailCacheSize = new DataSize(0, BYTE);
+    private DataSize fileTailCacheSize = new DataSize(1, MEGABYTE);
     private Duration fileTailCacheTtlSinceLastAccess = new Duration(0, SECONDS);
 
     private boolean stripeMetadataCacheEnabled;
@@ -40,7 +41,7 @@ public class OrcCacheConfig
     private DataSize rowGroupIndexCacheSize = new DataSize(0, BYTE);
     private Duration rowGroupIndexCacheTtlSinceLastAccess = new Duration(0, SECONDS);
 
-    private boolean dwrfStripeCacheEnabled;
+    private boolean dwrfStripeCacheEnabled = true;
     private DataSize expectedFileTailSize = new DataSize(EXPECTED_FOOTER_SIZE_IN_BYTES, BYTE);
 
     public boolean isFileTailCacheEnabled()

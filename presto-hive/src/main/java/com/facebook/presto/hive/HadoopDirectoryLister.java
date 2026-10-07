@@ -14,11 +14,11 @@
 package com.facebook.presto.hive;
 
 import com.facebook.presto.hive.filesystem.ExtendedFileSystem;
+import com.facebook.presto.hive.metastore.Partition;
 import com.facebook.presto.hive.metastore.Table;
 import com.facebook.presto.hive.util.HiveFileIterator;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.fs.RemoteIterator;
 
 import java.io.IOException;
@@ -36,8 +36,8 @@ public class HadoopDirectoryLister
             ExtendedFileSystem fileSystem,
             Table table,
             Path path,
+            Optional<Partition> partition,
             NamenodeStats namenodeStats,
-            PathFilter pathFilter,
             HiveDirectoryContext hiveDirectoryContext)
     {
         return new HiveFileIterator(
@@ -45,7 +45,7 @@ public class HadoopDirectoryLister
                 p -> new HadoopFileInfoIterator(fileSystem.listLocatedStatus(p)),
                 namenodeStats,
                 hiveDirectoryContext.getNestedDirectoryPolicy(),
-                pathFilter);
+                hiveDirectoryContext.isSkipEmptyFilesEnabled());
     }
 
     public static class HadoopFileInfoIterator

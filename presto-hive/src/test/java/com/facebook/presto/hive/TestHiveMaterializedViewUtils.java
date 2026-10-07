@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.common.RuntimeStats;
 import com.facebook.presto.common.block.TestingBlockEncodingSerde;
 import com.facebook.presto.common.predicate.NullableValue;
 import com.facebook.presto.common.predicate.TupleDomain;
@@ -23,9 +24,10 @@ import com.facebook.presto.hive.metastore.MetastoreContext;
 import com.facebook.presto.hive.metastore.PrestoTableType;
 import com.facebook.presto.hive.metastore.Storage;
 import com.facebook.presto.hive.metastore.Table;
-import com.facebook.presto.spi.ConnectorMaterializedViewDefinition;
+import com.facebook.presto.spi.MaterializedViewDefinition;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.sql.planner.LiteralEncoder;
 import com.facebook.presto.sql.tree.Expression;
 import com.google.common.collect.ImmutableList;
@@ -33,6 +35,7 @@ import com.google.common.collect.ImmutableMap;
 import org.joda.time.DateTimeZone;
 import org.testng.annotations.Test;
 
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +48,7 @@ import static com.facebook.presto.hive.HiveMaterializedViewUtils.getEmptyMateria
 import static com.facebook.presto.hive.HiveMaterializedViewUtils.getMaterializedDataPredicates;
 import static com.facebook.presto.hive.HiveMaterializedViewUtils.validateMaterializedViewPartitionColumns;
 import static com.facebook.presto.hive.HiveStorageFormat.ORC;
+import static com.facebook.presto.hive.HiveTestUtils.SESSION;
 import static com.facebook.presto.hive.HiveType.HIVE_INT;
 import static com.facebook.presto.hive.HiveType.HIVE_STRING;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.HIVE_DEFAULT_DYNAMIC_PARTITION;
@@ -62,7 +66,7 @@ public class TestHiveMaterializedViewUtils
     private static final String SQL = "sql";
 
     private final LiteralEncoder literalEncoder = new LiteralEncoder(new TestingBlockEncodingSerde());
-    private final MetastoreContext metastoreContext = new MetastoreContext(USER_NAME, QUERY_ID, Optional.empty(), Optional.empty(), Optional.empty(), false, HiveColumnConverterProvider.DEFAULT_COLUMN_CONVERTER_PROVIDER);
+    private final MetastoreContext metastoreContext = new MetastoreContext(USER_NAME, QUERY_ID, Optional.empty(), Collections.emptySet(), Optional.empty(), Optional.empty(), false, HiveColumnConverterProvider.DEFAULT_COLUMN_CONVERTER_PROVIDER, WarningCollector.NOOP, new RuntimeStats());
 
     @Test
     public void testMaterializedDataPredicates()
@@ -96,7 +100,7 @@ public class TestHiveMaterializedViewUtils
                 new TestingPartitionResult("category", VARCHAR, "CAST('c2' AS varchar)")));
 
         MaterializedDataPredicates materializedDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
         comparePredicates(materializedDataPredicates, keys, partitionResults.build());
     }
 
@@ -131,7 +135,7 @@ public class TestHiveMaterializedViewUtils
                 new TestingPartitionResult("category", VARCHAR, "CAST('c2' AS varchar)")));
 
         MaterializedDataPredicates materializedDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
         comparePredicates(materializedDataPredicates, keys, partitionResults.build());
     }
 
@@ -149,12 +153,12 @@ public class TestHiveMaterializedViewUtils
 
         ImmutableList.Builder<List<TestingPartitionResult>> partitionResults = ImmutableList.builder();
         MaterializedDataPredicates materializedDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
         comparePredicates(materializedDataPredicates, keys, partitionResults.build());
     }
 
     @Test
-    public void testMaterializedDataPredicatesWithIntParitionType()
+    public void testMaterializedDataPredicatesWithIntPartitionType()
     {
         TestingTypeManager typeManager = new TestingTypeManager();
         TestingSemiTransactionalHiveMetastore testMetastore = TestingSemiTransactionalHiveMetastore.create();
@@ -184,7 +188,7 @@ public class TestHiveMaterializedViewUtils
                 new TestingPartitionResult("code", INTEGER, "2")));
 
         MaterializedDataPredicates materializedDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
         comparePredicates(materializedDataPredicates, keys, partitionResults.build());
     }
 
@@ -208,7 +212,7 @@ public class TestHiveMaterializedViewUtils
         testMetastore.setPartitionNames(partitions);
 
         MaterializedDataPredicates baseDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
 
         List<String> viewPartitions = ImmutableList.of(
                 "ds=2020-01-02",
@@ -217,7 +221,7 @@ public class TestHiveMaterializedViewUtils
         testMetastore.setPartitionNames(viewPartitions);
 
         MaterializedDataPredicates materializedDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
 
         Map<String, String> materializedViewToBaseColumnMap = ImmutableMap.of("ds", "ds");
 
@@ -253,7 +257,7 @@ public class TestHiveMaterializedViewUtils
         testMetastore.setPartitionNames(partitions);
 
         MaterializedDataPredicates baseDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
 
         // CREATE MV AS SELECT ds1 as t1.ds, ds2 as t2.ds FROM t1 LEFT JOIN t2 ON t1.ds = t2.ds
         List<String> viewPartitions = ImmutableList.of(
@@ -265,7 +269,7 @@ public class TestHiveMaterializedViewUtils
         testMetastore.setPartitionNames(viewPartitions);
 
         MaterializedDataPredicates materializedDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(viewPartitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(viewPartitionColumns), DateTimeZone.UTC);
 
         Map<String, String> materializedViewToBaseColumnMap = ImmutableMap.of("ds2", "ds");
 
@@ -299,7 +303,7 @@ public class TestHiveMaterializedViewUtils
         testMetastore.setPartitionNames(partitions);
 
         MaterializedDataPredicates baseDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
 
         Column viewShipModeColumn = new Column("view_shipmode", HIVE_STRING, Optional.empty(), Optional.empty());
         List<Column> viewPartitionColumns = ImmutableList.of(dsColumn, viewShipModeColumn);
@@ -309,7 +313,7 @@ public class TestHiveMaterializedViewUtils
         testMetastore.setPartitionNames(viewPartitions);
 
         MaterializedDataPredicates materializedDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(viewPartitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(viewPartitionColumns), DateTimeZone.UTC);
 
         Map<String, String> materializedViewToBaseColumnMap = ImmutableMap.of("ds", "ds", "view_shipmode", "shipmode");
 
@@ -343,7 +347,7 @@ public class TestHiveMaterializedViewUtils
         testMetastore.setPartitionNames(partitions);
 
         MaterializedDataPredicates baseDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
 
         Column viewShipModeColumn = new Column("view_shipmode", HIVE_STRING, Optional.empty(), Optional.empty());
         List<Column> viewPartitionColumns = ImmutableList.of(dsColumn, viewShipModeColumn);
@@ -353,7 +357,7 @@ public class TestHiveMaterializedViewUtils
         testMetastore.setPartitionNames(viewPartitions);
 
         MaterializedDataPredicates materializedDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(viewPartitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(viewPartitionColumns), DateTimeZone.UTC);
 
         Map<String, String> materializedViewToBaseColumnMap = ImmutableMap.of("ds", "ds");
 
@@ -386,7 +390,7 @@ public class TestHiveMaterializedViewUtils
         testMetastore.setPartitionNames(partitions);
 
         MaterializedDataPredicates baseDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
 
         Column viewShipModeColumn = new Column("view_shipmode", HIVE_STRING, Optional.empty(), Optional.empty());
         List<Column> viewPartitionColumns = ImmutableList.of(dsColumn, viewShipModeColumn);
@@ -398,7 +402,7 @@ public class TestHiveMaterializedViewUtils
         testMetastore.setPartitionNames(viewPartitions);
 
         MaterializedDataPredicates materializedDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(viewPartitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(viewPartitionColumns), DateTimeZone.UTC);
 
         Map<String, String> materializedViewToBaseColumnMap = ImmutableMap.of("ds", "ds", "view_shipmode", "shipmode");
 
@@ -426,7 +430,7 @@ public class TestHiveMaterializedViewUtils
         testMetastore.setPartitionNames(partitions);
 
         MaterializedDataPredicates baseDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
 
         Column viewShipModeColumn = new Column("view_shipmode", HIVE_STRING, Optional.empty(), Optional.empty());
         List<Column> viewPartitionColumns = ImmutableList.of(dsColumn, viewShipModeColumn);
@@ -434,7 +438,7 @@ public class TestHiveMaterializedViewUtils
         testMetastore.setPartitionNames(viewPartitions);
 
         MaterializedDataPredicates materializedDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(viewPartitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(viewPartitionColumns), DateTimeZone.UTC);
 
         Map<String, String> materializedViewToBaseColumnMap = ImmutableMap.of("ds", "ds", "view_shipmode", "shipmode");
 
@@ -471,7 +475,7 @@ public class TestHiveMaterializedViewUtils
         testMetastore.setPartitionNames(partitions);
 
         MaterializedDataPredicates baseDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(partitionColumns), DateTimeZone.UTC);
 
         Column viewShipModeColumn = new Column("view_shipmode", HIVE_STRING, Optional.empty(), Optional.empty());
         List<Column> viewPartitionColumns = ImmutableList.of(dsColumn, viewShipModeColumn);
@@ -479,7 +483,7 @@ public class TestHiveMaterializedViewUtils
         testMetastore.setPartitionNames(viewPartitions);
 
         MaterializedDataPredicates materializedDataPredicates =
-                getMaterializedDataPredicates(testMetastore, metastoreContext, typeManager, getTable(viewPartitionColumns), DateTimeZone.UTC);
+                getMaterializedDataPredicates(SESSION, testMetastore, metastoreContext, typeManager, getTable(viewPartitionColumns), DateTimeZone.UTC);
 
         Map<String, String> materializedViewToBaseColumnMap = ImmutableMap.of();
 
@@ -620,6 +624,7 @@ public class TestHiveMaterializedViewUtils
     private static Table getTable(String tableName, List<Column> partitionColumns)
     {
         return new Table(
+                Optional.of("catalogName"),
                 SCHEMA_NAME,
                 tableName,
                 USER_NAME,
@@ -651,10 +656,10 @@ public class TestHiveMaterializedViewUtils
         }
     }
 
-    private static ConnectorMaterializedViewDefinition getConnectorMaterializedViewDefinition(
+    private static MaterializedViewDefinition getConnectorMaterializedViewDefinition(
             List<SchemaTableName> tables,
             Map<String, Map<SchemaTableName, String>> originalColumnMapping)
     {
-        return new ConnectorMaterializedViewDefinition(SQL, SCHEMA_NAME, TABLE_NAME, tables, Optional.empty(), originalColumnMapping, originalColumnMapping, ImmutableList.of(), Optional.empty());
+        return new MaterializedViewDefinition(SQL, SCHEMA_NAME, TABLE_NAME, tables, Optional.empty(), Optional.empty(), originalColumnMapping, originalColumnMapping, ImmutableList.of(), Optional.empty());
     }
 }

@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.facebook.presto.spi.analyzer.UpdateInfo;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -82,6 +83,12 @@ public class DropColumn
     }
 
     @Override
+    public UpdateInfo getUpdateInfo()
+    {
+        return new UpdateInfo("DROP COLUMN", table.toString());
+    }
+
+    @Override
     public boolean equals(Object o)
     {
         if (this == o) {
@@ -92,13 +99,15 @@ public class DropColumn
         }
         DropColumn that = (DropColumn) o;
         return Objects.equals(table, that.table) &&
-                Objects.equals(column, that.column);
+                Objects.equals(column, that.column) &&
+                Objects.equals(tableExists, that.tableExists) &&
+                Objects.equals(columnExists, that.columnExists);
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(table, column);
+        return Objects.hash(table, column, tableExists, columnExists);
     }
 
     @Override
@@ -107,6 +116,8 @@ public class DropColumn
         return toStringHelper(this)
                 .add("table", table)
                 .add("column", column)
+                .add("tableExists", tableExists)
+                .add("columnExists", columnExists)
                 .toString();
     }
 }

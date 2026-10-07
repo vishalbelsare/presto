@@ -54,8 +54,27 @@ public class TestingTypeManager
         throw new UnsupportedOperationException();
     }
 
-    private List<Type> getTypes()
+    @Override
+    public List<Type> getTypes()
     {
         return ImmutableList.of(BOOLEAN, INTEGER, BIGINT, DOUBLE, VARCHAR, VARBINARY, TIMESTAMP, DATE, ID, HYPER_LOG_LOG);
+    }
+
+    @Override
+    public boolean hasType(TypeSignature signature)
+    {
+        return getType(signature) != null;
+    }
+
+    @Override
+    public void addType(Type type)
+    {
+        throw new UnsupportedOperationException("Adding a type is not supported ");
+    }
+
+    @Override
+    public void addParametricType(ParametricType parametricType)
+    {
+        throw new UnsupportedOperationException("Adding a parametric type is not supported ");
     }
 }

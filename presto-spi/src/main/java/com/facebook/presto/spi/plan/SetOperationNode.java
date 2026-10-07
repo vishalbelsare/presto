@@ -17,8 +17,7 @@ import com.facebook.presto.spi.SourceLocation;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import javax.annotation.concurrent.Immutable;
+import com.google.errorprone.annotations.Immutable;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -49,7 +48,18 @@ public abstract class SetOperationNode
             @JsonProperty("outputVariables") List<VariableReferenceExpression> outputVariables,
             @JsonProperty("outputToInputs") Map<VariableReferenceExpression, List<VariableReferenceExpression>> outputToInputs)
     {
-        super(sourceLocation, id);
+        this(sourceLocation, id, Optional.empty(), sources, outputVariables, outputToInputs);
+    }
+
+    protected SetOperationNode(
+            Optional<SourceLocation> sourceLocation,
+            PlanNodeId id,
+            Optional<PlanNode> statsEquivalentPlanNode,
+            List<PlanNode> sources,
+            List<VariableReferenceExpression> outputVariables,
+            Map<VariableReferenceExpression, List<VariableReferenceExpression>> outputToInputs)
+    {
+        super(sourceLocation, id, statsEquivalentPlanNode);
 
         requireNonNull(sources, "sources is null");
         checkArgument(!sources.isEmpty(), "Must have at least one source");

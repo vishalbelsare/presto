@@ -15,7 +15,7 @@ This document describes how to setup the Elasticsearch Connector to run SQL quer
 
 .. note::
 
-    Elasticsearch 6.0.0 or later is required.
+    Elasticsearch 9.0.1 or later is required.
 
 Configuration
 -------------
@@ -52,6 +52,9 @@ Property Name                                 Description
 ``elasticsearch.max-http-connections``        Maximum number of persistent HTTP connections to Elasticsearch.
 ``elasticsearch.http-thread-count``           Number of threads handling HTTP connections to Elasticsearch.
 ``elasticsearch.ignore-publish-address``      Whether to ignore the published address and use the configured address.
+``case-sensitive-name-matching``              Enable case sensitive identifier support for schema and column names for the connector.
+                                              When disabled, names are matched case-insensitively using lowercase normalization.
+                                              Default is ``false``.
 ============================================= ==============================================================================
 
 ``elasticsearch.host``
@@ -311,6 +314,19 @@ The result of these query tables is a table with a single row and a single
 column named ``result`` of type VARCHAR. It contains the JSON payload returned
 by Elasticsearch, and can be processed with the :doc:`built-in JSON functions
 </functions/json>`.
+
+Password Authentication
+-----------------------
+
+To enable Password authentication in elasticsearch, the ``elasticsearch.security`` option needs to be set to ``PASSWORD``.
+Additionally, the following options need to be configured appropriately:
+
+================================ =======================================
+Property Name                    Description
+================================ =======================================
+``elasticsearch.auth.user``      Username to connect to Elasticsearch.
+``elasticsearch.auth.password``  Password to authenticate Elasticsearch.
+================================ =======================================
 
 AWS Authorization
 -----------------

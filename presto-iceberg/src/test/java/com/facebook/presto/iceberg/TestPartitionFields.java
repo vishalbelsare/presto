@@ -26,10 +26,8 @@ import org.testng.annotations.Test;
 
 import java.util.function.Consumer;
 
-import static com.facebook.presto.iceberg.PartitionFields.parsePartitionField;
-import static com.facebook.presto.iceberg.PartitionFields.toPartitionFields;
+import static com.facebook.presto.iceberg.PartitionFields.buildPartitionField;
 import static com.facebook.presto.testing.assertions.Assert.assertEquals;
-import static com.google.common.collect.Iterables.getOnlyElement;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 
 public class TestPartitionFields
@@ -50,17 +48,16 @@ public class TestPartitionFields
         assertInvalid("bucket()", "Invalid partition field declaration: bucket()");
         assertInvalid("abc", "Cannot find source column: abc");
         assertInvalid("notes", "Cannot partition by non-primitive source field: list<string>");
-        assertInvalid("bucket(price, 42)", "Cannot bucket by type: double");
-        assertInvalid("bucket(notes, 88)", "Cannot bucket by type: list<string>");
-        assertInvalid("truncate(ts, 13)", "Cannot truncate type: timestamp");
-        assertInvalid("year(order_key)", "Cannot partition type long by year");
+        assertInvalid("bucket(price, 42)", "Invalid source type double for transform: bucket[42]");
+        assertInvalid("bucket(notes, 88)", "Cannot partition by non-primitive source field: list<string>");
+        assertInvalid("truncate(ts, 13)", "Invalid source type timestamp for transform: truncate[13]");
+        assertInvalid("year(order_key)", "Invalid source type long for transform: year");
     }
 
     private static void assertParse(String value, PartitionSpec expected)
     {
         assertEquals(expected.fields().size(), 1);
         assertEquals(parseField(value), expected);
-        assertEquals(getOnlyElement(toPartitionFields(expected)), value);
     }
 
     private static void assertInvalid(String value, String message)
@@ -75,7 +72,7 @@ public class TestPartitionFields
 
     private static PartitionSpec parseField(String value)
     {
-        return partitionSpec(builder -> parsePartitionField(builder, value));
+        return partitionSpec(builder -> buildPartitionField(builder, value));
     }
 
     private static PartitionSpec partitionSpec(Consumer<PartitionSpec.Builder> consumer)

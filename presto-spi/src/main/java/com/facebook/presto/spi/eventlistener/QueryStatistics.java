@@ -25,6 +25,7 @@ public class QueryStatistics
     private final Duration cpuTime;
     private final Duration retriedCpuTime;
     private final Duration wallTime;
+    private final Duration totalScheduledTime;
     private final Duration waitingForPrerequisitesTime;
     private final Duration queuedTime;
     private final Duration waitingForResourcesTime;
@@ -34,6 +35,7 @@ public class QueryStatistics
     private final Duration planningTime;
     private final Optional<Duration> analysisTime;
     private final Duration executionTime;
+    private final Duration finishingTime;
 
     private final int peakRunningTasks;
     private final long peakUserMemoryBytes;
@@ -42,6 +44,8 @@ public class QueryStatistics
     private final long peakTaskUserMemory;
     private final long peakTaskTotalMemory;
     private final long peakNodeTotalMemory;
+    private final long shuffledBytes;
+    private final long shuffledRows;
     private final long totalBytes;
     private final long totalRows;
     private final long outputBytes;
@@ -57,11 +61,13 @@ public class QueryStatistics
     private final int completedSplits;
     private final boolean complete;
     private final RuntimeStats runtimeStats;
+    private final long scanRawInputBytes;
 
     public QueryStatistics(
             Duration cpuTime,
             Duration retriedCpuTime,
             Duration wallTime,
+            Duration totalScheduledTime,
             Duration waitingForPrerequisitesTime,
             Duration queuedTime,
             Duration waitingForResourcesTime,
@@ -71,12 +77,15 @@ public class QueryStatistics
             Duration planningTime,
             Optional<Duration> analysisTime,
             Duration executionTime,
+            Duration finishingTime,
             int peakRunningTasks,
             long peakUserMemoryBytes,
             long peakTotalNonRevocableMemoryBytes,
             long peakTaskUserMemory,
             long peakTaskTotalMemory,
             long peakNodeTotalMemory,
+            long shuffledBytes,
+            long shuffledRows,
             long totalBytes,
             long totalRows,
             long outputBytes,
@@ -89,11 +98,13 @@ public class QueryStatistics
             double cumulativeTotalMemory,
             int completedSplits,
             boolean complete,
-            RuntimeStats runtimeStats)
+            RuntimeStats runtimeStats,
+            long scanRawInputBytes)
     {
         this.cpuTime = requireNonNull(cpuTime, "cpuTime is null");
         this.retriedCpuTime = requireNonNull(retriedCpuTime, "retriedCpuTime is null");
         this.wallTime = requireNonNull(wallTime, "wallTime is null");
+        this.totalScheduledTime = requireNonNull(totalScheduledTime, "totalScheduledTime is null");
         this.waitingForPrerequisitesTime = requireNonNull(waitingForPrerequisitesTime, "waitingForPrerequisitesTime is null");
         this.queuedTime = requireNonNull(queuedTime, "queuedTime is null");
         this.waitingForResourcesTime = requireNonNull(waitingForResourcesTime, "waitingForResourcesTime is null");
@@ -103,12 +114,15 @@ public class QueryStatistics
         this.planningTime = requireNonNull(planningTime, "planningTime is null");
         this.analysisTime = requireNonNull(analysisTime, "analysisTime is null");
         this.executionTime = requireNonNull(executionTime, "executionTime is null");
+        this.finishingTime = requireNonNull(finishingTime, "finishingTime is null");
         this.peakRunningTasks = peakRunningTasks;
         this.peakUserMemoryBytes = peakUserMemoryBytes;
         this.peakTotalNonRevocableMemoryBytes = peakTotalNonRevocableMemoryBytes;
         this.peakTaskUserMemory = peakTaskUserMemory;
         this.peakTaskTotalMemory = peakTaskTotalMemory;
         this.peakNodeTotalMemory = peakNodeTotalMemory;
+        this.shuffledBytes = shuffledBytes;
+        this.shuffledRows = shuffledRows;
         this.totalBytes = totalBytes;
         this.totalRows = totalRows;
         this.outputBytes = outputBytes;
@@ -122,6 +136,7 @@ public class QueryStatistics
         this.completedSplits = completedSplits;
         this.complete = complete;
         this.runtimeStats = requireNonNull(runtimeStats, "runtimeStats is null");
+        this.scanRawInputBytes = scanRawInputBytes;
     }
 
     public Duration getCpuTime()
@@ -137,6 +152,11 @@ public class QueryStatistics
     public Duration getWallTime()
     {
         return wallTime;
+    }
+
+    public Duration getTotalScheduledTime()
+    {
+        return totalScheduledTime;
     }
 
     public Duration getWaitingForPrerequisitesTime()
@@ -184,6 +204,11 @@ public class QueryStatistics
         return executionTime;
     }
 
+    public Duration getFinishingTime()
+    {
+        return finishingTime;
+    }
+
     public int getPeakRunningTasks()
     {
         return peakRunningTasks;
@@ -212,6 +237,16 @@ public class QueryStatistics
     public long getPeakNodeTotalMemory()
     {
         return peakNodeTotalMemory;
+    }
+
+    public long getShuffledBytes()
+    {
+        return shuffledBytes;
+    }
+
+    public long getShuffledRows()
+    {
+        return shuffledRows;
     }
 
     public long getTotalBytes()
@@ -277,5 +312,10 @@ public class QueryStatistics
     public RuntimeStats getRuntimeStats()
     {
         return runtimeStats;
+    }
+
+    public long getScanRawInputBytes()
+    {
+        return scanRawInputBytes;
     }
 }

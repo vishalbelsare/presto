@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.orc;
 
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.RuntimeStats;
 import com.facebook.presto.common.Subfield;
@@ -36,7 +37,7 @@ import com.facebook.presto.orc.cache.StorageOrcFileTailSource;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.units.DataSize;
+import com.google.errorprone.annotations.Immutable;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -55,8 +56,6 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
 import org.openjdk.jmh.runner.options.VerboseMode;
 import org.testng.annotations.Test;
 
-import javax.annotation.concurrent.Immutable;
-
 import java.io.File;
 import java.io.IOException;
 import java.math.BigInteger;
@@ -66,11 +65,11 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.Random;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static com.facebook.presto.common.predicate.TupleDomainFilter.LongDecimalRange;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
@@ -83,6 +82,7 @@ import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.common.type.TinyintType.TINYINT;
 import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
 import static com.facebook.presto.orc.DwrfEncryptionProvider.NO_ENCRYPTION;
+import static com.facebook.presto.orc.NoOpOrcWriterStats.NOOP_WRITER_STATS;
 import static com.facebook.presto.orc.NoopOrcAggregatedMemoryContext.NOOP_ORC_AGGREGATED_MEMORY_CONTEXT;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.orc.OrcReader.INITIAL_BATCH_SIZE;
@@ -93,7 +93,6 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.io.Files.createTempDir;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.util.Objects.requireNonNull;
 import static java.util.UUID.randomUUID;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -102,7 +101,7 @@ import static org.joda.time.DateTimeZone.UTC;
 
 @SuppressWarnings("MethodMayBeStatic")
 @State(Scope.Thread)
-@OutputTimeUnit(TimeUnit.MILLISECONDS)
+@OutputTimeUnit(MILLISECONDS)
 @Fork(2)
 @Warmup(iterations = 10, time = 1000, timeUnit = MILLISECONDS)
 @Measurement(iterations = 10, time = 1000, timeUnit = MILLISECONDS)
@@ -268,7 +267,7 @@ public class BenchmarkSelectiveStreamReaders
             }
 
             // Use writeOrcColumnsPresto so that orcType and varchar length can be written in file footer
-            writeOrcColumnsPresto(orcFile, ORC_12, NONE, Optional.empty(), Collections.nCopies(channelCount, type), values, new OrcWriterStats());
+            writeOrcColumnsPresto(orcFile, ORC_12, NONE, Optional.empty(), Collections.nCopies(channelCount, type), values, NOOP_WRITER_STATS);
         }
 
         @TearDown
@@ -309,7 +308,6 @@ public class BenchmarkSelectiveStreamReaders
                     0,
                     dataSource.getSize(),
                     UTC, // arbitrary
-                    true,
                     new TestingHiveOrcAggregatedMemoryContext(),
                     Optional.empty(),
                     INITIAL_BATCH_SIZE);
@@ -333,10 +331,6 @@ public class BenchmarkSelectiveStreamReaders
                 return Optional.of(BigintRange.of((long) (Integer.MIN_VALUE * selectionRateForNonNull), (long) (Integer.MAX_VALUE * selectionRateForNonNull), filterAllowNull));
             }
 
-            if (type == INTEGER) {
-                return Optional.of(BigintRange.of((long) (Integer.MIN_VALUE * selectionRateForNonNull), (long) (Integer.MAX_VALUE * selectionRateForNonNull), filterAllowNull));
-            }
-
             if (type == SMALLINT) {
                 return Optional.of(BigintRange.of((long) (Short.MIN_VALUE * selectionRateForNonNull), (long) (Short.MAX_VALUE * selectionRateForNonNull), filterAllowNull));
             }
@@ -345,11 +339,11 @@ public class BenchmarkSelectiveStreamReaders
                 return Optional.of(BigintRange.of((long) (Byte.MIN_VALUE * selectionRateForNonNull), (long) (Byte.MAX_VALUE * selectionRateForNonNull), filterAllowNull));
             }
 
-            if (type == REAL) {
+            if (type.equals(REAL)) {
                 return Optional.of(FloatRange.of(0, false, false, selectionRateForNonNull, false, true, filterAllowNull));
             }
 
-            if (type == DOUBLE) {
+            if (type.equals(DOUBLE)) {
                 return Optional.of(DoubleRange.of(0, false, false, selectionRateForNonNull, false, true, filterAllowNull));
             }
 
@@ -393,7 +387,7 @@ public class BenchmarkSelectiveStreamReaders
             }
         }
 
-        private final Object createValue(Type type, float filterRate)
+        private Object createValue(Type type, float filterRate)
         {
             if (type == BOOLEAN) {
                 // We need to specialize BOOLEAN case because we can't specify filterRate by manipulating the filter value in getFilter.
@@ -425,14 +419,14 @@ public class BenchmarkSelectiveStreamReaders
             if (type == TIMESTAMP) {
                 // We use int because longs will be converted to int when being written.
                 long value = random.nextInt();
-                return new SqlTimestamp(value, TimeZoneKey.UTC_KEY);
+                return new SqlTimestamp(value, TimeZoneKey.UTC_KEY, MILLISECONDS);
             }
 
-            if (type == REAL) {
+            if (type.equals(REAL)) {
                 return random.nextFloat();
             }
 
-            if (type == DOUBLE) {
+            if (type.equals(DOUBLE)) {
                 return random.nextDouble();
             }
 

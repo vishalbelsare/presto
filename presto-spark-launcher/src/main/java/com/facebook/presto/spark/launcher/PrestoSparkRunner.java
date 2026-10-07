@@ -13,22 +13,29 @@
  */
 package com.facebook.presto.spark.launcher;
 
+import com.facebook.presto.spark.classloader_interface.ExecutionStrategy;
 import com.facebook.presto.spark.classloader_interface.IPrestoSparkQueryExecution;
 import com.facebook.presto.spark.classloader_interface.IPrestoSparkQueryExecutionFactory;
 import com.facebook.presto.spark.classloader_interface.IPrestoSparkService;
 import com.facebook.presto.spark.classloader_interface.IPrestoSparkServiceFactory;
 import com.facebook.presto.spark.classloader_interface.IPrestoSparkTaskExecutorFactory;
+import com.facebook.presto.spark.classloader_interface.PrestoSparkBootstrapTimer;
 import com.facebook.presto.spark.classloader_interface.PrestoSparkConfiguration;
+import com.facebook.presto.spark.classloader_interface.PrestoSparkFailure;
 import com.facebook.presto.spark.classloader_interface.PrestoSparkSession;
 import com.facebook.presto.spark.classloader_interface.PrestoSparkTaskExecutorFactoryProvider;
 import com.facebook.presto.spark.classloader_interface.SparkProcessType;
+import com.google.common.base.Splitter;
 import org.apache.spark.TaskContext;
+import org.apache.spark.util.CollectionAccumulator;
+import scala.Option;
 
 import java.io.File;
 import java.io.UncheckedIOException;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.security.Principal;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -36,9 +43,11 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.facebook.presto.spark.launcher.LauncherUtils.checkDirectory;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Ticker.systemTicker;
 import static java.lang.String.format;
 import static java.util.Arrays.asList;
 import static java.util.Arrays.sort;
@@ -49,27 +58,35 @@ public class PrestoSparkRunner
 {
     private final PrestoSparkDistribution distribution;
     private final IPrestoSparkService driverPrestoSparkService;
+    private static final CollectionAccumulator<Map<String, Long>> bootstrapMetricsCollector = new CollectionAccumulator<>();
+    public static final String SPARK_EXECUTION_STRATEGIES = "spark_execution_strategies";
 
     public PrestoSparkRunner(PrestoSparkDistribution distribution)
     {
         this.distribution = requireNonNull(distribution, "distribution is null");
+        bootstrapMetricsCollector.register(distribution.getSparkContext(), Option.apply("PrestoOnSparkBootstrapMetrics"), false);
         driverPrestoSparkService = createService(
                 SparkProcessType.DRIVER,
                 distribution.getPackageSupplier(),
                 distribution.getConfigProperties(),
                 distribution.getCatalogProperties(),
-                distribution.getMetadataStorageType(),
+                distribution.getPrestoSparkProperties(),
+                distribution.getNativeWorkerConfigProperties(),
+                distribution.getNativeWorkerCatalogConfigProperties(),
                 distribution.getEventListenerProperties(),
                 distribution.getAccessControlProperties(),
                 distribution.getSessionPropertyConfigurationProperties(),
                 distribution.getFunctionNamespaceProperties(),
-                distribution.getTempStorageProperties());
+                distribution.getTempStorageProperties(),
+                distribution.getExpressionManagerProperties(),
+                Optional.empty());
     }
 
     public void run(
             String user,
             Optional<Principal> principal,
             Map<String, String> extraCredentials,
+            List<X509Certificate> certificates,
             String catalog,
             String schema,
             Optional<String> source,
@@ -88,34 +105,85 @@ public class PrestoSparkRunner
             Optional<String> queryDataOutputLocation)
     {
         IPrestoSparkQueryExecutionFactory queryExecutionFactory = driverPrestoSparkService.getQueryExecutionFactory();
-
-        PrestoSparkSession session = new PrestoSparkSession(
+        PrestoSparkRunnerContext prestoSparkRunnerContext = new PrestoSparkRunnerContext(
                 user,
                 principal,
                 extraCredentials,
-                Optional.ofNullable(catalog),
-                Optional.ofNullable(schema),
+                certificates,
+                catalog,
+                schema,
                 source,
                 userAgent,
                 clientInfo,
                 clientTags,
-                Optional.empty(),
-                Optional.empty(),
                 sessionProperties,
                 catalogSessionProperties,
-                traceToken);
-
-        IPrestoSparkQueryExecution queryExecution = queryExecutionFactory.create(
-                distribution.getSparkContext(),
-                session,
                 sqlText,
                 sqlLocation,
                 sqlFileHexHash,
                 sqlFileSizeInBytes,
+                traceToken,
                 sparkQueueName,
-                new DistributionBasedPrestoSparkTaskExecutorFactoryProvider(distribution),
                 queryStatusInfoOutputLocation,
-                queryDataOutputLocation);
+                queryDataOutputLocation,
+                getExecutionStrategies(sessionProperties));
+        try {
+            execute(queryExecutionFactory, prestoSparkRunnerContext);
+        }
+        catch (PrestoSparkFailure failure) {
+            if (!failure.getRetryExecutionStrategies().isEmpty()) {
+                PrestoSparkRunnerContext retryRunnerContext = new PrestoSparkRunnerContext.Builder(prestoSparkRunnerContext)
+                        .setExecutionStrategies(failure.getRetryExecutionStrategies())
+                        .build();
+                execute(queryExecutionFactory, retryRunnerContext);
+                return;
+            }
+
+            throw failure;
+        }
+    }
+
+    private List<ExecutionStrategy> getExecutionStrategies(Map<String, String> sessionProperties)
+    {
+        String executionStrategies = sessionProperties.getOrDefault(SPARK_EXECUTION_STRATEGIES, "");
+        return Splitter.on(',').trimResults().omitEmptyStrings().splitToList(executionStrategies)
+                .stream()
+                .map(t -> ExecutionStrategy.valueOf(t))
+                .collect(Collectors.toList());
+    }
+
+    private void execute(IPrestoSparkQueryExecutionFactory queryExecutionFactory, PrestoSparkRunnerContext prestoSparkRunnerContext)
+    {
+        PrestoSparkSession session = new PrestoSparkSession(
+                prestoSparkRunnerContext.getUser(),
+                prestoSparkRunnerContext.getPrincipal(),
+                prestoSparkRunnerContext.getExtraCredentials(),
+                prestoSparkRunnerContext.getCertificates(),
+                Optional.ofNullable(prestoSparkRunnerContext.getCatalog()),
+                Optional.ofNullable(prestoSparkRunnerContext.getSchema()),
+                prestoSparkRunnerContext.getSource(),
+                prestoSparkRunnerContext.getUserAgent(),
+                prestoSparkRunnerContext.getClientInfo(),
+                prestoSparkRunnerContext.getClientTags(),
+                Optional.empty(),
+                Optional.empty(),
+                prestoSparkRunnerContext.getSessionProperties(),
+                prestoSparkRunnerContext.getCatalogSessionProperties(),
+                prestoSparkRunnerContext.getTraceToken());
+
+        IPrestoSparkQueryExecution queryExecution = queryExecutionFactory.create(
+                distribution.getSparkContext(),
+                session,
+                prestoSparkRunnerContext.getSqlText(),
+                prestoSparkRunnerContext.getSqlLocation(),
+                prestoSparkRunnerContext.getSqlFileHexHash(),
+                prestoSparkRunnerContext.getSqlFileSizeInBytes(),
+                prestoSparkRunnerContext.getSparkQueueName(),
+                new DistributionBasedPrestoSparkTaskExecutorFactoryProvider(distribution, bootstrapMetricsCollector),
+                prestoSparkRunnerContext.getQueryStatusInfoOutputLocation(),
+                prestoSparkRunnerContext.getQueryDataOutputLocation(),
+                prestoSparkRunnerContext.getExecutionStrategies(),
+                Optional.of(bootstrapMetricsCollector));
 
         List<List<Object>> results = queryExecution.execute();
 
@@ -126,7 +194,19 @@ public class PrestoSparkRunner
     @Override
     public void close()
     {
+        // Shutdown the driver Airlift application
         driverPrestoSparkService.close();
+
+        // If we are in localMode, the executor spawns the Executor Airlift application
+        // (which is long-running and holds onto resources) on the same JVM.
+        //
+        // On query completion, the SparkContext shutdown calls the Driver Airlift
+        // application shutdown, but it has no hook to call Executor Airlift application
+        // shutdown. So the query hangs forever.
+        //
+        // This code, prevents this hanging state by explicitly calling the
+        // Executor Airlift application shutdown.
+        DistributionBasedPrestoSparkTaskExecutorFactoryProvider.close();
     }
 
     private static IPrestoSparkServiceFactory createServiceFactory(File directory)
@@ -158,27 +238,42 @@ public class PrestoSparkRunner
             PackageSupplier packageSupplier,
             Map<String, String> configProperties,
             Map<String, Map<String, String>> catalogProperties,
-            String metadataStorageType,
+            Map<String, String> prestoSparkProperties,
+            Optional<Map<String, String>> nativeWorkerConfigProperties,
+            Optional<Map<String, Map<String, String>>> nativeWorkerCatalogConfigProperties,
             Optional<Map<String, String>> eventListenerProperties,
             Optional<Map<String, String>> accessControlProperties,
             Optional<Map<String, String>> sessionPropertyConfigurationProperties,
             Optional<Map<String, Map<String, String>>> functionNamespaceProperties,
-            Optional<Map<String, Map<String, String>>> tempStorageProperties)
+            Optional<Map<String, Map<String, String>>> tempStorageProperties,
+            Optional<Map<String, Map<String, String>>> expressionManagerProperties,
+            Optional<CollectionAccumulator<Map<String, Long>>> bootstrapMetricsCollector)
     {
+        PrestoSparkBootstrapTimer bootstrapTimer = new PrestoSparkBootstrapTimer(systemTicker(), !sparkProcessType.equals(SparkProcessType.DRIVER));
+        bootstrapTimer.beginRunnerServiceCreation();
+
         String packagePath = getPackagePath(packageSupplier);
         File pluginsDirectory = checkDirectory(new File(packagePath, "plugin"));
         PrestoSparkConfiguration configuration = new PrestoSparkConfiguration(
                 configProperties,
                 pluginsDirectory.getAbsolutePath(),
                 catalogProperties,
-                metadataStorageType,
+                prestoSparkProperties,
+                nativeWorkerConfigProperties,
+                nativeWorkerCatalogConfigProperties,
                 eventListenerProperties,
                 accessControlProperties,
                 sessionPropertyConfigurationProperties,
                 functionNamespaceProperties,
-                tempStorageProperties);
+                tempStorageProperties,
+                expressionManagerProperties);
         IPrestoSparkServiceFactory serviceFactory = createServiceFactory(checkDirectory(new File(packagePath, "lib")));
-        return serviceFactory.createService(sparkProcessType, configuration);
+        IPrestoSparkService service = serviceFactory.createService(sparkProcessType, configuration, bootstrapTimer);
+        bootstrapTimer.endRunnerServiceCreation();
+        if (bootstrapMetricsCollector.isPresent() && bootstrapTimer.isExecutorBootstrap()) {
+            bootstrapMetricsCollector.get().add(bootstrapTimer.exportBootstrapDurations());
+        }
+        return service;
     }
 
     private static String getPackagePath(PackageSupplier packageSupplier)
@@ -190,28 +285,40 @@ public class PrestoSparkRunner
             implements PrestoSparkTaskExecutorFactoryProvider
     {
         private final PackageSupplier packageSupplier;
-        private final String metadataStorageType;
         private final Map<String, String> configProperties;
+        private final Map<String, String> nativeWorkerConfigProperties;
         private final Map<String, Map<String, String>> catalogProperties;
+        private final Map<String, Map<String, String>> nativeWorkerCatalogConfigProperties;
+        private final Map<String, String> prestoSparkProperties;
         private final Map<String, String> eventListenerProperties;
         private final Map<String, String> accessControlProperties;
         private final Map<String, String> sessionPropertyConfigurationProperties;
         private final Map<String, Map<String, String>> functionNamespaceProperties;
         private final Map<String, Map<String, String>> tempStorageProperties;
+        private final Map<String, Map<String, String>> expressionManagerProperties;
+        private final CollectionAccumulator<Map<String, Long>> bootstrapMetricsCollector;
+        private final boolean isLocal;
 
-        public DistributionBasedPrestoSparkTaskExecutorFactoryProvider(PrestoSparkDistribution distribution)
+        public DistributionBasedPrestoSparkTaskExecutorFactoryProvider(
+                PrestoSparkDistribution distribution,
+                CollectionAccumulator<Map<String, Long>> bootstrapMetricsCollector)
         {
             requireNonNull(distribution, "distribution is null");
             this.packageSupplier = distribution.getPackageSupplier();
-            this.metadataStorageType = distribution.getMetadataStorageType();
             this.configProperties = distribution.getConfigProperties();
+            this.nativeWorkerConfigProperties = distribution.getNativeWorkerConfigProperties().orElse(null);
             this.catalogProperties = distribution.getCatalogProperties();
+            this.nativeWorkerCatalogConfigProperties = distribution.getNativeWorkerCatalogConfigProperties().orElse(null);
+            this.prestoSparkProperties = distribution.getPrestoSparkProperties();
+            this.bootstrapMetricsCollector = requireNonNull(bootstrapMetricsCollector);
             // Optional is not Serializable
             this.eventListenerProperties = distribution.getEventListenerProperties().orElse(null);
             this.accessControlProperties = distribution.getAccessControlProperties().orElse(null);
             this.sessionPropertyConfigurationProperties = distribution.getSessionPropertyConfigurationProperties().orElse(null);
             this.functionNamespaceProperties = distribution.getFunctionNamespaceProperties().orElse(null);
             this.tempStorageProperties = distribution.getTempStorageProperties().orElse(null);
+            this.expressionManagerProperties = distribution.getExpressionManagerProperties().orElse(null);
+            this.isLocal = distribution.getSparkContext().isLocal();
         }
 
         @Override
@@ -222,48 +329,68 @@ public class PrestoSparkRunner
             return prestoSparkService.getTaskExecutorFactory();
         }
 
+        @Override
+        public IPrestoSparkTaskExecutorFactory getNative()
+        {
+            checkState(TaskContext.get() != null, "this method is expected to be called only from the main task thread on the spark executor");
+            IPrestoSparkService prestoSparkService = getOrCreatePrestoSparkService();
+            return prestoSparkService.getNativeTaskExecutorFactory();
+        }
+
         private static IPrestoSparkService service;
         private static String currentPackagePath;
-        private static String currentMetadataStorageType;
         private static Map<String, String> currentConfigProperties;
+        private static Map<String, String> currentNativeWorkerConfigProperties;
         private static Map<String, Map<String, String>> currentCatalogProperties;
+        private static Map<String, Map<String, String>> currentNativeWorkerCatalogConfigProperties;
+        private static Map<String, String> currentPrestoSparkProperties;
         private static Map<String, String> currentEventListenerProperties;
         private static Map<String, String> currentAccessControlProperties;
         private static Map<String, String> currentSessionPropertyConfigurationProperties;
         private static Map<String, Map<String, String>> currentFunctionNamespaceProperties;
         private static Map<String, Map<String, String>> currentTempStorageProperties;
+        private static Map<String, Map<String, String>> currentExpressionManagerProperties;
 
         private IPrestoSparkService getOrCreatePrestoSparkService()
         {
             synchronized (DistributionBasedPrestoSparkTaskExecutorFactoryProvider.class) {
                 if (service == null) {
                     service = createService(
-                            SparkProcessType.EXECUTOR,
+                            isLocal ? SparkProcessType.LOCAL_EXECUTOR : SparkProcessType.EXECUTOR,
                             packageSupplier,
                             configProperties,
                             catalogProperties,
-                            metadataStorageType,
+                            prestoSparkProperties,
+                            Optional.ofNullable(nativeWorkerConfigProperties),
+                            Optional.ofNullable(nativeWorkerCatalogConfigProperties),
                             Optional.ofNullable(eventListenerProperties),
                             Optional.ofNullable(accessControlProperties),
                             Optional.ofNullable(sessionPropertyConfigurationProperties),
                             Optional.ofNullable(functionNamespaceProperties),
-                            Optional.ofNullable(tempStorageProperties));
+                            Optional.ofNullable(tempStorageProperties),
+                            Optional.ofNullable(expressionManagerProperties),
+                            Optional.of(bootstrapMetricsCollector));
 
-                    currentMetadataStorageType = metadataStorageType;
                     currentPackagePath = getPackagePath(packageSupplier);
                     currentConfigProperties = configProperties;
+                    currentNativeWorkerConfigProperties = nativeWorkerConfigProperties;
                     currentCatalogProperties = catalogProperties;
+                    currentNativeWorkerCatalogConfigProperties = nativeWorkerCatalogConfigProperties;
+                    currentPrestoSparkProperties = prestoSparkProperties;
                     currentEventListenerProperties = eventListenerProperties;
                     currentAccessControlProperties = accessControlProperties;
                     currentSessionPropertyConfigurationProperties = sessionPropertyConfigurationProperties;
                     currentFunctionNamespaceProperties = functionNamespaceProperties;
                     currentTempStorageProperties = tempStorageProperties;
+                    currentExpressionManagerProperties = expressionManagerProperties;
                 }
                 else {
                     checkEquals("packagePath", currentPackagePath, getPackagePath(packageSupplier));
-                    checkEquals("metadataStorageType", currentMetadataStorageType, metadataStorageType);
                     checkEquals("configProperties", currentConfigProperties, configProperties);
+                    checkEquals("nativeWorkerConfigProperties", currentNativeWorkerConfigProperties, nativeWorkerConfigProperties);
                     checkEquals("catalogProperties", currentCatalogProperties, catalogProperties);
+                    checkEquals("nativeWorkerCatalogConfigProperties", currentNativeWorkerCatalogConfigProperties, nativeWorkerCatalogConfigProperties);
+                    checkEquals("prestoSparkProperties", currentPrestoSparkProperties, prestoSparkProperties);
                     checkEquals("eventListenerProperties", currentEventListenerProperties, eventListenerProperties);
                     checkEquals("accessControlProperties", currentAccessControlProperties, accessControlProperties);
                     checkEquals("sessionPropertyConfigurationProperties",
@@ -271,6 +398,7 @@ public class PrestoSparkRunner
                             sessionPropertyConfigurationProperties);
                     checkEquals("functionNamespaceProperties", currentFunctionNamespaceProperties, functionNamespaceProperties);
                     checkEquals("tempStorageProperties", currentTempStorageProperties, tempStorageProperties);
+                    checkEquals("expressionManagerProperties", currentExpressionManagerProperties, expressionManagerProperties);
                 }
                 return service;
             }
@@ -280,6 +408,13 @@ public class PrestoSparkRunner
         {
             if (!Objects.equals(first, second)) {
                 throw new IllegalStateException(format("%s is different: %s != %s", name, first, second));
+            }
+        }
+
+        public static synchronized void close()
+        {
+            if (service != null) {
+                service.close();
             }
         }
     }

@@ -35,11 +35,11 @@ import static com.facebook.presto.sql.SqlFormatter.formatSql;
 import static com.facebook.presto.verifier.framework.DataMatchResult.MatchType.COLUMN_MISMATCH;
 import static com.facebook.presto.verifier.framework.DataMatchResult.MatchType.MATCH;
 import static com.facebook.presto.verifier.framework.DataMatchResult.MatchType.ROW_COUNT_MISMATCH;
-import static com.facebook.presto.verifier.framework.DataMatchResult.MatchType.SCHEMA_MISMATCH;
 import static com.facebook.presto.verifier.framework.QueryStage.DESCRIBE;
 import static com.facebook.presto.verifier.framework.QueryStage.forTeardown;
 import static com.facebook.presto.verifier.framework.VerifierUtil.runAndConsume;
 import static java.util.Locale.ENGLISH;
+import static java.util.Objects.requireNonNull;
 
 public class DataVerificationUtil
 {
@@ -71,19 +71,16 @@ public class DataVerificationUtil
     }
 
     public static DataMatchResult match(
+            DataMatchResult.DataType dataType,
             ChecksumValidator checksumValidator,
             List<Column> controlColumns,
             List<Column> testColumns,
             ChecksumResult controlChecksum,
             ChecksumResult testChecksum)
     {
+        requireNonNull(controlColumns, "controlColumns is null.");
         if (!controlColumns.equals(testColumns)) {
-            return new DataMatchResult(
-                    SCHEMA_MISMATCH,
-                    Optional.empty(),
-                    OptionalLong.empty(),
-                    OptionalLong.empty(),
-                    ImmutableList.of());
+            return DataMatchResult.schemaMismatch(dataType, controlColumns, testColumns);
         }
 
         OptionalLong controlRowCount = OptionalLong.of(controlChecksum.getRowCount());
@@ -100,8 +97,10 @@ public class DataVerificationUtil
             matchType = mismatchedColumns.isEmpty() ? MATCH : COLUMN_MISMATCH;
         }
         return new DataMatchResult(
+                dataType,
                 matchType,
                 Optional.of(controlChecksum),
+                Optional.of(testChecksum),
                 controlRowCount,
                 testRowCount,
                 mismatchedColumns);

@@ -13,7 +13,11 @@
  */
 package com.facebook.presto.spark;
 
+import com.facebook.presto.common.RuntimeStats;
+import com.facebook.presto.common.transaction.TransactionId;
 import com.facebook.presto.server.SessionContext;
+import com.facebook.presto.spark.accesscontrol.PrestoSparkAuthenticatorProvider;
+import com.facebook.presto.spark.accesscontrol.PrestoSparkCredentialsProvider;
 import com.facebook.presto.spark.classloader_interface.PrestoSparkSession;
 import com.facebook.presto.spi.function.SqlFunctionId;
 import com.facebook.presto.spi.function.SqlInvokedFunction;
@@ -21,12 +25,12 @@ import com.facebook.presto.spi.security.Identity;
 import com.facebook.presto.spi.security.TokenAuthenticator;
 import com.facebook.presto.spi.session.ResourceEstimates;
 import com.facebook.presto.spi.tracing.Tracer;
-import com.facebook.presto.transaction.TransactionId;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import jakarta.annotation.Nullable;
 
-import javax.annotation.Nullable;
-
+import java.security.cert.X509Certificate;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -41,6 +45,8 @@ public class PrestoSparkSessionContext
     private final String schema;
     private final String source;
 
+    private final String sqlText;
+
     private final String userAgent;
     private final String clientInfo;
     private final Set<String> clientTags;
@@ -50,11 +56,13 @@ public class PrestoSparkSessionContext
     private final Map<String, String> systemProperties;
     private final Map<String, Map<String, String>> catalogSessionProperties;
     private final Optional<String> traceToken;
+    private final RuntimeStats runtimeStats = new RuntimeStats();
 
     public static PrestoSparkSessionContext createFromSessionInfo(
             PrestoSparkSession prestoSparkSession,
             Set<PrestoSparkCredentialsProvider> credentialsProviders,
-            Set<PrestoSparkAuthenticatorProvider> authenticatorProviders)
+            Set<PrestoSparkAuthenticatorProvider> authenticatorProviders,
+            String sqlQueryText)
     {
         ImmutableMap.Builder<String, String> extraCredentials = ImmutableMap.builder();
         extraCredentials.putAll(prestoSparkSession.getExtraCredentials());
@@ -69,10 +77,14 @@ public class PrestoSparkSessionContext
                         prestoSparkSession.getPrincipal(),
                         ImmutableMap.of(),  // presto on spark does not support role management
                         extraCredentials.build(),
-                        extraTokenAuthenticators.build()),
+                        extraTokenAuthenticators.build(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        prestoSparkSession.getCertificates()),
                 prestoSparkSession.getCatalog().orElse(null),
                 prestoSparkSession.getSchema().orElse(null),
                 prestoSparkSession.getSource().orElse(null),
+                sqlQueryText,
                 prestoSparkSession.getUserAgent().orElse(null),
                 prestoSparkSession.getClientInfo().orElse(null),
                 prestoSparkSession.getClientTags(),
@@ -88,6 +100,7 @@ public class PrestoSparkSessionContext
             String catalog,
             String schema,
             String source,
+            String sqlText,
             String userAgent,
             String clientInfo,
             Set<String> clientTags,
@@ -101,6 +114,7 @@ public class PrestoSparkSessionContext
         this.catalog = catalog;
         this.schema = schema;
         this.source = source;
+        this.sqlText = requireNonNull(sqlText, "sqlText is null");
         this.userAgent = userAgent;
         this.clientInfo = clientInfo;
         this.clientTags = ImmutableSet.copyOf(requireNonNull(clientTags, "clientTags is null"));
@@ -117,6 +131,12 @@ public class PrestoSparkSessionContext
         return identity;
     }
 
+    @Override
+    public List<X509Certificate> getCertificates()
+    {
+        return identity.getCertificates();
+    }
+
     @Nullable
     @Override
     public String getCatalog()
@@ -129,6 +149,12 @@ public class PrestoSparkSessionContext
     public String getSchema()
     {
         return schema;
+    }
+
+    @Override
+    public String getSqlText()
+    {
+        return sqlText;
     }
 
     @Nullable
@@ -234,5 +260,11 @@ public class PrestoSparkSessionContext
     {
         // presto on spark does not support session functions
         return ImmutableMap.of();
+    }
+
+    @Override
+    public RuntimeStats getRuntimeStats()
+    {
+        return runtimeStats;
     }
 }

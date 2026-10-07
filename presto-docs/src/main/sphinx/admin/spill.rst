@@ -2,11 +2,6 @@
 Spill to Disk
 =============
 
-.. contents::
-    :local:
-    :backlinks: none
-    :depth: 1
-
 Overview
 --------
 
@@ -30,7 +25,7 @@ of memory to queries and prevents deadlock caused by memory allocation.
 It is efficient when there are a lot of small queries in the cluster, but
 leads to killing large queries that don't stay within the limits.
 
-To overcome this inefficiency, the concept of revocable memory was introduced. A
+To overcome this limitation, the concept of revocable memory was introduced. A
 query can request memory that does not count toward the limits, but this memory
 can be revoked by the memory manager at any time. When memory is revoked, the
 query runner spills intermediate data from memory to disk and continues to
@@ -70,7 +65,7 @@ excessive spilling for queries that consume large amounts of memory per node.
 These queries would finish much quicker if spill were disabled because they
 would execute in the reserved pool. However, doing so could also significantly
 reduce cluster concurrency. In such a situation we recommend disabling the 
-reserved memory pool via the ``experimental.reserved-pool-enabled`` config 
+reserved memory pool by using the ``experimental.reserved-pool-enabled`` configuration 
 property.
 
 Spill Disk Space
@@ -93,10 +88,10 @@ there is no need to use RAID for spill.
 Spill Compression
 -----------------
 
-When spill compression is enabled (``spill-compression-enabled`` property in
-:ref:`tuning-spilling`), spilled pages will be compressed using the same
-implementation as exchange compression when they are sufficiently compressible.
-Enabling this feature can reduce the amount of disk IO at the cost
+When :ref:`admin/properties:\`\`experimental.spill-compression-codec\`\`` is 
+configured, spilled pages are compressed using 
+the configured codec implementation when they are sufficiently compressible.
+This feature can reduce the amount of disk IO at the cost
 of extra CPU load to compress and decompress spilled pages.
 
 Spill Encryption
@@ -107,10 +102,7 @@ When spill encryption is enabled (``spill-encryption-enabled`` property in
 (per spill file) secret key. Enabling this will decrease the performance of spilling
 to disk but can protect spilled data from being recovered from the files written to disk.
 
-**Note**: Some distributions of Java ship with policy files that limit the strength
-of the cryptographic keys that can be used. Spill encryption uses
-256-bit AES keys and may require Unlimited Strength :abbr:`JCE (Java Cryptography Extension)`
-policy files to work correctly.
+.. _spill-operations:
 
 Supported Operations
 --------------------

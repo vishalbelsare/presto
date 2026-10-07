@@ -11,7 +11,7 @@ Function namespace managers support storing and retrieving SQL
 functions, allowing the Presto engine to perform actions such as
 creating, altering, deleting functions.
 
-A function namespace is in the format of ``catalog.schema`` (e.g.
+A function namespace is in the format of ``catalog.schema`` (for example, 
 ``example.test``). It can be thought of as a schema for storing
 functions. However, it is not a full fledged schema as it does not
 support storing tables and views, but only functions.
@@ -19,8 +19,8 @@ support storing tables and views, but only functions.
 Each Presto function, whether built-in or user-defined, resides in
 a function namespace. All built-in functions reside in the
 ``presto.default`` function namespace. The qualified function name of
-a function is the function namespace in which it reside followed by
-its function name (e.g. ``example.test.func``). Built-in functions can
+a function is the function namespace in which it resides followed by
+its function name (for example, ``example.test.func``). Built-in functions can
 be referenced in queries with their function namespaces omitted, while
 user-defined functions needs to be referenced by its qualified function
 name. A function is uniquely identified by its qualified function name
@@ -55,6 +55,12 @@ following contents::
     function-namespaces-table-name=example_function_namespaces
     functions-table-name=example_sql_functions
 
+To use the MariaDB Java driver instead of the MySQL Connector Java
+driver, use the following properties for the ``database-`` fields::
+
+    database-driver-name=org.mariadb.jdbc.Driver
+    database-url=jdbc:mariadb://example.net:3306/database?user=root&password=password
+
 When Presto first starts with the above MySQL function namespace
 manager configuration, two MySQL tables will be created if they do
 not exist.
@@ -86,7 +92,11 @@ The following table lists all configuration properties supported by the MySQL fu
 =========================================== ==================================================================================================
 Name                                        Description
 =========================================== ==================================================================================================
-``database-url``                            The URL of the MySQL database used by the MySQL function namespace manager.
+``database-url``                            The JDBC URL of the MySQL database used by the MySQL function namespace manager. If using the MariaDB Java driver, ensure the URL uses the MariaDB connection string format where the string starts with ``jdbc:mariadb:``
+``database-driver-name``                    (optional) The name of the JDBC driver class to use for connecting to the MySQL database. For the MariaDb Java client use ``org.mariadb.jdbc.Driver``. Defaults to ``com.mysql.jdbc.Driver``.
+``database-connection-timeout``             (optional) The timeout in milliseconds for establishing a connection to the database. Defaults to 30 seconds.
+``database-connection-max-lifetime``        (optional) The maximum lifetime of a connection in milliseconds. Defaults to 30 minutes.
+``function-namespace-manager.name``         The name of the function namespace manager to instantiate. Currently, only ``mysql`` is supported.
 ``function-namespaces-table-name``          The name of the table that stores all the function namespaces managed by this manager.
 ``functions-table-name``                    The name of the table that stores all the functions managed by this manager.
 =========================================== ==================================================================================================
@@ -94,4 +104,4 @@ Name                                        Description
 See Also
 --------
 
-:doc:`create-function`, :doc:`alter-function`, :doc:`drop-function`, :doc:`show-functions`
+:doc:`../sql/create-function`, :doc:`../sql/alter-function`, :doc:`../sql/drop-function`, :doc:`../sql/show-functions`

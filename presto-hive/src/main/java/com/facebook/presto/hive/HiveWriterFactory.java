@@ -14,11 +14,12 @@
 package com.facebook.presto.hive;
 
 import com.facebook.airlift.event.client.EventClient;
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.block.SortOrder;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeManager;
-import com.facebook.presto.hive.HiveSessionProperties.InsertExistingPartitionsBehavior;
+import com.facebook.presto.hive.HiveClientConfig.InsertExistingPartitionsBehavior;
 import com.facebook.presto.hive.LocationService.WriteInfo;
 import com.facebook.presto.hive.PartitionUpdate.UpdateMode;
 import com.facebook.presto.hive.metastore.Column;
@@ -39,7 +40,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
-import io.airlift.units.DataSize;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.FileUtils;
 import org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat;
@@ -74,7 +74,6 @@ import static com.facebook.presto.hive.HiveSessionProperties.isFileRenamingEnabl
 import static com.facebook.presto.hive.HiveSessionProperties.isSortedWriteToTempPathEnabled;
 import static com.facebook.presto.hive.HiveType.toHiveTypes;
 import static com.facebook.presto.hive.HiveWriteUtils.checkPartitionIsWritable;
-import static com.facebook.presto.hive.LocationHandle.TableType.TEMPORARY;
 import static com.facebook.presto.hive.LocationHandle.WriteMode.DIRECT_TO_TARGET_EXISTING_DIRECTORY;
 import static com.facebook.presto.hive.PartitionUpdate.FileWriteInfo;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.createPartitionValues;
@@ -121,8 +120,7 @@ public class HiveWriterFactory
     private final List<String> partitionColumnNames;
     private final List<Type> partitionColumnTypes;
 
-    private final HiveStorageFormat tableStorageFormat;
-    private final HiveStorageFormat partitionStorageFormat;
+    private final HiveStorageFormat storageFormat;
     private final HiveCompressionCodec compressionCodec;
     private final Map<String, String> additionalTableParameters;
     private final LocationHandle locationHandle;
@@ -158,8 +156,7 @@ public class HiveWriterFactory
             String tableName,
             boolean isCreateTable,
             List<HiveColumnHandle> inputColumns,
-            HiveStorageFormat tableStorageFormat,
-            HiveStorageFormat partitionStorageFormat,
+            HiveStorageFormat storageFormat,
             HiveCompressionCodec compressionCodec,
             Map<String, String> additionalTableParameters,
             OptionalInt bucketCount,
@@ -188,8 +185,7 @@ public class HiveWriterFactory
         this.tableName = requireNonNull(tableName, "tableName is null");
         this.isCreateTable = isCreateTable;
 
-        this.tableStorageFormat = requireNonNull(tableStorageFormat, "tableStorageFormat is null");
-        this.partitionStorageFormat = requireNonNull(partitionStorageFormat, "partitionStorageFormat is null");
+        this.storageFormat = requireNonNull(storageFormat, "storageFormat is null");
         this.compressionCodec = requireNonNull(compressionCodec, "compressionCodec is null");
         this.additionalTableParameters = ImmutableMap.copyOf(requireNonNull(additionalTableParameters, "additionalTableParameters is null"));
         this.locationHandle = requireNonNull(locationHandle, "locationHandle is null");
@@ -313,7 +309,7 @@ public class HiveWriterFactory
 
         this.hiveWriterStats = requireNonNull(hiveWriterStats, "hiveWriterStats is null");
 
-        // In Hive connector, bucket commit is fulfilled by writing to temporary file in TableWriterOperator, and rename in TableFinishOpeartor
+        // In Hive connector, bucket commit is fulfilled by writing to temporary file in TableWriterOperator, and rename in TableFinishOperator
         // (note Presto partition here loosely maps to Hive bucket)
         this.writeToTempFile = commitRequired;
 
@@ -392,7 +388,7 @@ public class HiveWriterFactory
                             .collect(toList()),
                     writerParameters.getOutputStorageFormat(),
                     schema,
-                    partitionStorageFormat.getEstimatedWriterSystemMemoryUsage(),
+                    storageFormat.getEstimatedWriterSystemMemoryUsage(),
                     conf,
                     typeManager,
                     session);
@@ -404,12 +400,9 @@ public class HiveWriterFactory
             hiveFileWriter = sortingFileWriterFactory.get().createSortingFileWriter(
                     path,
                     hiveFileWriter,
-                    bucketNumber.orElse(abs(path.hashCode() % 1024)),
+                    bucketNumber.orElseGet(() -> abs(path.hashCode() % 1024)),
                     writerParameters.getWriteInfo().getTempPath());
         }
-
-        boolean writeTempData = locationHandle.getTableType() == TEMPORARY || locationHandle.getTempPath().isPresent() || writeToTempFile;
-
         return new HiveWriter(
                 hiveFileWriter,
                 partitionName,
@@ -418,8 +411,7 @@ public class HiveWriterFactory
                 writerParameters.getWriteInfo().getWritePath().toString(),
                 writerParameters.getWriteInfo().getTargetPath().toString(),
                 createCommitEventListener(path, partitionName, hiveFileWriter, writerParameters),
-                hiveWriterStats,
-                writeTempData);
+                hiveWriterStats);
     }
 
     private WriterParameters getWriterParameters(Optional<String> partitionName, OptionalInt bucketNumber)
@@ -449,7 +441,7 @@ public class HiveWriterFactory
                 UpdateMode.NEW,
                 createHiveSchema(dataColumns),
                 locationService.getTableWriteInfo(locationHandle),
-                fromHiveStorageFormat(tableStorageFormat));
+                fromHiveStorageFormat(storageFormat));
     }
 
     private WriterParameters getWriterParametersForNewPartitionedTable(String partitionName)
@@ -472,16 +464,13 @@ public class HiveWriterFactory
                 UpdateMode.NEW,
                 createHiveSchema(dataColumns),
                 writeInfo,
-                fromHiveStorageFormat(partitionStorageFormat));
+                fromHiveStorageFormat(storageFormat));
     }
 
     private WriterParameters getWriterParametersForExistingUnpartitionedTable(OptionalInt bucketNumber)
     {
         // Note: temporary table is always empty at this step
         if (!table.getTableType().equals(TEMPORARY_TABLE)) {
-            if (bucketNumber.isPresent()) {
-                throw new PrestoException(HIVE_PARTITION_READ_ONLY, "Cannot insert into bucketed unpartitioned Hive table");
-            }
             if (immutablePartitions) {
                 throw new PrestoException(HIVE_PARTITION_READ_ONLY, "Unpartitioned Hive tables are immutable");
             }
@@ -490,7 +479,7 @@ public class HiveWriterFactory
                 UpdateMode.APPEND,
                 getHiveSchema(table),
                 locationService.getTableWriteInfo(locationHandle),
-                fromHiveStorageFormat(tableStorageFormat));
+                fromHiveStorageFormat(storageFormat));
     }
 
     private WriterParameters getWriterParametersForExistingPartitionedTable(String partitionName, OptionalInt bucketNumber)
@@ -520,7 +509,7 @@ public class HiveWriterFactory
                     UpdateMode.NEW,
                     getHiveSchema(table),
                     locationService.getPartitionWriteInfo(locationHandle, Optional.empty(), partitionName),
-                    fromHiveStorageFormat(partitionStorageFormat));
+                    fromHiveStorageFormat(storageFormat));
         }
         // Append to an existing partition
         checkState(!immutablePartitions);
@@ -546,12 +535,11 @@ public class HiveWriterFactory
         // * No partition writable check is required.
         // * Table schema and storage format is used for the new partition (instead of existing partition schema and storage format).
         WriteInfo writeInfo = locationService.getPartitionWriteInfo(locationHandle, Optional.empty(), partitionName);
-        checkState(writeInfo.getWriteMode() != DIRECT_TO_TARGET_EXISTING_DIRECTORY, "Overwriting existing partition doesn't support DIRECT_TO_TARGET_EXISTING_DIRECTORY write mode");
         return new WriterParameters(
                 UpdateMode.OVERWRITE,
                 getHiveSchema(table),
                 writeInfo,
-                fromHiveStorageFormat(partitionStorageFormat));
+                fromHiveStorageFormat(storageFormat));
     }
 
     private WriterParameters getWriterParametersForImmutablePartition(String partitionName)
@@ -571,7 +559,7 @@ public class HiveWriterFactory
                 UpdateMode.NEW,
                 getHiveSchema(table),
                 writerInfo,
-                fromHiveStorageFormat(partitionStorageFormat));
+                fromHiveStorageFormat(storageFormat));
     }
 
     private void validateSchema(Optional<String> partitionName, Properties schema)

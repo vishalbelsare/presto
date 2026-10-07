@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.spi.function;
 
+import com.facebook.drift.annotations.ThriftConstructor;
+import com.facebook.drift.annotations.ThriftField;
+import com.facebook.drift.annotations.ThriftStruct;
 import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.common.type.TypeSignature;
 import com.facebook.presto.spi.api.Experimental;
@@ -30,10 +33,17 @@ import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
 
 @Experimental
+@ThriftStruct
 public class SqlFunctionId
 {
     private final QualifiedObjectName functionName;
     private final List<TypeSignature> argumentTypes;
+
+    @ThriftConstructor
+    public SqlFunctionId(String signature)
+    {
+        this(parseSqlFunctionId(signature).getFunctionName(), parseSqlFunctionId(signature).getArgumentTypes());
+    }
 
     public SqlFunctionId(QualifiedObjectName functionName, List<TypeSignature> argumentTypes)
     {
@@ -86,6 +96,7 @@ public class SqlFunctionId
     }
 
     @JsonValue
+    @ThriftField(value = 1, name = "signature")
     public String toJsonString()
     {
         return format("%s;%s", functionName.toString(), argumentTypes.stream().map(TypeSignature::toString).collect(joining(";")));

@@ -13,11 +13,11 @@
  */
 package com.facebook.presto.druid;
 
-import com.facebook.presto.spi.ErrorCode;
+import com.facebook.presto.common.ErrorCode;
+import com.facebook.presto.common.ErrorType;
 import com.facebook.presto.spi.ErrorCodeSupplier;
-import com.facebook.presto.spi.ErrorType;
 
-import static com.facebook.presto.spi.ErrorType.EXTERNAL;
+import static com.facebook.presto.common.ErrorType.EXTERNAL;
 
 public enum DruidErrorCode
         implements ErrorCodeSupplier
@@ -28,8 +28,7 @@ public enum DruidErrorCode
     DRUID_UNSUPPORTED_TYPE_ERROR(3, EXTERNAL),
     DRUID_PUSHDOWN_UNSUPPORTED_EXPRESSION(4, EXTERNAL),
     DRUID_QUERY_GENERATOR_FAILURE(5, EXTERNAL),
-    DRUID_BROKER_RESULT_ERROR(6, EXTERNAL),
-    DRUID_AMBIGUOUS_OBJECT_NAME(7, EXTERNAL);
+    DRUID_BROKER_RESULT_ERROR(6, EXTERNAL);
 
     private final ErrorCode errorCode;
 

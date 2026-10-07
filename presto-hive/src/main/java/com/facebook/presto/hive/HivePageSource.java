@@ -23,16 +23,18 @@ import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.hive.HivePageSourceProvider.ColumnMapping;
 import com.facebook.presto.spi.ConnectorPageSource;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
 import com.google.common.annotations.VisibleForTesting;
+import io.airlift.slice.Slices;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
+import jakarta.annotation.Nullable;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 import org.joda.time.DateTimeZone;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -40,6 +42,7 @@ import java.util.function.Function;
 
 import static com.facebook.presto.hive.HiveBucketing.getHiveBucket;
 import static com.facebook.presto.hive.HiveCoercer.createCoercer;
+import static com.facebook.presto.hive.HiveColumnHandle.isRowIdColumnHandle;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_CURSOR_ERROR;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_BUCKET_FILES;
 import static com.facebook.presto.hive.HivePageSourceProvider.ColumnMappingKind.PREFILLED;
@@ -60,11 +63,14 @@ public class HivePageSource
     private final ConnectorPageSource delegate;
 
     public HivePageSource(
+            ConnectorSession session,
             List<ColumnMapping> columnMappings,
             Optional<BucketAdaptation> bucketAdaptation,
             DateTimeZone hiveStorageTimeZone,
             TypeManager typeManager,
-            ConnectorPageSource delegate)
+            ConnectorPageSource delegate,
+            String path,
+            Optional<byte[]> rowIdPartitionComponent)
     {
         requireNonNull(columnMappings, "columnMappings is null");
         requireNonNull(hiveStorageTimeZone, "hiveStorageTimeZone is null");
@@ -91,9 +97,15 @@ public class HivePageSource
             if (columnMapping.getCoercionFrom().isPresent()) {
                 coercers[columnIndex] = createCoercer(typeManager, columnMapping.getCoercionFrom().get(), columnMapping.getHiveColumnHandle().getHiveType());
             }
+            else if (isRowIdColumnHandle(columnMapping.getHiveColumnHandle())) {
+                // If there's no row ID partition component, then path + row numbers will be supplied for $row_id
+                byte[] component = rowIdPartitionComponent.orElseGet(() -> new byte[0]);
+                String rowGroupId = Paths.get(path).getFileName().toString();
+                coercers[columnIndex] = new RowIDCoercer(component, rowGroupId);
+            }
 
             if (columnMapping.getKind() == PREFILLED) {
-                prefilledValues[columnIndex] = typedPartitionKey(columnMapping.getPrefilledValue(), type, name, hiveStorageTimeZone);
+                prefilledValues[columnIndex] = typedPartitionKey(session, columnMapping.getPrefilledValue(), type, name, hiveStorageTimeZone);
             }
         }
     }
@@ -145,6 +157,10 @@ public class HivePageSource
                 switch (columnMapping.getKind()) {
                     case PREFILLED:
                         blocks.add(RunLengthEncodedBlock.create(types[fieldId], prefilledValues[fieldId], batchSize));
+                        break;
+                    case POSTFILLED:
+                        // Use empty slice for the value since this will be replaced later, after the data is read
+                        blocks.add(RunLengthEncodedBlock.create(types[fieldId], Slices.EMPTY_SLICE, batchSize));
                         break;
                     case REGULAR:
                         Block block = dataPage.getBlock(columnMapping.getIndex());
@@ -284,6 +300,7 @@ public class HivePageSource
         public final int tableBucketCount;
         public final int partitionBucketCount; // for sanity check only
         private final List<TypeInfo> typeInfoList;
+        private final boolean useLegacyTimestampBucketing;
 
         public BucketAdapter(BucketAdaptation bucketAdaptation)
         {
@@ -294,6 +311,7 @@ public class HivePageSource
                     .collect(toImmutableList());
             this.tableBucketCount = bucketAdaptation.getTableBucketCount();
             this.partitionBucketCount = bucketAdaptation.getPartitionBucketCount();
+            this.useLegacyTimestampBucketing = bucketAdaptation.useLegacyTimestampBucketing();
         }
 
         @Nullable
@@ -302,7 +320,7 @@ public class HivePageSource
             IntArrayList ids = new IntArrayList(page.getPositionCount());
             Page bucketColumnsPage = page.extractChannels(bucketColumns);
             for (int position = 0; position < page.getPositionCount(); position++) {
-                int bucket = getHiveBucket(tableBucketCount, typeInfoList, bucketColumnsPage, position);
+                int bucket = getHiveBucket(tableBucketCount, typeInfoList, bucketColumnsPage, position, useLegacyTimestampBucketing);
                 if ((bucket - bucketToKeep) % partitionBucketCount != 0) {
                     throw new PrestoException(HIVE_INVALID_BUCKET_FILES, format(
                             "A row that is supposed to be in bucket %s is encountered. Only rows in bucket %s (modulo %s) are expected",

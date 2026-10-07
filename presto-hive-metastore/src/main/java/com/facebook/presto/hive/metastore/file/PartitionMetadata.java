@@ -24,15 +24,17 @@ import com.facebook.presto.hive.metastore.Storage;
 import com.facebook.presto.hive.metastore.StorageFormat;
 import com.facebook.presto.hive.metastore.Table;
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.facebook.presto.hive.HiveStorageFormat.getHiveStorageFormat;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.updateStatisticsParameters;
 import static com.facebook.presto.hive.metastore.PrestoTableType.EXTERNAL_TABLE;
 import static com.facebook.presto.hive.metastore.StorageFormat.VIEW_STORAGE_FORMAT;
@@ -44,7 +46,7 @@ public class PartitionMetadata
     private final List<Column> columns;
     private final Map<String, String> parameters;
 
-    private final Optional<HiveStorageFormat> storageFormat;
+    private final StorageFormat storageFormat;
     private final Optional<HiveBucketProperty> bucketProperty;
     private final Map<String, String> storageParameters;
     private final Map<String, String> serdeParameters;
@@ -54,24 +56,27 @@ public class PartitionMetadata
     private final Map<String, HiveColumnStatistics> columnStatistics;
     private final boolean eligibleToIgnore;
     private final boolean sealedPartition;
+    private final Optional<byte[]> rowIdPartitionComponent;
 
     @JsonCreator
     public PartitionMetadata(
             @JsonProperty("columns") List<Column> columns,
             @JsonProperty("parameters") Map<String, String> parameters,
-            @JsonProperty("storageFormat") Optional<HiveStorageFormat> storageFormat,
+            @JsonDeserialize(using = StorageFormatCompatDeserializer.class)
+            @JsonProperty("storageFormat") StorageFormat storageFormat,
             @JsonProperty("bucketProperty") Optional<HiveBucketProperty> bucketProperty,
             @JsonProperty("storageParameters") Map<String, String> storageParameters,
             @JsonProperty("serdeParameters") Map<String, String> serdeParameters,
             @JsonProperty("externalLocation") Optional<String> externalLocation,
             @JsonProperty("columnStatistics") Map<String, HiveColumnStatistics> columnStatistics,
             @JsonProperty("eligibleToIgnore") boolean eligibleToIgnore,
-            @JsonProperty("sealedPartition") boolean sealedPartition)
+            @JsonProperty("sealedPartition") boolean sealedPartition,
+            @JsonProperty("rowIdPartitionComponent") Optional<byte[]> rowIdPartitionComponent)
     {
         this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
         this.parameters = ImmutableMap.copyOf(requireNonNull(parameters, "parameters is null"));
 
-        this.storageFormat = requireNonNull(storageFormat, "storageFormat is null");
+        this.storageFormat = storageFormat == null ? VIEW_STORAGE_FORMAT : storageFormat;
         this.bucketProperty = requireNonNull(bucketProperty, "bucketProperty is null");
         this.storageParameters = ImmutableMap.copyOf(firstNonNull(storageParameters, ImmutableMap.of()));
         this.serdeParameters = requireNonNull(serdeParameters, "serdeParameters is null");
@@ -80,6 +85,35 @@ public class PartitionMetadata
         this.columnStatistics = ImmutableMap.copyOf(requireNonNull(columnStatistics, "columnStatistics is null"));
         this.eligibleToIgnore = eligibleToIgnore;
         this.sealedPartition = sealedPartition;
+        this.rowIdPartitionComponent = requireNonNull(rowIdPartitionComponent);
+    }
+
+    @Deprecated
+    public PartitionMetadata(
+            List<Column> columns,
+            Map<String, String> parameters,
+            Optional<HiveStorageFormat> storageFormat,
+            Optional<HiveBucketProperty> bucketProperty,
+            Map<String, String> storageParameters,
+            Map<String, String> serdeParameters,
+            Optional<String> externalLocation,
+            Map<String, HiveColumnStatistics> columnStatistics,
+            boolean eligibleToIgnore,
+            boolean sealedPartition,
+            Optional<byte[]> rowIdPartitionComponent)
+    {
+        this(
+                columns,
+                parameters,
+                storageFormat.map(StorageFormat::fromHiveStorageFormat).orElse(VIEW_STORAGE_FORMAT),
+                bucketProperty,
+                storageParameters,
+                serdeParameters,
+                externalLocation,
+                columnStatistics,
+                eligibleToIgnore,
+                sealedPartition,
+                rowIdPartitionComponent);
     }
 
     public PartitionMetadata(Table table, PartitionWithStatistics partitionWithStatistics)
@@ -90,10 +124,7 @@ public class PartitionMetadata
         this.columns = partition.getColumns();
         this.parameters = updateStatisticsParameters(partition.getParameters(), statistics.getBasicStatistics());
 
-        StorageFormat tableFormat = partition.getStorage().getStorageFormat();
-        storageFormat = Arrays.stream(HiveStorageFormat.values())
-                .filter(format -> tableFormat.equals(StorageFormat.fromHiveStorageFormat(format)))
-                .findFirst();
+        storageFormat = partition.getStorage().getStorageFormat();
 
         if (table.getTableType().equals(EXTERNAL_TABLE)) {
             externalLocation = Optional.of(partition.getStorage().getLocation());
@@ -108,6 +139,7 @@ public class PartitionMetadata
         columnStatistics = ImmutableMap.copyOf(statistics.getColumnStatistics());
         eligibleToIgnore = partition.isEligibleToIgnore();
         sealedPartition = partition.isSealedPartition();
+        this.rowIdPartitionComponent = partition.getRowIdPartitionComponent();
     }
 
     @JsonProperty
@@ -122,8 +154,15 @@ public class PartitionMetadata
         return parameters;
     }
 
-    @JsonProperty
+    @Deprecated
+    @JsonIgnore
     public Optional<HiveStorageFormat> getStorageFormat()
+    {
+        return getHiveStorageFormat(storageFormat);
+    }
+
+    @JsonProperty("storageFormat")
+    public StorageFormat getPartitionStorageFormat()
     {
         return storageFormat;
     }
@@ -172,12 +211,12 @@ public class PartitionMetadata
 
     public PartitionMetadata withParameters(Map<String, String> parameters)
     {
-        return new PartitionMetadata(columns, parameters, storageFormat, bucketProperty, storageParameters, serdeParameters, externalLocation, columnStatistics, eligibleToIgnore, sealedPartition);
+        return new PartitionMetadata(columns, parameters, storageFormat, bucketProperty, storageParameters, serdeParameters, externalLocation, columnStatistics, eligibleToIgnore, sealedPartition, rowIdPartitionComponent);
     }
 
     public PartitionMetadata withColumnStatistics(Map<String, HiveColumnStatistics> columnStatistics)
     {
-        return new PartitionMetadata(columns, parameters, storageFormat, bucketProperty, storageParameters, serdeParameters, externalLocation, columnStatistics, eligibleToIgnore, sealedPartition);
+        return new PartitionMetadata(columns, parameters, storageFormat, bucketProperty, storageParameters, serdeParameters, externalLocation, columnStatistics, eligibleToIgnore, sealedPartition, rowIdPartitionComponent);
     }
 
     public Partition toPartition(String databaseName, String tableName, List<String> values, String location)
@@ -188,7 +227,7 @@ public class PartitionMetadata
                 values,
                 Storage.builder()
                         .setLocation(externalLocation.orElse(location))
-                        .setStorageFormat(storageFormat.map(StorageFormat::fromHiveStorageFormat).orElse(VIEW_STORAGE_FORMAT))
+                        .setStorageFormat(storageFormat)
                         .setBucketProperty(bucketProperty)
                         .setSerdeParameters(serdeParameters)
                         .setParameters(parameters)
@@ -198,6 +237,8 @@ public class PartitionMetadata
                 Optional.empty(),
                 eligibleToIgnore,
                 sealedPartition,
-                0);
+                0,
+                0,
+                rowIdPartitionComponent);
     }
 }

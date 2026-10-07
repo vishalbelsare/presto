@@ -29,18 +29,20 @@ import com.facebook.presto.orc.stream.InputStreamSource;
 import com.facebook.presto.orc.stream.InputStreamSources;
 import com.facebook.presto.orc.stream.LongInputStream;
 import io.airlift.slice.Slice;
+import jakarta.annotation.Nullable;
 import org.openjdk.jol.info.ClassLayout;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
+import java.time.ZoneId;
 
 import static com.facebook.presto.common.type.UnscaledDecimal128Arithmetic.rescale;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.DATA;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.PRESENT;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.SECONDARY;
 import static com.facebook.presto.orc.reader.ReaderUtils.verifyStreamType;
-import static com.facebook.presto.orc.stream.MissingInputStreamSource.missingStreamSource;
+import static com.facebook.presto.orc.stream.MissingInputStreamSource.getBooleanMissingStreamSource;
+import static com.facebook.presto.orc.stream.MissingInputStreamSource.getDecimalMissingStreamSource;
+import static com.facebook.presto.orc.stream.MissingInputStreamSource.getLongMissingStreamSource;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Verify.verify;
 import static java.util.Objects.requireNonNull;
@@ -56,15 +58,15 @@ public class DecimalBatchStreamReader
     private int readOffset;
     private int nextBatchSize;
 
-    private InputStreamSource<BooleanInputStream> presentStreamSource = missingStreamSource(BooleanInputStream.class);
+    private InputStreamSource<BooleanInputStream> presentStreamSource = getBooleanMissingStreamSource();
     @Nullable
     private BooleanInputStream presentStream;
 
-    private InputStreamSource<DecimalInputStream> decimalStreamSource = missingStreamSource(DecimalInputStream.class);
+    private InputStreamSource<DecimalInputStream> decimalStreamSource = getDecimalMissingStreamSource();
     @Nullable
     private DecimalInputStream decimalStream;
 
-    private InputStreamSource<LongInputStream> scaleStreamSource = missingStreamSource(LongInputStream.class);
+    private InputStreamSource<LongInputStream> scaleStreamSource = getLongMissingStreamSource();
     @Nullable
     private LongInputStream scaleStream;
 
@@ -195,11 +197,11 @@ public class DecimalBatchStreamReader
     }
 
     @Override
-    public void startStripe(Stripe stripe)
+    public void startStripe(ZoneId timezone, Stripe stripe)
     {
-        presentStreamSource = missingStreamSource(BooleanInputStream.class);
-        decimalStreamSource = missingStreamSource(DecimalInputStream.class);
-        scaleStreamSource = missingStreamSource(LongInputStream.class);
+        presentStreamSource = getBooleanMissingStreamSource();
+        decimalStreamSource = getDecimalMissingStreamSource();
+        scaleStreamSource = getLongMissingStreamSource();
 
         readOffset = 0;
         nextBatchSize = 0;

@@ -50,6 +50,7 @@ import io.airlift.slice.Slice;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -96,8 +97,11 @@ public class StripeReader
     private final Optional<OrcWriteValidation> writeValidation;
     private final StripeMetadataSource stripeMetadataSource;
     private final boolean cacheable;
+    private final long fileModificationTime;
     private final Multimap<Integer, Integer> dwrfEncryptionGroupColumns;
     private final RuntimeStats runtimeStats;
+    private final Optional<OrcFileIntrospector> fileIntrospector;
+    private final ZoneId defaultTimezone;
 
     public StripeReader(
             OrcDataSource orcDataSource,
@@ -112,7 +116,10 @@ public class StripeReader
             StripeMetadataSource stripeMetadataSource,
             boolean cacheable,
             Map<Integer, Integer> dwrfEncryptionGroupMap,
-            RuntimeStats runtimeStats)
+            RuntimeStats runtimeStats,
+            Optional<OrcFileIntrospector> fileIntrospector,
+            long fileModificationTime,
+            ZoneId defaultTimezone)
     {
         this.orcDataSource = requireNonNull(orcDataSource, "orcDataSource is null");
         this.decompressor = requireNonNull(decompressor, "decompressor is null");
@@ -127,6 +134,9 @@ public class StripeReader
         this.cacheable = cacheable;
         this.dwrfEncryptionGroupColumns = invertEncryptionGroupMap(requireNonNull(dwrfEncryptionGroupMap, "dwrfEncryptionGroupMap is null"));
         this.runtimeStats = requireNonNull(runtimeStats, "runtimeStats is null");
+        this.fileIntrospector = requireNonNull(fileIntrospector, "fileIntrospector is null");
+        this.fileModificationTime = fileModificationTime;
+        this.defaultTimezone = requireNonNull(defaultTimezone, "defaultTimezone is null");
     }
 
     private Multimap<Integer, Integer> invertEncryptionGroupMap(Map<Integer, Integer> dwrfEncryptionGroupMap)
@@ -154,6 +164,12 @@ public class StripeReader
 
         // read the stripe footer
         StripeFooter stripeFooter = readStripeFooter(stripeId, stripe, systemMemoryUsage);
+        fileIntrospector.ifPresent(introspector -> introspector.onStripeFooter(stripe, stripeFooter));
+
+        writeValidation.ifPresent(orcWriteValidation ->
+                orcWriteValidation.validateTimeZone(orcDataSource.getId(), stripeFooter.getTimezone().orElse(defaultTimezone)));
+
+        ZoneId timezone = stripeFooter.getTimezone().orElse(defaultTimezone);
 
         // get streams for selected columns
         List<List<Stream>> allStreams = new ArrayList<>();
@@ -189,6 +205,7 @@ public class StripeReader
 
             // read the row index for each column
             Map<StreamId, List<RowGroupIndex>> columnIndexes = readColumnIndexes(includedStreams, streamsData, stripeId);
+            fileIntrospector.ifPresent(introspector -> introspector.onRowGroupIndexes(stripe, columnIndexes));
             if (writeValidation.isPresent()) {
                 writeValidation.get().validateRowGroupStatistics(orcDataSource.getId(), stripe.getOffset(), columnIndexes);
             }
@@ -219,7 +236,7 @@ public class StripeReader
                         selectedRowGroups,
                         columnEncodings);
 
-                return new Stripe(stripe.getNumberOfRows(), columnEncodings, rowGroups, dictionaryStreamSources);
+                return new Stripe(stripe.getNumberOfRows(), columnEncodings, rowGroups, dictionaryStreamSources, timezone);
             }
             catch (InvalidCheckpointException e) {
                 // The ORC file contains a corrupt checkpoint stream
@@ -236,7 +253,7 @@ public class StripeReader
         ImmutableMap.Builder<StreamId, DiskRange> diskRangesBuilder = ImmutableMap.builder();
         for (Entry<StreamId, DiskRange> entry : getDiskRanges(allStreams).entrySet()) {
             StreamId streamId = entry.getKey();
-            if (includedStreams.keySet().contains(streamId)) {
+            if (includedStreams.containsKey(streamId)) {
                 diskRangesBuilder.put(entry);
             }
         }
@@ -246,9 +263,10 @@ public class StripeReader
         Map<StreamId, OrcInputStream> streamsData = readDiskRanges(stripeId, diskRanges, systemMemoryUsage, decryptors, sharedDecompressionBuffer);
 
         long totalBytes = 0;
+        ImmutableMap.Builder<StreamId, List<RowGroupIndex>> columnIndexes = ImmutableMap.builder();
         for (Entry<StreamId, Stream> entry : includedStreams.entrySet()) {
             if (entry.getKey().getStreamKind() == ROW_INDEX) {
-                List<RowGroupIndex> rowGroupIndexes = metadataReader.readRowIndexes(hiveWriterVersion, streamsData.get(entry.getKey()), null);
+                List<RowGroupIndex> rowGroupIndexes = stripeMetadataSource.getRowIndexes(metadataReader, hiveWriterVersion, stripeId, entry.getKey(), streamsData.get(entry.getKey()), null, runtimeStats, fileModificationTime);
                 checkState(rowGroupIndexes.size() == 1 || invalidCheckPoint, "expect a single row group or an invalid check point");
                 for (RowGroupIndex rowGroupIndex : rowGroupIndexes) {
                     ColumnStatistics columnStatistics = rowGroupIndex.getColumnStatistics();
@@ -256,8 +274,14 @@ public class StripeReader
                         totalBytes += columnStatistics.getTotalValueSizeInBytes();
                     }
                 }
+
+                if (fileIntrospector.isPresent()) {
+                    columnIndexes.put(entry.getKey(), rowGroupIndexes);
+                }
             }
         }
+
+        fileIntrospector.ifPresent(introspector -> introspector.onRowGroupIndexes(stripe, columnIndexes.build()));
 
         // value streams
         Map<StreamId, ValueInputStream<?>> valueStreams = createValueStreams(includedStreams, streamsData, columnEncodings);
@@ -272,7 +296,12 @@ public class StripeReader
         }
         RowGroup rowGroup = new RowGroup(0, 0, stripe.getNumberOfRows(), totalBytes, new InputStreamSources(builder.build()));
 
-        return new Stripe(stripe.getNumberOfRows(), columnEncodings, ImmutableList.of(rowGroup), dictionaryStreamSources);
+        return new Stripe(
+                stripe.getNumberOfRows(),
+                columnEncodings,
+                ImmutableList.of(rowGroup),
+                dictionaryStreamSources,
+                timezone);
     }
 
     private StripeEncryptionGroup getStripeEncryptionGroup(DwrfDataEncryptor decryptor, Slice encryptedGroup, Collection<Integer> columns, OrcAggregatedMemoryContext systemMemoryUsage)
@@ -334,7 +363,7 @@ public class StripeReader
         //
 
         // read ranges
-        Map<StreamId, OrcDataSourceInput> streamsData = stripeMetadataSource.getInputs(orcDataSource, stripeId, diskRanges, cacheable);
+        Map<StreamId, OrcDataSourceInput> streamsData = stripeMetadataSource.getInputs(orcDataSource, stripeId, diskRanges, cacheable, fileModificationTime);
 
         // transform streams to OrcInputStream
         ImmutableMap.Builder<StreamId, OrcInputStream> streamsBuilder = ImmutableMap.builder();
@@ -472,7 +501,7 @@ public class StripeReader
         int footerLength = toIntExact(stripe.getFooterLength());
 
         // read the footer
-        Slice footerSlice = stripeMetadataSource.getStripeFooterSlice(orcDataSource, stripeId, footerOffset, footerLength, cacheable);
+        Slice footerSlice = stripeMetadataSource.getStripeFooterSlice(orcDataSource, stripeId, footerOffset, footerLength, cacheable, fileModificationTime);
         try (InputStream inputStream = new OrcInputStream(
                 orcDataSource.getId(),
                 // Memory is not accounted as the buffer is expected to be tiny and will be immediately discarded
@@ -519,7 +548,7 @@ public class StripeReader
             if (stream.getStreamKind() == ROW_INDEX) {
                 OrcInputStream inputStream = streamsData.get(streamId);
                 List<HiveBloomFilter> bloomFilters = bloomFilterIndexes.get(streamId.getColumn());
-                List<RowGroupIndex> rowGroupIndexes = stripeMetadataSource.getRowIndexes(metadataReader, hiveWriterVersion, stripeId, streamId, inputStream, bloomFilters, runtimeStats);
+                List<RowGroupIndex> rowGroupIndexes = stripeMetadataSource.getRowIndexes(metadataReader, hiveWriterVersion, stripeId, streamId, inputStream, bloomFilters, runtimeStats, fileModificationTime);
                 columnIndexes.put(entry.getKey(), rowGroupIndexes);
             }
         }
@@ -665,17 +694,24 @@ public class StripeReader
     public static class StripeStreamId
     {
         private final StripeId stripeId;
-        private final StreamId streamId;
+        // StripeStreamId is used as a cache key. Multiple StripeStreamId share the StripeId,
+        // but they have unique streamId. Storing a reference to the StreamId double the
+        // number of objects. On some installations, StreamId accounts to 8% of the objects
+        // and all of that is from the Cache keys. Storing them in place though is hacky,
+        // removes the 8% of the objects for faster GC and object overhead.
+        // This is analogous to using primitive integer, instead of boxed Object Integer.
+        // There are multiple StreamId for same StripeId, so expanding StripeId is unnecessary.
+        private final int column;
+        private final int sequence;
+        private final StreamKind streamKind;
 
         public StripeStreamId(StripeId stripeId, StreamId streamId)
         {
             this.stripeId = requireNonNull(stripeId, "stripeId is null");
-            this.streamId = requireNonNull(streamId, "streamId is null");
-        }
-
-        public StreamId getStreamId()
-        {
-            return streamId;
+            requireNonNull(streamId, "streamId is null");
+            this.column = streamId.getColumn();
+            this.sequence = streamId.getSequence();
+            this.streamKind = streamId.getStreamKind();
         }
 
         @Override
@@ -687,15 +723,15 @@ public class StripeReader
             if (o == null || getClass() != o.getClass()) {
                 return false;
             }
-            StripeStreamId that = (StripeStreamId) o;
-            return Objects.equals(stripeId, that.stripeId) &&
-                    Objects.equals(streamId, that.streamId);
+            StripeStreamId other = (StripeStreamId) o;
+            return Objects.equals(stripeId, other.stripeId) &&
+                    column == other.column && sequence == other.sequence && streamKind == other.streamKind;
         }
 
         @Override
         public int hashCode()
         {
-            return Objects.hash(stripeId, streamId);
+            return Objects.hash(stripeId, column, sequence, streamKind);
         }
 
         @Override
@@ -703,7 +739,9 @@ public class StripeReader
         {
             return toStringHelper(this)
                     .add("stripeId", stripeId)
-                    .add("streamId", streamId)
+                    .add("column", column)
+                    .add("sequence", sequence)
+                    .add("streamKind", streamKind)
                     .toString();
         }
     }

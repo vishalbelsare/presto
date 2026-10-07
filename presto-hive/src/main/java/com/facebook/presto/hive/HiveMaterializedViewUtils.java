@@ -21,7 +21,8 @@ import com.facebook.presto.hive.metastore.Column;
 import com.facebook.presto.hive.metastore.MetastoreContext;
 import com.facebook.presto.hive.metastore.SemiTransactionalHiveMetastore;
 import com.facebook.presto.hive.metastore.Table;
-import com.facebook.presto.spi.ConnectorMaterializedViewDefinition;
+import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.MaterializedViewDefinition;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.TableNotFoundException;
@@ -75,7 +76,7 @@ public class HiveMaterializedViewUtils
             SemiTransactionalHiveMetastore metastore,
             MetastoreContext metastoreContext,
             Table viewTable,
-            ConnectorMaterializedViewDefinition viewDefinition)
+            MaterializedViewDefinition viewDefinition)
     {
         SchemaTableName viewName = new SchemaTableName(viewTable.getDatabaseName(), viewTable.getTableName());
 
@@ -136,6 +137,7 @@ public class HiveMaterializedViewUtils
     }
 
     public static MaterializedDataPredicates getMaterializedDataPredicates(
+            ConnectorSession session,
             SemiTransactionalHiveMetastore metastore,
             MetastoreContext metastoreContext,
             TypeManager typeManager,
@@ -157,13 +159,13 @@ public class HiveMaterializedViewUtils
         Map<String, Type> partitionTypes = partitionKeyColumnHandles.stream()
                 .collect(toImmutableMap(HiveColumnHandle::getName, column -> typeManager.getType(column.getTypeSignature())));
 
-        List<String> partitionNames = metastore.getPartitionNames(metastoreContext, table.getDatabaseName(), table.getTableName())
+        List<PartitionNameWithVersion> partitionNames = metastore.getPartitionNames(metastoreContext, table.getDatabaseName(), table.getTableName())
                 .orElseThrow(() -> new TableNotFoundException(new SchemaTableName(table.getDatabaseName(), table.getTableName())));
 
         ImmutableList.Builder<TupleDomain<String>> partitionNamesAndValues = ImmutableList.builder();
-        for (String partitionName : partitionNames) {
+        for (PartitionNameWithVersion partitionName : partitionNames) {
             ImmutableMap.Builder<String, NullableValue> partitionNameAndValuesMap = ImmutableMap.builder();
-            Map<String, String> partitions = toPartitionNamesAndValues(partitionName);
+            Map<String, String> partitions = toPartitionNamesAndValues(partitionName.getPartitionName());
             if (partitionColumns.size() != partitions.size()) {
                 throw new PrestoException(HIVE_INVALID_METADATA, String.format(
                         "Expected %d partition key values, but got %d", partitionColumns.size(), partitions.size()));
@@ -174,7 +176,7 @@ public class HiveMaterializedViewUtils
                     throw new PrestoException(HIVE_INVALID_PARTITION_VALUE, String.format("partition key value cannot be null for field: %s", name));
                 }
 
-                partitionNameAndValuesMap.put(name, parsePartitionValue(name, value, type, timeZone));
+                partitionNameAndValuesMap.put(name, parsePartitionValue(Optional.of(session), name, value, type, timeZone));
             });
 
             TupleDomain<String> tupleDomain = TupleDomain.fromFixedValues(partitionNameAndValuesMap.build());
@@ -194,7 +196,7 @@ public class HiveMaterializedViewUtils
     // baseTable: t2, partitioned by [a]
     // Output: t1_a -> t2.a
     public static Optional<Map<String, String>> viewToBaseTableOnOuterJoinSideIndirectMappedPartitions(
-            ConnectorMaterializedViewDefinition viewDefinition,
+            MaterializedViewDefinition viewDefinition,
             Table baseTable)
     {
         SchemaTableName schemaBaseTable = new SchemaTableName(baseTable.getDatabaseName(), baseTable.getTableName());

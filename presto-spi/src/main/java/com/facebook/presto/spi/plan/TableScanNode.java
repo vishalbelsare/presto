@@ -17,12 +17,12 @@ import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.SourceLocation;
 import com.facebook.presto.spi.TableHandle;
+import com.facebook.presto.spi.constraints.TableConstraint;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.Immutable;
+import com.google.errorprone.annotations.Immutable;
+import jakarta.annotation.Nullable;
 
 import java.util.HashMap;
 import java.util.List;
@@ -46,8 +46,10 @@ public final class TableScanNode
     // TODO: think about how to get rid of this in new planner
     // TODO: these two fields will not be effective if they are created by connectors until we have refactored PickTableLayout
     private final TupleDomain<ColumnHandle> currentConstraint;
-
     private final TupleDomain<ColumnHandle> enforcedConstraint;
+    private final List<TableConstraint<ColumnHandle>> tableConstraints;
+
+    private final Optional<CteMaterializationInfo> cteMaterializationInfo;
 
     /**
      * This constructor is for JSON deserialization only.  Do not use!
@@ -60,13 +62,15 @@ public final class TableScanNode
             @JsonProperty("outputVariables") List<VariableReferenceExpression> outputVariables,
             @JsonProperty("assignments") Map<VariableReferenceExpression, ColumnHandle> assignments)
     {
-        super(sourceLocation, id);
+        super(sourceLocation, id, Optional.empty());
         this.table = requireNonNull(table, "table is null");
         this.outputVariables = unmodifiableList(requireNonNull(outputVariables, "outputVariables is null"));
         this.assignments = unmodifiableMap(new HashMap<>(requireNonNull(assignments, "assignments is null")));
         checkArgument(assignments.keySet().containsAll(outputVariables), "assignments does not cover all of outputs");
         this.currentConstraint = null;
         this.enforcedConstraint = null;
+        this.tableConstraints = emptyList();
+        this.cteMaterializationInfo = Optional.empty();
     }
 
     public TableScanNode(
@@ -76,18 +80,53 @@ public final class TableScanNode
             List<VariableReferenceExpression> outputVariables,
             Map<VariableReferenceExpression, ColumnHandle> assignments,
             TupleDomain<ColumnHandle> currentConstraint,
-            TupleDomain<ColumnHandle> enforcedConstraint)
+            TupleDomain<ColumnHandle> enforcedConstraint, Optional<CteMaterializationInfo> cteMaterializationInfo)
     {
-        super(sourceLocation, id);
+        this(sourceLocation, id, table, outputVariables, assignments, emptyList(), currentConstraint, enforcedConstraint, cteMaterializationInfo);
+    }
+
+    public TableScanNode(
+            Optional<SourceLocation> sourceLocation,
+            PlanNodeId id,
+            TableHandle table,
+            List<VariableReferenceExpression> outputVariables,
+            Map<VariableReferenceExpression, ColumnHandle> assignments,
+            List<TableConstraint<ColumnHandle>> tableConstraints,
+            TupleDomain<ColumnHandle> currentConstraint,
+            TupleDomain<ColumnHandle> enforcedConstraint, Optional<CteMaterializationInfo> cteMaterializationInfo)
+    {
+        this(sourceLocation, id, Optional.empty(), table, outputVariables, assignments, tableConstraints, currentConstraint, enforcedConstraint, cteMaterializationInfo);
+    }
+
+    public TableScanNode(
+            Optional<SourceLocation> sourceLocation,
+            PlanNodeId id,
+            Optional<PlanNode> statsEquivalentPlanNode,
+            TableHandle table,
+            List<VariableReferenceExpression> outputVariables,
+            Map<VariableReferenceExpression, ColumnHandle> assignments,
+            List<TableConstraint<ColumnHandle>> tableConstraints,
+            TupleDomain<ColumnHandle> currentConstraint,
+            TupleDomain<ColumnHandle> enforcedConstraint,
+            Optional<CteMaterializationInfo> cteMaterializationInfo)
+    {
+        super(sourceLocation, id, statsEquivalentPlanNode);
         this.table = requireNonNull(table, "table is null");
         this.outputVariables = unmodifiableList(requireNonNull(outputVariables, "outputVariables is null"));
         this.assignments = unmodifiableMap(new HashMap<>(requireNonNull(assignments, "assignments is null")));
+        this.cteMaterializationInfo = requireNonNull(cteMaterializationInfo, "cteMaterializationInfo is null");
         checkArgument(assignments.keySet().containsAll(outputVariables), "assignments does not cover all of outputs");
         this.currentConstraint = requireNonNull(currentConstraint, "currentConstraint is null");
         this.enforcedConstraint = requireNonNull(enforcedConstraint, "enforcedConstraint is null");
         if (!currentConstraint.isAll() || !enforcedConstraint.isAll()) {
             checkArgument(table.getLayout().isPresent(), "tableLayout must be present when currentConstraint or enforcedConstraint is non-trivial");
         }
+        this.tableConstraints = requireNonNull(tableConstraints, "tableConstraints is null");
+    }
+
+    public Optional<CteMaterializationInfo> getCteMaterializationInfo()
+    {
+        return cteMaterializationInfo;
     }
 
     /**
@@ -97,6 +136,14 @@ public final class TableScanNode
     public TableHandle getTable()
     {
         return table;
+    }
+
+    /**
+     * Get table constraints defined by connector
+     */
+    public List<TableConstraint<ColumnHandle>> getTableConstraints()
+    {
+        return tableConstraints;
     }
 
     /**
@@ -146,6 +193,13 @@ public final class TableScanNode
     }
 
     @Override
+    public LogicalProperties computeLogicalProperties(LogicalPropertiesProvider logicalPropertiesProvider)
+    {
+        requireNonNull(logicalPropertiesProvider, "logicalPropertiesProvider cannot be null.");
+        return logicalPropertiesProvider.getTableScanProperties(this);
+    }
+
+    @Override
     @JsonProperty
     public List<VariableReferenceExpression> getOutputVariables()
     {
@@ -156,6 +210,12 @@ public final class TableScanNode
     public <R, C> R accept(PlanVisitor<R, C> visitor, C context)
     {
         return visitor.visitTableScan(this, context);
+    }
+
+    @Override
+    public PlanNode assignStatsEquivalentPlanNode(Optional<PlanNode> statsEquivalentPlanNode)
+    {
+        return new TableScanNode(getSourceLocation(), getId(), statsEquivalentPlanNode, table, outputVariables, assignments, tableConstraints, currentConstraint, enforcedConstraint, cteMaterializationInfo);
     }
 
     @Override

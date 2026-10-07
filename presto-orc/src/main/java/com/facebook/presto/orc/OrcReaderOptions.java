@@ -13,38 +13,52 @@
  */
 package com.facebook.presto.orc;
 
-import io.airlift.units.DataSize;
+import com.facebook.airlift.units.DataSize;
 
+import static com.facebook.airlift.units.DataSize.Unit.GIGABYTE;
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
 public class OrcReaderOptions
 {
+    private static final DataSize DEFAULT_MAX_SLICE_SIZE = new DataSize(1, GIGABYTE);
     private final DataSize maxMergeDistance;
     private final DataSize tinyStripeThreshold;
     private final DataSize maxBlockSize;
     private final boolean zstdJniDecompressionEnabled;
     private final boolean mapNullKeysEnabled;
-    private final boolean enableTimestampMicroPrecision;
+    // if the option is set to true, OrcSelectiveReader will append a row number block at the end of the page
+    private final boolean appendRowNumber;
+    // slice reader will throw if the slice size is larger than this value
+    private final DataSize maxSliceSize;
+    private final boolean resetAllReaders;
 
-    public OrcReaderOptions(DataSize maxMergeDistance, DataSize tinyStripeThreshold, DataSize maxBlockSize, boolean zstdJniDecompressionEnabled)
-    {
-        this(maxMergeDistance, tinyStripeThreshold, maxBlockSize, zstdJniDecompressionEnabled, false, false);
-    }
+    /**
+     * Read column statistics for flat map columns. Usually there are quite a
+     * lot of map statistics, so enable only if it's really needed.
+     */
+    private final boolean readMapStatistics;
 
-    public OrcReaderOptions(
+    private OrcReaderOptions(
             DataSize maxMergeDistance,
             DataSize tinyStripeThreshold,
             DataSize maxBlockSize,
             boolean zstdJniDecompressionEnabled,
             boolean mapNullKeysEnabled,
-            boolean enableTimestampMicroPrecision)
+            boolean appendRowNumber,
+            boolean readMapStatistics,
+            DataSize maxSliceSize,
+            boolean resetAllReaders)
     {
         this.maxMergeDistance = requireNonNull(maxMergeDistance, "maxMergeDistance is null");
         this.maxBlockSize = requireNonNull(maxBlockSize, "maxBlockSize is null");
         this.tinyStripeThreshold = requireNonNull(tinyStripeThreshold, "tinyStripeThreshold is null");
         this.zstdJniDecompressionEnabled = zstdJniDecompressionEnabled;
         this.mapNullKeysEnabled = mapNullKeysEnabled;
-        this.enableTimestampMicroPrecision = enableTimestampMicroPrecision;
+        this.appendRowNumber = appendRowNumber;
+        this.readMapStatistics = readMapStatistics;
+        this.maxSliceSize = maxSliceSize;
+        this.resetAllReaders = resetAllReaders;
     }
 
     public DataSize getMaxMergeDistance()
@@ -72,8 +86,127 @@ public class OrcReaderOptions
         return mapNullKeysEnabled;
     }
 
-    public boolean enableTimestampMicroPrecision()
+    public boolean appendRowNumber()
     {
-        return enableTimestampMicroPrecision;
+        return appendRowNumber;
+    }
+
+    public boolean readMapStatistics()
+    {
+        return readMapStatistics;
+    }
+
+    public DataSize getMaxSliceSize()
+    {
+        return maxSliceSize;
+    }
+
+    public boolean isResetAllReaders()
+    {
+        return resetAllReaders;
+    }
+
+    @Override
+    public String toString()
+    {
+        return toStringHelper(this)
+                .add("maxMergeDistance", maxMergeDistance)
+                .add("tinyStripeThreshold", tinyStripeThreshold)
+                .add("maxBlockSize", maxBlockSize)
+                .add("zstdJniDecompressionEnabled", zstdJniDecompressionEnabled)
+                .add("mapNullKeysEnabled", mapNullKeysEnabled)
+                .add("appendRowNumber", appendRowNumber)
+                .add("readMapStatistics", readMapStatistics)
+                .add("maxSliceSize", maxSliceSize)
+                .add("resetAllReaders", resetAllReaders)
+                .toString();
+    }
+
+    public static Builder builder()
+    {
+        return new Builder();
+    }
+
+    public static final class Builder
+    {
+        private DataSize maxMergeDistance;
+        private DataSize tinyStripeThreshold;
+        private DataSize maxBlockSize;
+        private boolean zstdJniDecompressionEnabled;
+        private boolean mapNullKeysEnabled;
+        private boolean appendRowNumber;
+        private boolean readMapStatistics;
+        private DataSize maxSliceSize = DEFAULT_MAX_SLICE_SIZE;
+        private boolean resetAllReaders;
+
+        private Builder() {}
+
+        public Builder withMaxMergeDistance(DataSize maxMergeDistance)
+        {
+            this.maxMergeDistance = requireNonNull(maxMergeDistance, "maxMergeDistance is null");
+            return this;
+        }
+
+        public Builder withTinyStripeThreshold(DataSize tinyStripeThreshold)
+        {
+            this.tinyStripeThreshold = requireNonNull(tinyStripeThreshold, "tinyStripeThreshold is null");
+            return this;
+        }
+
+        public Builder withMaxBlockSize(DataSize maxBlockSize)
+        {
+            this.maxBlockSize = requireNonNull(maxBlockSize, "maxBlockSize is null");
+            return this;
+        }
+
+        public Builder withZstdJniDecompressionEnabled(boolean zstdJniDecompressionEnabled)
+        {
+            this.zstdJniDecompressionEnabled = zstdJniDecompressionEnabled;
+            return this;
+        }
+
+        public Builder withMapNullKeysEnabled(boolean mapNullKeysEnabled)
+        {
+            this.mapNullKeysEnabled = mapNullKeysEnabled;
+            return this;
+        }
+
+        public Builder withAppendRowNumber(boolean appendRowNumber)
+        {
+            this.appendRowNumber = appendRowNumber;
+            return this;
+        }
+
+        public Builder withReadMapStatistics(boolean readMapStatistics)
+        {
+            this.readMapStatistics = readMapStatistics;
+            return this;
+        }
+
+        public Builder withMaxSliceSize(DataSize maxSliceSize)
+        {
+            this.maxSliceSize = maxSliceSize;
+            return this;
+        }
+
+        public Builder withResetAllReaders(boolean resetAllReaders)
+        {
+            this.resetAllReaders = resetAllReaders;
+            return this;
+        }
+
+        public OrcReaderOptions build()
+        {
+            return new OrcReaderOptions(
+                    maxMergeDistance,
+                    tinyStripeThreshold,
+                    maxBlockSize,
+                    zstdJniDecompressionEnabled,
+                    mapNullKeysEnabled,
+                    appendRowNumber,
+                    readMapStatistics,
+                    maxSliceSize,
+                    resetAllReaders);
+        }
     }
 }

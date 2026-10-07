@@ -20,6 +20,7 @@ import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.block.BlockLease;
 import com.facebook.presto.common.block.LazyBlock;
 import com.facebook.presto.common.block.LazyBlockLoader;
+import com.facebook.presto.common.block.LongArrayBlock;
 import com.facebook.presto.common.block.RunLengthEncodedBlock;
 import com.facebook.presto.common.predicate.FilterFunction;
 import com.facebook.presto.common.predicate.TupleDomainFilter;
@@ -43,10 +44,9 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
 import com.google.common.primitives.Ints;
 import io.airlift.slice.Slice;
+import jakarta.annotation.Nullable;
 import org.joda.time.DateTimeZone;
 import org.openjdk.jol.info.ClassLayout;
-
-import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -59,6 +59,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.IntStream;
@@ -74,6 +75,7 @@ import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.common.type.TinyintType.TINYINT;
 import static com.facebook.presto.common.type.Varchars.isVarcharType;
 import static com.facebook.presto.orc.OrcReader.MAX_BATCH_SIZE;
+import static com.facebook.presto.orc.StreamDescriptorFactory.createStreamDescriptor;
 import static com.facebook.presto.orc.reader.SelectiveStreamReaders.createStreamReader;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Predicates.not;
@@ -89,14 +91,15 @@ import static java.util.Objects.requireNonNull;
 public class OrcSelectiveRecordReader
         extends AbstractOrcRecordReader<SelectiveStreamReader>
 {
+    // Marks a SQL null when occurring in constantValues.
+    public static final byte[] NULL_MARKER = new byte[0];
+
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(OrcSelectiveRecordReader.class).instanceSize();
 
-    // Marks a SQL null when occurring in constantValues.
-    private static final byte[] NULL_MARKER = new byte[0];
     private static final Page EMPTY_PAGE = new Page(0);
 
     private final int[] hiveColumnIndices;                            // elements are hive column indices
-    private final List<Integer> outputColumns;                        // elements are hive column indices
+    private final List<Integer> outputColumns;                        // elements are zero based column indices
     private final Map<Integer, Type> columnTypes;                     // key: index into hiveColumnIndices array
     private final Object[] constantValues;                            // aligned with hiveColumnIndices array
     private final Function<Block, Block>[] coercers;                   // aligned with hiveColumnIndices array
@@ -117,7 +120,6 @@ public class OrcSelectiveRecordReader
 
     private Set<Integer>[] filterFunctionInputs;                      // aligned with filterFunctionsOrder
     private boolean reorderFilters;
-    private int[] reorderableColumns;                                 // values are hiveColumnIndices
 
     // non-deterministic filter functions with only constant inputs; evaluated before any column is read
     private List<FilterFunctionWithStats> filterFunctionsWithConstantInputs;
@@ -146,7 +148,10 @@ public class OrcSelectiveRecordReader
     @Nullable
     private RuntimeException constantFilterError;
 
-    private int readPositions;
+    private long readPositions;
+
+    // true if row number needs to be added, false otherwise
+    private final boolean appendRowNumber;
 
     public OrcSelectiveRecordReader(
             Map<Integer, Type> includedColumns,                 // key: hiveColumnIndex
@@ -173,7 +178,6 @@ public class OrcSelectiveRecordReader
             int rowsInRowGroup,
             DateTimeZone hiveStorageTimeZone,
             OrcRecordReaderOptions options,
-            boolean legacyMapSubscript,
             PostScript.HiveWriterVersion hiveWriterVersion,
             MetadataReader metadataReader,
             Map<String, Slice> userMetadata,
@@ -182,16 +186,16 @@ public class OrcSelectiveRecordReader
             int initialBatchSize,
             StripeMetadataSource stripeMetadataSource,
             boolean cacheable,
-            RuntimeStats runtimeStats)
+            RuntimeStats runtimeStats,
+            Optional<OrcFileIntrospector> fileIntrospector,
+            long fileModificationTime)
     {
         super(includedColumns,
                 requiredSubfields,
                 createStreamReaders(
                         orcDataSource,
                         types,
-                        hiveStorageTimeZone,
                         options,
-                        legacyMapSubscript,
                         includedColumns,
                         outputColumns,
                         filters,
@@ -219,13 +223,14 @@ public class OrcSelectiveRecordReader
                 options.getMaxMergeDistance(),
                 options.getTinyStripeThreshold(),
                 options.getMaxBlockSize(),
-                userMetadata,
                 systemMemoryUsage,
                 writeValidation,
                 initialBatchSize,
                 stripeMetadataSource,
                 cacheable,
-                runtimeStats);
+                runtimeStats,
+                fileIntrospector,
+                fileModificationTime);
 
         // Hive column indices can't be used to index into arrays because they are negative
         // for partition and hidden columns. Hence, we create synthetic zero-based indices.
@@ -260,6 +265,7 @@ public class OrcSelectiveRecordReader
 
         requireNonNull(constantValues, "constantValues is null");
         this.constantValues = new Object[this.hiveColumnIndices.length];
+        this.appendRowNumber = options.appendRowNumber();
         for (int columnIndex : includedColumns.keySet()) {
             if (!isColumnPresent(columnIndex)) {
                 // Any filter not true of null on a missing column
@@ -307,7 +313,7 @@ public class OrcSelectiveRecordReader
                 .collect(toImmutableList());
         filterFunctionsOrder = orderFilterFunctionsWithInputs(streamReaderOrder, filterFunctionsWithStats, this.filterFunctionInputMapping);
         filterFunctionInputs = collectFilterFunctionInputs(filterFunctionsOrder, this.filterFunctionInputMapping);
-        reorderableColumns = Arrays.stream(streamReaderOrder)
+        int[] reorderableColumns = Arrays.stream(streamReaderOrder)
                 .filter(columnIndex -> !columnsWithFilterScores.containsKey(columnIndex))
                 .filter(this.filterFunctionInputMapping::containsKey)
                 .toArray();
@@ -512,7 +518,7 @@ public class OrcSelectiveRecordReader
             return 20;
         }
 
-        if (type == REAL || type == DOUBLE) {
+        if (type.equals(REAL) || type.equals(DOUBLE)) {
             return 30;
         }
 
@@ -574,9 +580,7 @@ public class OrcSelectiveRecordReader
     private static SelectiveStreamReader[] createStreamReaders(
             OrcDataSource orcDataSource,
             List<OrcType> types,
-            DateTimeZone hiveStorageTimeZone,
             OrcRecordReaderOptions options,
-            boolean legacyMapSubscript,
             Map<Integer, Type> includedColumns,
             List<Integer> outputColumns,
             Map<Integer, Map<Subfield, TupleDomainFilter>> filters,
@@ -585,7 +589,7 @@ public class OrcSelectiveRecordReader
             Map<Integer, List<Subfield>> requiredSubfields,
             OrcAggregatedMemoryContext systemMemoryContext)
     {
-        List<StreamDescriptor> streamDescriptors = createStreamDescriptor("", "", 0, types, orcDataSource).getNestedStreams();
+        List<StreamDescriptor> streamDescriptors = createStreamDescriptor(types, orcDataSource).getNestedStreams();
 
         requireNonNull(filterFunctions, "filterFunctions is null");
         requireNonNull(filterFunctionInputMapping, "filterFunctionInputMapping is null");
@@ -607,21 +611,26 @@ public class OrcSelectiveRecordReader
                         Optional.ofNullable(filters.get(columnId)).orElse(ImmutableMap.of()),
                         outputRequired ? Optional.of(includedColumns.get(columnId)) : Optional.empty(),
                         Optional.ofNullable(requiredSubfields.get(columnId)).orElse(ImmutableList.of()),
-                        hiveStorageTimeZone,
                         options,
-                        legacyMapSubscript,
-                        systemMemoryContext);
+                        systemMemoryContext,
+                        false);
             }
         }
         return streamReaders;
     }
 
-    public int getReadPositions()
+    public long getReadPositions()
     {
         return readPositions;
     }
 
     public Page getNextPage()
+            throws IOException
+    {
+        return getNextPage(this.appendRowNumber);
+    }
+
+    public Page getNextPage(boolean withRowNumbers)
             throws IOException
     {
         if (constantFilterIsFalse) {
@@ -631,7 +640,6 @@ public class OrcSelectiveRecordReader
         if (batchSize < 0) {
             return null;
         }
-
         readPositions += batchSize;
         initializePositions(batchSize);
 
@@ -716,7 +724,7 @@ public class OrcSelectiveRecordReader
             }
         }
 
-        Block[] blocks = new Block[outputColumns.size()];
+        Block[] blocks = new Block[ withRowNumbers ? outputColumns.size() + 1 : outputColumns.size()];
         for (int i = 0; i < outputColumns.size(); i++) {
             int columnIndex = outputColumns.get(i);
             if (constantValues[columnIndex] != null) {
@@ -737,10 +745,11 @@ public class OrcSelectiveRecordReader
             }
         }
 
+        if (withRowNumbers) {
+            blocks[outputColumns.size()] = createRowNumbersBlock(positionsToRead, positionCount, this.getFilePosition());
+        }
         Page page = new Page(positionCount, blocks);
-
         validateWritePageChecksum(page);
-
         return page;
     }
 
@@ -767,23 +776,6 @@ public class OrcSelectiveRecordReader
     private boolean hasAnyFilter(int columnIndex)
     {
         return columnsWithFilterScores.containsKey(columnIndex) || filterFunctionInputMapping.containsKey(columnIndex);
-    }
-
-    private void initializePositions(int batchSize)
-    {
-        if (positions == null || positions.length < batchSize) {
-            positions = new int[batchSize];
-            for (int i = 0; i < batchSize; i++) {
-                positions[i] = i;
-            }
-        }
-
-        if (errors == null || errors.length < batchSize) {
-            errors = new RuntimeException[batchSize];
-        }
-        else {
-            Arrays.fill(errors, null);
-        }
     }
 
     private int applyFilterFunctionWithNoInputs(int positionCount)
@@ -871,6 +863,24 @@ public class OrcSelectiveRecordReader
         }
     }
 
+    private void initializePositions(int batchSize)
+    {
+        if (positions == null || positions.length < batchSize) {
+            positions = new int[batchSize];
+        }
+
+        for (int i = 0; i < batchSize; i++) {
+            positions[i] = i;
+        }
+
+        if (errors == null || errors.length < batchSize) {
+            errors = new RuntimeException[batchSize];
+        }
+        else {
+            Arrays.fill(errors, null);
+        }
+    }
+
     private void initializeOutputPositions(int positionCount)
     {
         if (outputPositions == null || outputPositions.length < positionCount) {
@@ -882,11 +892,26 @@ public class OrcSelectiveRecordReader
         }
     }
 
-    @Override
-    public void close()
-            throws IOException
+    private static Block createRowNumbersBlock(int[] positionsToRead, int positionCount, long startRowNumber)
     {
-        super.close();
+        long[] rowNumbers = new long[positionCount];
+        for (int i = 0; i < positionCount; i++) {
+            rowNumbers[i] = positionsToRead[i] + startRowNumber;
+        }
+        return new LongArrayBlock(positionCount, Optional.empty(), rowNumbers);
+    }
+
+    /**
+     * Convert from Hive column index to zero based column index.
+     */
+    public OptionalInt toZeroBasedColumnIndex(int hiveColumnIndex)
+    {
+        for (int i = 0; i < hiveColumnIndices.length; i++) {
+            if (hiveColumnIndices[i] == hiveColumnIndex) {
+                return OptionalInt.of(outputColumns.get(i));
+            }
+        }
+        return OptionalInt.empty();
     }
 
     private final class OrcBlockLoader
@@ -912,7 +937,7 @@ public class OrcSelectiveRecordReader
         }
 
         @Override
-        public final void load(LazyBlock lazyBlock)
+        public void load(LazyBlock lazyBlock)
         {
             if (loaded) {
                 return;
@@ -922,7 +947,12 @@ public class OrcSelectiveRecordReader
                 reader.read(offset, positions, positionCount);
             }
             catch (IOException e) {
+                OrcSelectiveRecordReader.this.getOrcDataSourceId().attachToException(e);
                 throw new UncheckedIOException(e);
+            }
+            catch (RuntimeException e) {
+                OrcSelectiveRecordReader.this.getOrcDataSourceId().attachToException(e);
+                throw e;
             }
 
             Block block = reader.getBlock(positions, positionCount);

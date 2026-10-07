@@ -48,6 +48,14 @@ public interface Type
     boolean isOrderable();
 
     /**
+     * True if there can only be one canonical representation of data corresponding to this type.
+     */
+    default boolean equalValuesAreIdentical()
+    {
+        return true;
+    }
+
+    /**
      * Gets the Java class type used to represent this value on the stack during
      * expression execution.
      * <p>
@@ -89,6 +97,11 @@ public interface Type
      * without boundary checks.
      */
     boolean getBooleanUnchecked(UncheckedBlock block, int internalPosition);
+
+    /**
+     * Gets the value at the {@code block} {@code position} as a byte.
+     */
+    byte getByte(Block block, int position);
 
     /**
      * Gets the value at the {@code block} {@code position} as a long.

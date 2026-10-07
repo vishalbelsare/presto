@@ -18,9 +18,9 @@ import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.common.type.BigintType;
 import com.facebook.presto.kafka.util.EmbeddedKafka;
 import com.facebook.presto.kafka.util.TestUtils;
-import com.facebook.presto.security.AllowAllAccessControl;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.TableHandle;
+import com.facebook.presto.spi.security.AllowAllAccessControl;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.tests.StandaloneQueryRunner;
 import com.google.common.collect.ImmutableMap;
@@ -90,8 +90,10 @@ public class TestMinimalFunctionality
     @AfterMethod(alwaysRun = true)
     public void tearDown()
     {
-        queryRunner.close();
-        queryRunner = null;
+        if (queryRunner != null) {
+            queryRunner.close();
+            queryRunner = null;
+        }
     }
 
     private void createMessages(String topicName, int count)
@@ -115,7 +117,7 @@ public class TestMinimalFunctionality
         transaction(queryRunner.getTransactionManager(), new AllowAllAccessControl())
                 .singleStatement()
                 .execute(SESSION, session -> {
-                    Optional<TableHandle> handle = queryRunner.getServer().getMetadata().getTableHandle(session, name);
+                    Optional<TableHandle> handle = queryRunner.getServer().getMetadata().getMetadataResolver(session).getTableHandle(name);
                     assertTrue(handle.isPresent());
                 });
     }

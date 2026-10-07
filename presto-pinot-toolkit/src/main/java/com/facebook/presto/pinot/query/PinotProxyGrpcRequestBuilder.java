@@ -13,17 +13,19 @@
  */
 package com.facebook.presto.pinot.query;
 
+import com.facebook.presto.pinot.PinotErrorCode;
+import com.facebook.presto.pinot.PinotException;
 import org.apache.pinot.common.proto.Server;
-import org.apache.pinot.common.utils.grpc.GrpcRequestBuilder;
-import org.apache.pinot.connector.presto.PinotScatterGatherQueryClient;
+import org.apache.pinot.common.utils.grpc.ServerGrpcRequestBuilder;
 import org.apache.pinot.spi.utils.CommonConstants;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 public class PinotProxyGrpcRequestBuilder
-        extends GrpcRequestBuilder
+        extends ServerGrpcRequestBuilder
 {
     private static final String KEY_OF_PROXY_GRPC_FORWARD_HOST = "FORWARD_HOST";
     private static final String KEY_OF_PROXY_GRPC_FORWARD_PORT = "FORWARD_PORT";
@@ -97,7 +99,7 @@ public class PinotProxyGrpcRequestBuilder
     public Server.ServerRequest build()
     {
         if (payloadType == null || segments.isEmpty()) {
-            throw new PinotScatterGatherQueryClient.PinotException(PinotScatterGatherQueryClient.ErrorCode.PINOT_UNCLASSIFIED_ERROR, "Query and segmentsToQuery must be set");
+            throw new PinotException(PinotErrorCode.PINOT_INVALID_SEGMENT_QUERY_GENERATED, Optional.empty(), "Query and segmentsToQuery must be set");
         }
         if (!payloadType.equals(CommonConstants.Query.Request.PayloadType.SQL)) {
             throw new RuntimeException("Only [SQL] Payload type is allowed: " + payloadType);

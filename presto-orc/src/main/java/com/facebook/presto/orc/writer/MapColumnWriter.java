@@ -18,8 +18,7 @@ import com.facebook.presto.common.block.ColumnarMap;
 import com.facebook.presto.orc.ColumnWriterOptions;
 import com.facebook.presto.orc.DwrfDataEncryptor;
 import com.facebook.presto.orc.OrcEncoding;
-import com.facebook.presto.orc.checkpoint.BooleanStreamCheckpoint;
-import com.facebook.presto.orc.checkpoint.LongStreamCheckpoint;
+import com.facebook.presto.orc.checkpoint.StreamCheckpoint;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
 import com.facebook.presto.orc.metadata.CompressedMetadataWriter;
 import com.facebook.presto.orc.metadata.MetadataWriter;
@@ -47,6 +46,7 @@ import static com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind
 import static com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind.DIRECT_V2;
 import static com.facebook.presto.orc.metadata.CompressionKind.NONE;
 import static com.facebook.presto.orc.stream.LongOutputStream.createLengthOutputStream;
+import static com.facebook.presto.orc.writer.ColumnWriterUtils.buildRowGroupIndexes;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
@@ -56,6 +56,7 @@ public class MapColumnWriter
 {
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(MapColumnWriter.class).instanceSize();
     private final int column;
+    private final int sequence;
     private final boolean compressed;
     private final ColumnEncoding columnEncoding;
     private final LongOutputStream lengthStream;
@@ -68,14 +69,25 @@ public class MapColumnWriter
     private long columnStatisticsRetainedSizeInBytes;
 
     private int nonNullValueCount;
+    private long rawSize;
 
     private boolean closed;
 
-    public MapColumnWriter(int column, ColumnWriterOptions columnWriterOptions, Optional<DwrfDataEncryptor> dwrfEncryptor, OrcEncoding orcEncoding, ColumnWriter keyWriter, ColumnWriter valueWriter, MetadataWriter metadataWriter)
+    public MapColumnWriter(
+            int column,
+            int sequence,
+            ColumnWriterOptions columnWriterOptions,
+            Optional<DwrfDataEncryptor> dwrfEncryptor,
+            OrcEncoding orcEncoding,
+            ColumnWriter keyWriter,
+            ColumnWriter valueWriter,
+            MetadataWriter metadataWriter)
     {
         checkArgument(column >= 0, "column is negative");
+        checkArgument(sequence >= 0, "sequence is negative");
         requireNonNull(columnWriterOptions, "columnWriterOptions is null");
         this.column = column;
+        this.sequence = sequence;
         this.compressed = columnWriterOptions.getCompressionKind() != NONE;
         this.columnEncoding = new ColumnEncoding(orcEncoding == DWRF ? DIRECT : DIRECT_V2, 0);
         this.keyWriter = requireNonNull(keyWriter, "keyWriter is null");
@@ -147,7 +159,9 @@ public class MapColumnWriter
             childRawSize += valueWriter.writeBlock(columnarMap.getValuesBlock());
         }
         nonNullValueCount += blockNonNullValueCount;
-        return (columnarMap.getPositionCount() - blockNonNullValueCount) * NULL_SIZE + childRawSize;
+        long rawSize = (columnarMap.getPositionCount() - blockNonNullValueCount) * NULL_SIZE + childRawSize;
+        this.rawSize += rawSize;
+        return rawSize;
     }
 
     @Override
@@ -155,10 +169,11 @@ public class MapColumnWriter
     {
         checkState(!closed);
 
-        ColumnStatistics statistics = new ColumnStatistics((long) nonNullValueCount, null);
+        ColumnStatistics statistics = new ColumnStatistics((long) nonNullValueCount, null, rawSize, null);
         rowGroupColumnStatistics.add(statistics);
         columnStatisticsRetainedSizeInBytes += statistics.getRetainedSizeInBytes();
         nonNullValueCount = 0;
+        rawSize = 0;
 
         ImmutableMap.Builder<Integer, ColumnStatistics> columnStatistics = ImmutableMap.builder();
         columnStatistics.put(column, statistics);
@@ -189,43 +204,20 @@ public class MapColumnWriter
     }
 
     @Override
-    public List<StreamDataOutput> getIndexStreams()
+    public List<StreamDataOutput> getIndexStreams(Optional<List<? extends StreamCheckpoint>> prependCheckpoints)
             throws IOException
     {
         checkState(closed);
 
-        ImmutableList.Builder<RowGroupIndex> rowGroupIndexes = ImmutableList.builder();
-
-        List<LongStreamCheckpoint> lengthCheckpoints = lengthStream.getCheckpoints();
-        Optional<List<BooleanStreamCheckpoint>> presentCheckpoints = presentStream.getCheckpoints();
-        for (int i = 0; i < rowGroupColumnStatistics.size(); i++) {
-            int groupId = i;
-            ColumnStatistics columnStatistics = rowGroupColumnStatistics.get(groupId);
-            LongStreamCheckpoint lengthCheckpoint = lengthCheckpoints.get(groupId);
-            Optional<BooleanStreamCheckpoint> presentCheckpoint = presentCheckpoints.map(checkpoints -> checkpoints.get(groupId));
-            List<Integer> positions = createArrayColumnPositionList(compressed, lengthCheckpoint, presentCheckpoint);
-            rowGroupIndexes.add(new RowGroupIndex(positions, columnStatistics));
-        }
-
-        Slice slice = metadataWriter.writeRowIndexes(rowGroupIndexes.build());
-        Stream stream = new Stream(column, StreamKind.ROW_INDEX, slice.length(), false);
+        List<RowGroupIndex> rowGroupIndexes = buildRowGroupIndexes(compressed, rowGroupColumnStatistics, prependCheckpoints, presentStream, lengthStream);
+        Slice slice = metadataWriter.writeRowIndexes(rowGroupIndexes);
+        Stream stream = new Stream(column, sequence, StreamKind.ROW_INDEX, slice.length(), false);
 
         ImmutableList.Builder<StreamDataOutput> indexStreams = ImmutableList.builder();
         indexStreams.add(new StreamDataOutput(slice, stream));
-        indexStreams.addAll(keyWriter.getIndexStreams());
-        indexStreams.addAll(valueWriter.getIndexStreams());
+        indexStreams.addAll(keyWriter.getIndexStreams(Optional.empty()));
+        indexStreams.addAll(valueWriter.getIndexStreams(Optional.empty()));
         return indexStreams.build();
-    }
-
-    private static List<Integer> createArrayColumnPositionList(
-            boolean compressed,
-            LongStreamCheckpoint lengthCheckpoint,
-            Optional<BooleanStreamCheckpoint> presentCheckpoint)
-    {
-        ImmutableList.Builder<Integer> positionList = ImmutableList.builder();
-        presentCheckpoint.ifPresent(booleanStreamCheckpoint -> positionList.addAll(booleanStreamCheckpoint.toPositionList(compressed)));
-        positionList.addAll(lengthCheckpoint.toPositionList(compressed));
-        return positionList.build();
     }
 
     @Override
@@ -234,8 +226,8 @@ public class MapColumnWriter
         checkState(closed);
 
         ImmutableList.Builder<StreamDataOutput> outputDataStreams = ImmutableList.builder();
-        presentStream.getStreamDataOutput(column).ifPresent(outputDataStreams::add);
-        outputDataStreams.add(lengthStream.getStreamDataOutput(column));
+        presentStream.getStreamDataOutput(column, sequence).ifPresent(outputDataStreams::add);
+        outputDataStreams.add(lengthStream.getStreamDataOutput(column, sequence));
         outputDataStreams.addAll(keyWriter.getDataStreams());
         outputDataStreams.addAll(valueWriter.getDataStreams());
         return outputDataStreams.build();
@@ -264,5 +256,6 @@ public class MapColumnWriter
         rowGroupColumnStatistics.clear();
         columnStatisticsRetainedSizeInBytes = 0;
         nonNullValueCount = 0;
+        rawSize = 0;
     }
 }

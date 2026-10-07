@@ -15,7 +15,7 @@ Each message is presented as a row in Presto.
 
 Topics can be live: rows will appear as data arrives and disappear as
 messages get dropped. This can result in strange behavior if accessing the
-same table multiple times in a single query (e.g., performing a self join).
+same table multiple times in a single query (for example, performing a self join).
 
 .. note::
 
@@ -28,11 +28,18 @@ To configure the Kafka connector, create a catalog properties file
 ``etc/catalog/kafka.properties`` with the following contents,
 replacing the properties as appropriate:
 
+In some cases, such as when using specialized authentication methods, it is necessary to specify
+additional Kafka client properties to access your Kafka cluster. To do so,
+add the ``kafka.config.resources`` property to reference your Kafka configuration files.
+Configuration settings in the files in ``kafka.config.resources`` can be overridden if
+specified explicitly in ``kafka.properties`` (for example, ``security.protocol=SSL``):
+
 .. code-block:: none
 
     connector.name=kafka
     kafka.table-names=table1,table2
     kafka.nodes=host1:port,host2:port
+    kafka.config.resources=/etc/kafka-configuration.properties
 
 Multiple Kafka Clusters
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -59,6 +66,17 @@ Property Name                       Description
 ``kafka.max-partition-fetch-bytes`` Maximum number of bytes from one partition per poll
 ``kafka.table-description-dir``     Directory containing topic description files
 ``kafka.hide-internal-columns``     Controls whether internal columns are part of the table schema or not
+``kafka.security-protocol``         Security protocol for connection to Kafka cluster, defaults to ``SASL_PLAINTEXT``
+``kafka.sasl.mechanism``            Authentication mechanism of the SASL
+``kafka.sasl.jaas.config``          JAAS config of the SASL authentication
+``kafka.truststore.path``           Path of the truststore file
+``kafka.truststore.password``       Password for the truststore file
+``kafka.truststore.type``           File format of the truststore file, defaults to ``JKS``
+``kafka.config.resources``          A comma-separated list of Kafka client configuration files. If a specialized authentication method is required, it can be specified in these additional Kafka client properties files. Example: `/etc/kafka-configuration.properties`
+``case-sensitive-name-matching``    Enable case-sensitive identifier support for schema,
+                                    table, and column names for the connector. When disabled,
+                                    names are matched case-insensitively using lowercase
+                                    normalization. Default is ``false``.
 =================================== ==============================================================
 
 ``kafka.table-names``
@@ -136,6 +154,50 @@ these columns are hidden, they can still be used in queries but do not
 show up in ``DESCRIBE <table-name>`` or ``SELECT *``.
 
 This property is optional; the default is ``true``.
+
+``kafka.security-protocol``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Protocol used to communicate with brokers.
+Valid values are: ``SASL_PLAINTEXT``, ``SASL_SSL``.
+
+This property is optional; default is ``SASL_PLAINTEXT``.
+
+``kafka.sasl.mechanism``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The authentication mechanism used by SASL.
+Valid values are: ``PLAIN``, ``SCRAM-SHA-256``, ``SCRAM-SHA-512``.
+
+This property is optional.
+
+``kafka.sasl.jaas.config``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The configuration used for SASL authentication, which is a method for securing communication with brokers.
+
+This property is optional, but is required when ``kafka.sasl.mechanism`` is given.
+
+``kafka.truststore.path``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Path of the truststore file used for connecting to the Kafka cluster.
+
+This property is optional.
+
+``kafka.truststore.password``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Password for the truststore file used for connecting to the Kafka cluster.
+
+This property is optional, but is required when ``kafka.truststore.path`` is given.
+
+``kafka.truststore.type``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+File format of the truststore file.
+Valid values are: ``JKS``, ``PKCS12``.
+
+This property is optional; default is ``JKS``.
 
 Internal Columns
 ----------------
@@ -314,7 +376,7 @@ message used for decoding. It can be one or two numbers separated by a colon (``
 
 If only a start position is given:
 
- * For fixed width types the column will use the appropriate number of bytes for the specified ``dateFormat`` (see above).
+ * For fixed width types the column will use the appropriate number of bytes for the specified ``dataFormat`` (see above).
  * When ``VARCHAR`` value is decoded all bytes from start position till the end of the message will be used.
 
 If start and end position are given, then:
@@ -386,7 +448,7 @@ used for standard table columns and a number of decoders for date and time
 based types.
 
 Table below lists Presto data types which can be used as in ``type`` and matching field decoders
-which can be specified via ``dataFormat`` attribute
+which can be specified with ``dataFormat`` attribute
 
 +-------------------------------------+--------------------------------------------------------------------------------+
 | Presto data type                    | Allowed ``dataFormat`` values                                                  |
@@ -427,7 +489,7 @@ To convert values from JSON objects into Presto ``DATE``, ``TIME``, ``TIME WITH 
 * ``iso8601`` - text based, parses a text field as an ISO 8601 timestamp.
 * ``rfc2822`` - text based, parses a text field as an :rfc:`2822` timestamp.
 * ``custom-date-time`` - text based, parses a text field according to Joda format pattern
-                         specified via ``formatHint`` attribute. Format pattern should conform
+                         specified with ``formatHint`` attribute. Format pattern should conform
                          to https://www.joda.org/joda-time/apidocs/org/joda/time/format/DateTimeFormat.html.
 * ``milliseconds-since-epoch`` - number based, interprets a text or number as number of milliseconds since the epoch.
 * ``seconds-since-epoch`` - number based, interprets a text or number as number of milliseconds since the epoch.
@@ -444,7 +506,7 @@ Presto does not support schema-less Avro decoding.
 
 For key/message, using ``avro`` decoder, the ``dataSchema`` must be defined.
 This should point to the location of a valid Avro schema file of the message which needs to be decoded. This location can be a remote web server
-(e.g.: ``dataSchema: 'http://example.org/schema/avro_data.avsc'``) or local file system(e.g.: ``dataSchema: '/usr/local/schema/avro_data.avsc'``).
+(such as ``dataSchema: 'http://example.org/schema/avro_data.avsc'``) or local file system (such as ``dataSchema: '/usr/local/schema/avro_data.avsc'``).
 The decoder will fail if this location is not accessible from the Presto coordinator node.
 
 For fields, the following attributes are supported:

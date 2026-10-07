@@ -5,12 +5,12 @@
     <parent>
         <groupId>com.facebook.airlift</groupId>
         <artifactId>airbase</artifactId>
-        <version>102</version>
+        <version>108</version>
     </parent>
 
     <groupId>com.facebook.presto</groupId>
     <artifactId>presto-root</artifactId>
-    <version>0.271-SNAPSHOT</version>
+    <version>0.301-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>presto-root</name>
@@ -38,43 +38,69 @@
 
         <air.check.skip-spotbugs>true</air.check.skip-spotbugs>
         <air.check.skip-pmd>true</air.check.skip-pmd>
-        <air.check.skip-jacoco>true</air.check.skip-jacoco>
         <air.checkstyle.config-file>src/checkstyle/presto-checks.xml</air.checkstyle.config-file>
 
-        <air.java.version>1.8.0-151</air.java.version>
+        <air.java.version>17</air.java.version>
         <air.maven.version>3.3.9</air.maven.version>
 
-        <dep.antlr.version>4.7.1</dep.antlr.version>
-        <dep.airlift.version>0.201</dep.airlift.version>
+        <dep.antlr.version>4.13.2</dep.antlr.version>
+        <dep.airlift.version>0.232</dep.airlift.version>
         <dep.packaging.version>${dep.airlift.version}</dep.packaging.version>
         <dep.slice.version>0.38</dep.slice.version>
+        <dep.zero-allocation-hashing.version>0.27ea0</dep.zero-allocation-hashing.version>
         <dep.testing-mysql-server-5.version>0.6</dep.testing-mysql-server-5.version>
-        <dep.aws-sdk.version>1.11.697</dep.aws-sdk.version>
-        <dep.okhttp.version>3.9.0</dep.okhttp.version>
-        <dep.jdbi3.version>3.4.0</dep.jdbi3.version>
+        <dep.aws-sdk.version>1.12.782</dep.aws-sdk.version>
+        <dep.okhttp.version>5.3.2</dep.okhttp.version>
+        <dep.jdbi3.version>3.49.0</dep.jdbi3.version>
         <dep.oracle.version>19.3.0.0</dep.oracle.version>
-        <dep.drift.version>1.33</dep.drift.version>
+        <dep.drift.version>${dep.airlift.version}</dep.drift.version>
         <!-- Changing joda version changes tzdata which must match deployed JVM tzdata
              Do not change this without also making sure it matches -->
-        <dep.joda.version>2.10.8</dep.joda.version>
-        <dep.tempto.version>1.51</dep.tempto.version>
-        <dep.testng.version>6.10</dep.testng.version>
+        <dep.joda.version>2.14.0</dep.joda.version>
+        <dep.tempto.version>1.58</dep.tempto.version>
+        <dep.testng.version>7.5</dep.testng.version>
+        <dep.lucene.version>9.12.3</dep.lucene.version>
         <dep.assertj-core.version>3.8.0</dep.assertj-core.version>
-        <dep.logback.version>1.2.3</dep.logback.version>
-        <dep.parquet.version>1.12.0</dep.parquet.version>
-        <dep.nexus-staging-plugin.version>1.6.8</dep.nexus-staging-plugin.version>
-        <dep.asm.version>9.0</dep.asm.version>
-        <dep.gcs.version>1.9.17</dep.gcs.version>
-        <dep.alluxio.version>2.7.0</dep.alluxio.version>
-        <dep.kafka.version>2.3.1</dep.kafka.version>
-        <dep.pinot.version>0.9.3</dep.pinot.version>
-        <dep.druid.version>0.19.0</dep.druid.version>
-        <dep.jaxb.version>2.3.1</dep.jaxb.version>
-        <dep.hudi.version>0.9.0</dep.hudi.version>
-        <dep.testcontainers.version>1.15.1</dep.testcontainers.version>
+        <dep.parquet.version>1.16.0</dep.parquet.version>
+        <dep.iceberg.version>1.10.1</dep.iceberg.version>
+        <dep.asm.version>9.9.1</dep.asm.version>
+        <dep.gcs.version>2.2.28</dep.gcs.version>
+        <dep.alluxio.version>313</dep.alluxio.version>
+        <dep.slf4j.version>2.0.16</dep.slf4j.version>
+        <dep.kafka.version>3.9.2</dep.kafka.version>
+        <dep.pinot.version>1.4.0</dep.pinot.version>
+        <dep.druid.version>35.0.1</dep.druid.version>
+        <dep.jaxb.version>4.0.5</dep.jaxb.version>
+        <dep.jaxb.runtime.version>4.0.6</dep.jaxb.runtime.version>
+        <dep.hudi.version>1.1.0</dep.hudi.version>
+        <dep.testcontainers.version>2.0.3</dep.testcontainers.version>
+        <dep.docker-java.version>3.4.1</dep.docker-java.version>
+        <dep.jayway.version>2.9.0</dep.jayway.version>
+        <dep.ratis.version>3.2.2</dep.ratis.version>
+        <dep.errorprone.version>2.50.0</dep.errorprone.version>
+        <dep.guava.version>32.1.0-jre</dep.guava.version>
+        <dep.jackson.version>2.18.9</dep.jackson.version>
+        <dep.j2objc.version>3.0.0</dep.j2objc.version>
+        <dep.avro.version>1.12.1</dep.avro.version>
+        <dep.commons.compress.version>1.27.1</dep.commons.compress.version>
+        <dep.protobuf-java.version>4.34.1</dep.protobuf-java.version>
+        <dep.jetty.version>12.1.11</dep.jetty.version>
+        <dep.netty.version>4.2.17.Final</dep.netty.version>
+        <dep.reactor-netty.version>1.3.6</dep.reactor-netty.version>
+        <dep.snakeyaml.version>2.5</dep.snakeyaml.version>
+        <dep.gson.version>2.14.0</dep.gson.version>
+        <dep.commons.lang3.version>3.18.0</dep.commons.lang3.version>
+        <dep.zookeeper.version>3.9.6</dep.zookeeper.version>
+        <dep.guice.version>6.0.0</dep.guice.version>
+        <dep.arrow.version>18.3.0</dep.arrow.version>
+        <dep.mariadb.version>3.5.9</dep.mariadb.version>
+        <dep.spark.version>2.4.4-1</dep.spark.version>
+        <dep.hadoop.version>3.4.1-1</dep.hadoop.version>
+        <scala.version>2.13.18</scala.version>
+
         <!--
           America/Bahia_Banderas has:
-           - offset change since 1970 (offset Jan 1970: -08:00, offset Jan 2018: -06:00)
+           - offset change since 1970 (offset Jan 1970: -07:00, offset Jan 2018: -06:00)
            - DST (e.g. at 2017-04-02 02:00:00 clocks turned forward 1 hour; 2017-10-29 02:00:00 clocks turned backward 1 hour)
            - has forward offset change on first day of epoch (1970-01-01 00:00:00 clocks turned forward 1 hour)
            - had forward change at midnight (1970-01-01 00:00:00 clocks turned forward 1 hour)
@@ -83,14 +109,26 @@
         <air.test.parallel>methods</air.test.parallel>
         <air.test.thread-count>2</air.test.thread-count>
         <air.test.jvmsize>4g</air.test.jvmsize>
-        <grpc.version>1.35.0</grpc.version>
-
+        <grpc.version>1.75.0</grpc.version>
         <air.javadoc.lint>-missing</air.javadoc.lint>
+        <dep.commons.codec.version>1.21.0</dep.commons.codec.version>
+        <aws.sdk.version>2.32.9</aws.sdk.version>
+        <dep.jts.version>1.20.0</dep.jts.version>
+
+        <dep.fastutil.version>8.5.2</dep.fastutil.version>
+        <dep.datasketches-memory.version>3.0.2</dep.datasketches-memory.version>
+        <dep.datasketches-java.version>6.2.0</dep.datasketches-java.version>
+        <dep.io.opentelemetry.version>1.62.0</dep.io.opentelemetry.version>
+
+        <dep.cassandra-java-driver.version>4.19.3</dep.cassandra-java-driver.version>
+
+        <release.autoPublish>true</release.autoPublish>
     </properties>
 
     <modules>
         <module>presto-atop</module>
         <module>presto-spi</module>
+        <module>presto-analyzer</module>
         <module>presto-cache</module>
         <module>presto-jmx</module>
         <module>presto-record-decoder</module>
@@ -105,6 +143,7 @@
         <module>presto-parquet</module>
         <module>presto-rcfile</module>
         <module>presto-hive</module>
+        <module>presto-hdfs-core</module>
         <module>presto-hive-common</module>
         <module>presto-hive-hadoop2</module>
         <module>presto-hive-metastore</module>
@@ -115,7 +154,6 @@
         <module>presto-local-file</module>
         <module>presto-tpch</module>
         <module>presto-tpcds</module>
-        <module>presto-raptor</module>
         <module>presto-base-jdbc</module>
         <module>presto-testing-docker</module>
         <module>presto-mysql</module>
@@ -128,9 +166,12 @@
         <module>presto-bytecode</module>
         <module>presto-client</module>
         <module>presto-parser</module>
+        <module>presto-internal-communication</module>
+        <module>presto-main-base</module>
+        <module>presto-main-tests</module>
         <module>presto-main</module>
+        <module>presto-built-in-worker-function-tools</module>
         <module>presto-ml</module>
-        <module>presto-geospatial</module>
         <module>presto-geospatial-toolkit</module>
         <module>presto-benchmark</module>
         <module>presto-tests</module>
@@ -141,14 +182,15 @@
         <module>presto-cli</module>
         <module>presto-benchmark-driver</module>
         <module>presto-server</module>
-        <module>presto-server-rpm</module>
         <module>presto-docs</module>
         <module>presto-verifier</module>
         <module>presto-testing-server-launcher</module>
         <module>presto-plugin-toolkit</module>
         <module>presto-resource-group-managers</module>
         <module>presto-password-authenticators</module>
-        <module>presto-session-property-managers</module>
+        <module>presto-session-property-managers-common</module>
+        <module>presto-db-session-property-manager</module>
+        <module>presto-file-session-property-manager</module>
         <module>presto-benchto-benchmarks</module>
         <module>presto-thrift-api</module>
         <module>presto-thrift-testing-server</module>
@@ -159,6 +201,7 @@
         <module>presto-kudu</module>
         <module>presto-elasticsearch</module>
         <module>presto-function-namespace-managers</module>
+        <module>presto-function-namespace-managers-common</module>
         <module>presto-expressions</module>
         <module>presto-benchmark-runner</module>
         <module>presto-spark-classloader-interface</module>
@@ -171,19 +214,92 @@
         <module>presto-druid</module>
         <module>presto-common</module>
         <module>presto-thrift-testing-udf-server</module>
+        <module>presto-thrift-connector-toolkit</module>
         <module>presto-thrift-spec</module>
         <module>presto-testng-services</module>
         <module>presto-node-ttl-fetchers</module>
         <module>presto-cluster-ttl-providers</module>
         <module>presto-google-sheets</module>
+        <module>presto-clickhouse</module>
         <module>presto-hive-function-namespace</module>
         <module>presto-delta</module>
         <module>presto-grpc-api</module>
         <module>presto-grpc-testing-udf-server</module>
+        <module>presto-lark-sheets</module>
+        <module>presto-test-coverage</module>
+        <module>presto-hudi</module>
+        <module>presto-native-execution</module>
+        <module>presto-native-tests</module>
+        <module>presto-router</module>
+        <module>presto-open-telemetry</module>
+        <module>presto-openlineage-event-listener</module>
+        <module>redis-hbo-provider</module>
+        <module>presto-singlestore</module>
+        <module>presto-hana</module>
+        <module>presto-openapi</module>
+        <module>presto-native-sidecar-plugin</module>
+        <module>presto-common-arrow</module>
+        <module>presto-base-arrow-flight</module>
+        <module>presto-function-server</module>
+        <module>presto-router-example-plugin-scheduler</module>
+        <module>presto-plan-checker-router-plugin</module>
+        <module>presto-sql-helpers/presto-sql-invoked-functions-plugin</module>
+        <module>presto-sql-helpers/presto-native-sql-invoked-functions-plugin</module>
+        <module>presto-lance</module>
+        <module>presto-flight-shim</module>
     </modules>
 
     <dependencyManagement>
         <dependencies>
+
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>bom</artifactId>
+                <version>${aws.sdk.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <dependency>
+                <groupId>commons-beanutils</groupId>
+                <artifactId>commons-beanutils</artifactId>
+                <version>1.11.0</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.codehaus.plexus</groupId>
+                <artifactId>plexus-utils</artifactId>
+                <version>3.6.1</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.squareup.okio</groupId>
+                <artifactId>okio-jvm</artifactId>
+                <version>3.16.4</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.eclipse.jetty</groupId>
+                <artifactId>jetty-bom</artifactId>
+                <version>${dep.jetty.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-bom</artifactId>
+                <version>${dep.netty.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-transport</artifactId>
+                <version>${dep.netty.version}</version>
+            </dependency>
+
             <dependency>
                 <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-testing-docker</artifactId>
@@ -201,6 +317,12 @@
                 <artifactId>presto-spi</artifactId>
                 <version>${project.version}</version>
                 <type>test-jar</type>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-analyzer</artifactId>
+                <version>${project.version}</version>
             </dependency>
 
             <dependency>
@@ -237,7 +359,26 @@
 
             <dependency>
                 <groupId>com.facebook.presto</groupId>
-                <artifactId>presto-session-property-managers</artifactId>
+                <artifactId>presto-session-property-managers-common</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-session-property-managers-common</artifactId>
+                <version>${project.version}</version>
+                <type>test-jar</type>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-db-session-property-manager</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-file-session-property-manager</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -278,6 +419,12 @@
             </dependency>
 
             <dependency>
+                <groupId>commons-io</groupId>
+                <artifactId>commons-io</artifactId>
+                <version>2.21.0</version>
+            </dependency>
+
+            <dependency>
                 <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-parquet</artifactId>
                 <version>${project.version}</version>
@@ -297,6 +444,12 @@
 
             <dependency>
                 <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-hdfs-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-hive-common</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -311,6 +464,18 @@
                 <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-iceberg</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>jakarta.ws.rs</groupId>
+                <artifactId>jakarta.ws.rs-api</artifactId>
+                <version>4.0.0</version>
+            </dependency>
+
+            <dependency>
+                <groupId>javax.inject</groupId>
+                <artifactId>javax.inject</artifactId>
+                <version>1</version>
             </dependency>
 
             <dependency>
@@ -335,6 +500,20 @@
             <dependency>
                 <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-hive</artifactId>
+                <version>${project.version}</version>
+                <type>test-jar</type>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-iceberg</artifactId>
+                <version>${project.version}</version>
+                <type>test-jar</type>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-delta</artifactId>
                 <version>${project.version}</version>
                 <type>test-jar</type>
             </dependency>
@@ -395,6 +574,24 @@
 
             <dependency>
                 <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-singlestore</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-hana</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-session-property-providers</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-bigquery</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -409,6 +606,42 @@
                 <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-prometheus</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-internal-communication</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-context</artifactId>
+                <version>${grpc.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-protobuf-lite</artifactId>
+                <version>${grpc.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-auth</artifactId>
+                <version>${grpc.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-alts</artifactId>
+                <version>${grpc.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-grpclb</artifactId>
+                <version>${grpc.version}</version>
             </dependency>
 
             <dependency>
@@ -473,6 +706,26 @@
 
             <dependency>
                 <groupId>io.grpc</groupId>
+                <artifactId>grpc-netty</artifactId>
+                <version>${grpc.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>com.google.guava</groupId>
+                        <artifactId>guava</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.google.errorprone</groupId>
+                        <artifactId>error_prone_annotations</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>animal-sniffer-annotations</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>io.grpc</groupId>
                 <artifactId>grpc-netty-shaded</artifactId>
                 <version>${grpc.version}</version>
                 <exclusions>
@@ -493,20 +746,48 @@
 
             <dependency>
                 <groupId>io.grpc</groupId>
+                <artifactId>grpc-services</artifactId>
+                <version>${grpc.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>com.google.guava</groupId>
+                        <artifactId>guava</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.google.errorprone</groupId>
+                        <artifactId>error_prone_annotations</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>io.grpc</groupId>
                 <artifactId>grpc-core</artifactId>
                 <version>${grpc.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>animal-sniffer-annotations</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
 
             <dependency>
                 <groupId>com.google.protobuf</groupId>
                 <artifactId>protobuf-java</artifactId>
-                <version>3.14.0</version>
+                <version>${dep.protobuf-java.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.google.protobuf</groupId>
+                <artifactId>protobuf-java-util</artifactId>
+                <version>${dep.protobuf-java.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>org.testcontainers</groupId>
                 <artifactId>testcontainers-bom</artifactId>
-                <version>1.14.3</version>
+                <version>${dep.testcontainers.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
@@ -518,20 +799,14 @@
             </dependency>
 
             <dependency>
-                <groupId>com.facebook.presto</groupId>
-                <artifactId>presto-geospatial</artifactId>
-                <version>${project.version}</version>
+                <groupId>com.github.docker-java</groupId>
+                <artifactId>docker-java-api</artifactId>
+                <version>${dep.docker-java.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-geospatial-toolkit</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>com.facebook.presto</groupId>
-                <artifactId>presto-raptor</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -574,6 +849,12 @@
 
             <dependency>
                 <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-jmx</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-main</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -581,6 +862,31 @@
             <dependency>
                 <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-main</artifactId>
+                <version>${project.version}</version>
+                <type>test-jar</type>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-main-base</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-main-tests</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-built-in-worker-function-tools</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-main-base</artifactId>
                 <version>${project.version}</version>
                 <type>test-jar</type>
             </dependency>
@@ -643,12 +949,6 @@
 
             <dependency>
                 <groupId>com.facebook.presto</groupId>
-                <artifactId>presto-server-rpm</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-tests</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -703,6 +1003,13 @@
 
             <dependency>
                 <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-spark-base</artifactId>
+                <version>${project.version}</version>
+                <type>test-jar</type>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-spark-launcher</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -714,27 +1021,110 @@
             </dependency>
 
             <dependency>
+                <groupId>com.facebook.presto.spark</groupId>
+                <artifactId>spark-core</artifactId>
+                <version>${dep.spark.version}</version>
+                <scope>provided</scope>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-common-arrow</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-base-arrow-flight</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
                 <groupId>com.fasterxml.jackson.module</groupId>
                 <artifactId>jackson-module-afterburner</artifactId>
                 <version>${dep.jackson.version}</version>
             </dependency>
 
             <dependency>
+                <groupId>com.fasterxml.jackson.module</groupId>
+                <artifactId>jackson-module-blackbird</artifactId>
+                <version>${dep.jackson.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-core</artifactId>
+                <version>${dep.jackson.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-annotations</artifactId>
+                <version>${dep.jackson.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.fasterxml.jackson.dataformat</groupId>
+                <artifactId>jackson-dataformat-smile</artifactId>
+                <version>${dep.jackson.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.fasterxml.jackson.dataformat</groupId>
+                <artifactId>jackson-dataformat-yaml</artifactId>
+                <version>${dep.jackson.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-databind</artifactId>
+                <version>${dep.jackson.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.jayway.jsonpath</groupId>
+                <artifactId>json-path</artifactId>
+                <version>${dep.jayway.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-api</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.ow2.asm</groupId>
+                        <artifactId>asm</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.slf4j</groupId>
+                <artifactId>slf4j-api</artifactId>
+                <version>${dep.slf4j.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>net.minidev</groupId>
+                <artifactId>json-smart</artifactId>
+                <version>2.5.2</version>
+            </dependency>
+
+            <dependency>
                 <groupId>com.facebook.presto.hadoop</groupId>
-                <artifactId>hadoop-apache2</artifactId>
-                <version>2.7.4-9</version>
+                <artifactId>hadoop-apache</artifactId>
+                <version>${dep.hadoop.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>com.facebook.presto.hive</groupId>
                 <artifactId>hive-apache</artifactId>
-                <version>3.0.0-7</version>
+                <version>4.0.1-1</version>
             </dependency>
 
             <dependency>
                 <groupId>com.facebook.presto.orc</groupId>
                 <artifactId>orc-protobuf</artifactId>
-                <version>13</version>
+                <version>15</version>
             </dependency>
 
             <dependency>
@@ -748,6 +1138,12 @@
                 <artifactId>presto-thrift-api</artifactId>
                 <version>${project.version}</version>
                 <type>test-jar</type>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-thrift-connector-toolkit</artifactId>
+                <version>${project.version}</version>
             </dependency>
 
             <dependency>
@@ -783,6 +1179,12 @@
 
             <dependency>
                 <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-function-namespace-managers-common</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-grpc-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -800,15 +1202,39 @@
             </dependency>
 
             <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-open-telemetry</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-openlineage-event-listener</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto</groupId>
+                <artifactId>presto-native-sidecar-plugin</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
                 <groupId>com.facebook.hive</groupId>
                 <artifactId>hive-dwrf</artifactId>
-                <version>0.8.5</version>
+                <version>0.8.8</version>
             </dependency>
 
             <dependency>
                 <groupId>io.airlift</groupId>
                 <artifactId>aircompressor</artifactId>
-                <version>0.15</version>
+                <version>2.0.3</version>
+            </dependency>
+
+            <dependency>
+                <groupId>net.openhft</groupId>
+                <artifactId>zero-allocation-hashing</artifactId>
+                <version>${dep.zero-allocation-hashing.version}</version>
             </dependency>
 
             <dependency>
@@ -836,9 +1262,9 @@
             </dependency>
 
             <dependency>
-                <groupId>io.airlift</groupId>
+                <groupId>com.facebook.airlift</groupId>
                 <artifactId>units</artifactId>
-                <version>1.3</version>
+                <version>${dep.airlift.version}</version>
             </dependency>
 
             <dependency>
@@ -887,6 +1313,12 @@
                 <groupId>com.facebook.airlift</groupId>
                 <artifactId>http-server</artifactId>
                 <version>${dep.airlift.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>io.jsonwebtoken</groupId>
+                        <artifactId>jjwt</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
 
             <dependency>
@@ -944,49 +1376,49 @@
             </dependency>
 
             <dependency>
-                <groupId>com.facebook.drift</groupId>
+                <groupId>com.facebook.airlift.drift</groupId>
                 <artifactId>drift-api</artifactId>
                 <version>${dep.drift.version}</version>
             </dependency>
 
             <dependency>
-                <groupId>com.facebook.drift</groupId>
+                <groupId>com.facebook.airlift.drift</groupId>
                 <artifactId>drift-client</artifactId>
                 <version>${dep.drift.version}</version>
             </dependency>
 
             <dependency>
-                <groupId>com.facebook.drift</groupId>
+                <groupId>com.facebook.airlift.drift</groupId>
                 <artifactId>drift-codec</artifactId>
                 <version>${dep.drift.version}</version>
             </dependency>
 
             <dependency>
-                <groupId>com.facebook.drift</groupId>
+                <groupId>com.facebook.airlift.drift</groupId>
                 <artifactId>drift-protocol</artifactId>
                 <version>${dep.drift.version}</version>
             </dependency>
 
             <dependency>
-                <groupId>com.facebook.drift</groupId>
+                <groupId>com.facebook.airlift.drift</groupId>
                 <artifactId>drift-server</artifactId>
                 <version>${dep.drift.version}</version>
             </dependency>
 
             <dependency>
-                <groupId>com.facebook.drift</groupId>
+                <groupId>com.facebook.airlift.drift</groupId>
                 <artifactId>drift-transport-netty</artifactId>
                 <version>${dep.drift.version}</version>
             </dependency>
 
             <dependency>
-                <groupId>com.facebook.drift</groupId>
+                <groupId>com.facebook.airlift.drift</groupId>
                 <artifactId>drift-transport-spi</artifactId>
                 <version>${dep.drift.version}</version>
             </dependency>
 
             <dependency>
-                <groupId>com.facebook.drift</groupId>
+                <groupId>com.facebook.airlift.drift</groupId>
                 <artifactId>drift-codec-utils</artifactId>
                 <version>${dep.drift.version}</version>
             </dependency>
@@ -1006,6 +1438,10 @@
                         <groupId>com.google.code.findbugs</groupId>
                         <artifactId>annotations</artifactId>
                     </exclusion>
+                    <exclusion>
+                        <groupId>io.airlift</groupId>
+                        <artifactId>airline</artifactId>
+                    </exclusion>
                 </exclusions>
             </dependency>
 
@@ -1016,15 +1452,15 @@
             </dependency>
 
             <dependency>
-                <groupId>javax.xml.bind</groupId>
-                <artifactId>jaxb-api</artifactId>
+                <groupId>jakarta.xml.bind</groupId>
+                <artifactId>jakarta.xml.bind-api</artifactId>
                 <version>${dep.jaxb.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>org.glassfish.jaxb</groupId>
                 <artifactId>jaxb-runtime</artifactId>
-                <version>${dep.jaxb.version}</version>
+                <version>${dep.jaxb.runtime.version}</version>
             </dependency>
 
             <dependency>
@@ -1058,21 +1494,27 @@
             </dependency>
 
             <dependency>
-                <groupId>org.sonatype.aether</groupId>
-                <artifactId>aether-api</artifactId>
-                <version>1.13.1</version>
+                <groupId>org.apache.maven.resolver</groupId>
+                <artifactId>maven-resolver-api</artifactId>
+                <version>1.9.6</version>
             </dependency>
 
             <dependency>
-                <groupId>io.airlift.resolver</groupId>
+                <groupId>com.facebook.airlift.resolver</groupId>
                 <artifactId>resolver</artifactId>
-                <version>1.4</version>
+                <version>1.8</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>com.google.inject</groupId>
+                        <artifactId>guice</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
 
             <dependency>
-                <groupId>io.airlift</groupId>
+                <groupId>com.facebook.airlift</groupId>
                 <artifactId>airline</artifactId>
-                <version>0.8</version>
+                <version>0.9</version>
             </dependency>
 
             <dependency>
@@ -1084,13 +1526,13 @@
             <dependency>
                 <groupId>org.jetbrains</groupId>
                 <artifactId>annotations</artifactId>
-                <version>19.0.0</version>
+                <version>26.0.2</version>
             </dependency>
 
             <dependency>
                 <groupId>it.unimi.dsi</groupId>
                 <artifactId>fastutil</artifactId>
-                <version>8.5.2</version>
+                <version>${dep.fastutil.version}</version>
             </dependency>
 
             <dependency>
@@ -1100,28 +1542,40 @@
             </dependency>
 
             <dependency>
-                <groupId>mysql</groupId>
-                <artifactId>mysql-connector-java</artifactId>
-                <version>5.1.48</version>
+                <groupId>com.sap.cloud.db.jdbc</groupId>
+                <artifactId>ngdbc</artifactId>
+                <version>2.26.11</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.mysql</groupId>
+                <artifactId>mysql-connector-j</artifactId>
+                <version>9.2.0</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.singlestore</groupId>
+                <artifactId>singlestore-jdbc-client</artifactId>
+                <version>1.2.11</version>
             </dependency>
 
             <dependency>
                 <!-- org.testcontainers:testcontainer's dependencies pull two different versions of this artifact and this is to negotiate the version -->
                 <groupId>net.java.dev.jna</groupId>
                 <artifactId>jna</artifactId>
-                <version>5.5.0</version>
+                <version>5.18.1</version>
             </dependency>
 
             <dependency>
                 <groupId>org.postgresql</groupId>
                 <artifactId>postgresql</artifactId>
-                <version>42.2.5</version>
+                <version>42.7.12</version>
             </dependency>
 
             <dependency>
                 <groupId>org.pcollections</groupId>
                 <artifactId>pcollections</artifactId>
-                <version>2.1.2</version>
+                <version>4.0.2</version>
             </dependency>
 
             <dependency>
@@ -1133,7 +1587,13 @@
             <dependency>
                 <groupId>com.microsoft.sqlserver</groupId>
                 <artifactId>mssql-jdbc</artifactId>
-                <version>7.0.0.jre8</version>
+                <version>13.2.1.jre11</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.fusesource.jansi</groupId>
+                <artifactId>jansi</artifactId>
+                <version>2.4.2</version>
             </dependency>
 
             <dependency>
@@ -1168,7 +1628,7 @@
 
             <dependency>
                 <groupId>com.squareup.okhttp3</groupId>
-                <artifactId>okhttp</artifactId>
+                <artifactId>okhttp-jvm</artifactId>
                 <version>${dep.okhttp.version}</version>
             </dependency>
 
@@ -1180,20 +1640,49 @@
 
             <dependency>
                 <groupId>com.squareup.okhttp3</groupId>
-                <artifactId>mockwebserver</artifactId>
+                <artifactId>mockwebserver3</artifactId>
                 <version>${dep.okhttp.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>io.jsonwebtoken</groupId>
-                <artifactId>jjwt</artifactId>
-                <version>0.9.0</version>
+                <artifactId>jjwt-api</artifactId>
+                <version>0.11.5</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-impl</artifactId>
+                <version>0.11.5</version>
+                <scope>runtime</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-jackson</artifactId>
+                <version>0.11.5</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.projectreactor.netty</groupId>
+                <artifactId>reactor-netty-core</artifactId>
+                <version>${dep.reactor-netty.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.projectreactor.netty</groupId>
+                <artifactId>reactor-netty-http</artifactId>
+                <version>${dep.reactor-netty.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.projectreactor</groupId>
+                <artifactId>reactor-core</artifactId>
+                <version>3.8.3</version>
             </dependency>
 
             <dependency>
                 <groupId>org.apache.thrift</groupId>
                 <artifactId>libthrift</artifactId>
-                <version>0.9.3</version>
+                <version>0.24.0</version>
                 <exclusions>
                     <exclusion>
                         <groupId>org.apache.httpcomponents</groupId>
@@ -1203,112 +1692,54 @@
                         <groupId>org.apache.httpcomponents</groupId>
                         <artifactId>httpclient</artifactId>
                     </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.tomcat.embed</groupId>
+                        <artifactId>tomcat-embed-core</artifactId>
+                    </exclusion>
                 </exclusions>
             </dependency>
 
+            <!-- Start dependencies for querying Hudi table-->
             <dependency>
                 <groupId>org.apache.hudi</groupId>
-                <artifactId>hudi-common</artifactId>
+                <artifactId>hudi-presto-bundle</artifactId>
                 <version>${dep.hudi.version}</version>
                 <exclusions>
                     <exclusion>
-                        <groupId>org.apache.hbase</groupId>
-                        <artifactId>hbase-server</artifactId>
+                        <groupId>com.google.protobuf</groupId>
+                        <artifactId>protobuf-java</artifactId>
                     </exclusion>
                     <exclusion>
-                        <groupId>org.apache.orc</groupId>
-                        <artifactId>orc-core</artifactId>
+                        <groupId>commons-lang</groupId>
+                        <artifactId>commons-lang</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.hudi</groupId>
+                        <artifactId>hudi-common</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.hudi</groupId>
+                        <artifactId>hudi-hadoop-mr-bundle</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.parquet</groupId>
+                        <artifactId>parquet-avro</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.avro</groupId>
+                        <artifactId>avro</artifactId>
                     </exclusion>
                     <exclusion>
                         <groupId>org.objenesis</groupId>
                         <artifactId>objenesis</artifactId>
                     </exclusion>
                     <exclusion>
-                        <groupId>commons-logging</groupId>
-                        <artifactId>commons-logging</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.slf4j</groupId>
-                        <artifactId>jcl-over-slf4j</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.core</groupId>
-                        <artifactId>jackson-annotations</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.core</groupId>
-                        <artifactId>jackson-databind</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.httpcomponents</groupId>
-                        <artifactId>httpclient</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.httpcomponents</groupId>
-                        <artifactId>fluent-hc</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.rocksdb</groupId>
-                        <artifactId>rocksdbjni</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.esotericsoftware</groupId>
-                        <artifactId>kryo-shaded</artifactId>
+                        <groupId>org.apache.hive</groupId>
+                        <artifactId>hive-storage-api</artifactId>
                     </exclusion>
                 </exclusions>
             </dependency>
-
-            <dependency>
-                <groupId>org.apache.hudi</groupId>
-                <artifactId>hudi-hadoop-mr</artifactId>
-                <version>${dep.hudi.version}</version>
-                <exclusions>
-                    <exclusion>
-                        <groupId>org.apache.hbase</groupId>
-                        <artifactId>hbase-server</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.orc</groupId>
-                        <artifactId>orc-core</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.objenesis</groupId>
-                        <artifactId>objenesis</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>commons-logging</groupId>
-                        <artifactId>commons-logging</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.slf4j</groupId>
-                        <artifactId>jcl-over-slf4j</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.core</groupId>
-                        <artifactId>jackson-annotations</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.core</groupId>
-                        <artifactId>jackson-databind</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.httpcomponents</groupId>
-                        <artifactId>httpclient</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.httpcomponents</groupId>
-                        <artifactId>fluent-hc</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.rocksdb</groupId>
-                        <artifactId>rocksdbjni</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.esotericsoftware</groupId>
-                        <artifactId>kryo-shaded</artifactId>
-                    </exclusion>
-                </exclusions>
-            </dependency>
+            <!-- End dependencies for querying Hudi table-->
 
             <dependency>
                 <groupId>net.sf.opencsv</groupId>
@@ -1323,31 +1754,149 @@
             </dependency>
 
             <dependency>
-                <groupId>com.facebook.airlift.discovery</groupId>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-text</artifactId>
+                <version>1.15.0</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.airlift</groupId>
                 <artifactId>discovery-server</artifactId>
-                <version>1.33</version>
+                <version>${dep.airlift.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>org.alluxio</groupId>
-                <artifactId>alluxio-shaded-client</artifactId>
+                <artifactId>alluxio-core-client-hdfs</artifactId>
                 <version>${dep.alluxio.version}</version>
                 <exclusions>
+                    <exclusion>
+                        <groupId>org.alluxio</groupId>
+                        <artifactId>alluxio-core-transport</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.hadoop</groupId>
+                        <artifactId>hadoop-client</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>log4j-api</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>log4j-core</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>log4j-slf4j-impl</artifactId>
+                    </exclusion>
                     <exclusion>
                         <groupId>org.slf4j</groupId>
                         <artifactId>slf4j-api</artifactId>
                     </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.alluxio</groupId>
+                <artifactId>alluxio-core-client-fs</artifactId>
+                <version>${dep.alluxio.version}</version>
+                <exclusions>
                     <exclusion>
-                        <groupId>org.slf4j</groupId>
-                        <artifactId>slf4j-log4j12</artifactId>
+                        <groupId>com.github.stateless4j</groupId>
+                        <artifactId>stateless4j</artifactId>
                     </exclusion>
                     <exclusion>
-                        <groupId>log4j</groupId>
-                        <artifactId>log4j</artifactId>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>log4j-api</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>log4j-core</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>log4j-slf4j-impl</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.rocksdb</groupId>
+                        <artifactId>rocksdbjni</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-api</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.alluxio</groupId>
+                <artifactId>alluxio-core-common</artifactId>
+                <version>${dep.alluxio.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>com.rabbitmq</groupId>
+                        <artifactId>amqp-client</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>commons-cli</groupId>
+                        <artifactId>commons-cli</artifactId>
                     </exclusion>
                     <exclusion>
                         <groupId>commons-logging</groupId>
                         <artifactId>commons-logging</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>io.etcd</groupId>
+                        <artifactId>jetcd-core</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>io.netty</groupId>
+                        <artifactId>netty-tcnative-boringssl-static</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>io.prometheus</groupId>
+                        <artifactId>prometheus-metrics-exporter-servlet-jakarta</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>io.swagger</groupId>
+                        <artifactId>swagger-annotations</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.curator</groupId>
+                        <artifactId>curator-client</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.curator</groupId>
+                        <artifactId>curator-framework</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>log4j-api</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>log4j-core</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>log4j-slf4j-impl</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.zookeeper</groupId>
+                        <artifactId>zookeeper</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.eclipse.jetty</groupId>
+                        <artifactId>jetty-servlet</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.reflections</groupId>
+                        <artifactId>reflections</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-api</artifactId>
                     </exclusion>
                 </exclusions>
             </dependency>
@@ -1374,22 +1923,6 @@
 
             <dependency>
                 <groupId>com.amazonaws</groupId>
-                <artifactId>aws-java-sdk-glue</artifactId>
-                <version>${dep.aws-sdk.version}</version>
-                <exclusions>
-                    <exclusion>
-                        <groupId>commons-logging</groupId>
-                        <artifactId>commons-logging</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>joda-time</groupId>
-                        <artifactId>joda-time</artifactId>
-                    </exclusion>
-                </exclusions>
-            </dependency>
-
-            <dependency>
-                <groupId>com.amazonaws</groupId>
                 <artifactId>aws-java-sdk-s3</artifactId>
                 <version>${dep.aws-sdk.version}</version>
                 <exclusions>
@@ -1407,47 +1940,11 @@
             <dependency>
                 <groupId>com.google.auth</groupId>
                 <artifactId>google-auth-library-oauth2-http</artifactId>
-                <version>0.12.0</version>
+                <version>1.39.1</version>
                 <exclusions>
                     <exclusion>
                         <groupId>commons-logging</groupId>
                         <artifactId>commons-logging</artifactId>
-                    </exclusion>
-                </exclusions>
-            </dependency>
-
-            <dependency>
-                <groupId>com.google.cloud.bigdataoss</groupId>
-                <artifactId>util</artifactId>
-                <version>${dep.gcs.version}</version>
-                <exclusions>
-                    <exclusion>
-                        <groupId>com.google.guava</groupId>
-                        <artifactId>guava</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.core</groupId>
-                        <artifactId>jackson-core</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <artifactId>commons-logging</artifactId>
-                        <groupId>commons-logging</groupId>
-                    </exclusion>
-                </exclusions>
-            </dependency>
-
-            <dependency>
-                <groupId>com.google.cloud.bigdataoss</groupId>
-                <artifactId>gcsio</artifactId>
-                <version>${dep.gcs.version}</version>
-                <exclusions>
-                    <exclusion>
-                        <groupId>com.google.guava</groupId>
-                        <artifactId>guava</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.core</groupId>
-                        <artifactId>jackson-core</artifactId>
                     </exclusion>
                 </exclusions>
             </dependency>
@@ -1506,6 +2003,10 @@
                         <artifactId>jackson-dataformat-smile</artifactId>
                     </exclusion>
                     <exclusion>
+                        <groupId>com.google.inject.extensions</groupId>
+                        <artifactId>guice-multibindings</artifactId>
+                    </exclusion>
+                    <exclusion>
                         <groupId>it.unimi.dsi</groupId>
                         <artifactId>fastutil</artifactId>
                     </exclusion>
@@ -1552,102 +2053,29 @@
                 </exclusions>
             </dependency>
 
+            <!--CVE-2025-12183: Override vulnerable lz4-java version to address the security issue -->
             <dependency>
-                <groupId>org.apache.druid</groupId>
-                <artifactId>druid-core</artifactId>
-                <version>${dep.druid.version}</version>
-                <exclusions>
-                    <exclusion>
-                        <groupId>commons-logging</groupId>
-                        <artifactId>commons-logging</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.core</groupId>
-                        <artifactId>jackson-annotations</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.core</groupId>
-                        <artifactId>jackson-core</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.core</groupId>
-                        <artifactId>jackson-databind</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.datatype</groupId>
-                        <artifactId>jackson-datatype-guava</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.datatype</groupId>
-                        <artifactId>jackson-datatype-joda</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.dataformat</groupId>
-                        <artifactId>jackson-dataformat-smile</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>it.unimi.dsi</groupId>
-                        <artifactId>fastutil</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>joda-time</groupId>
-                        <artifactId>joda-time</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.commons</groupId>
-                        <artifactId>commons-lang3</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.logging.log4j</groupId>
-                        <artifactId>log4j-slf4j-impl</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.logging.log4j</groupId>
-                        <artifactId>log4j-1.2-api</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.checkerframework</groupId>
-                        <artifactId>checker-qual</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.glassfish</groupId>
-                        <artifactId>javax.el</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.objenesis</groupId>
-                        <artifactId>objenesis</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.ow2.asm</groupId>
-                        <artifactId>asm-commons</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.slf4j</groupId>
-                        <artifactId>slf4j-api</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.roaringbitmap</groupId>
-                        <artifactId>RoaringBitmap</artifactId>
-                    </exclusion>
-                </exclusions>
+                <groupId>at.yawk.lz4</groupId>
+                <artifactId>lz4-java</artifactId>
+                <version>1.11.1</version>
             </dependency>
 
             <dependency>
                 <groupId>org.apache.httpcomponents</groupId>
                 <artifactId>httpclient</artifactId>
-                <version>4.5.5</version>
+                <version>4.5.14</version>
             </dependency>
 
             <dependency>
                 <groupId>org.apache.httpcomponents</groupId>
                 <artifactId>httpcore</artifactId>
-                <version>4.4.9</version>
+                <version>4.4.16</version>
             </dependency>
 
             <dependency>
                 <groupId>commons-codec</groupId>
                 <artifactId>commons-codec</artifactId>
-                <version>1.10</version>
+                <version>${dep.commons.codec.version}</version>
             </dependency>
 
             <dependency>
@@ -1692,8 +2120,14 @@
 
             <dependency>
                 <groupId>com.facebook.presto</groupId>
-                <artifactId>testing-mysql-server-5</artifactId>
+                <artifactId>testing-mysql-server-8</artifactId>
                 <version>${dep.testing-mysql-server-5.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>mysql</groupId>
+                        <artifactId>mysql-connector-java</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
 
             <dependency>
@@ -1706,6 +2140,24 @@
                 <groupId>com.facebook.airlift</groupId>
                 <artifactId>testing-postgresql-server</artifactId>
                 <version>9.6.3-4</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.pinot</groupId>
+                <artifactId>pinot-spi</artifactId>
+                <version>${dep.pinot.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.pinot</groupId>
+                <artifactId>pinot-common</artifactId>
+                <version>${dep.pinot.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.pinot</groupId>
+                <artifactId>pinot-core</artifactId>
+                <version>${dep.pinot.version}</version>
             </dependency>
 
             <dependency>
@@ -1765,6 +2217,72 @@
             </dependency>
 
             <dependency>
+                <groupId>org.apache.ratis</groupId>
+                <artifactId>ratis-server</artifactId>
+                <version>${dep.ratis.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-api</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.ratis</groupId>
+                <artifactId>ratis-grpc</artifactId>
+                <version>${dep.ratis.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-api</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.ratis</groupId>
+                <artifactId>ratis-server-api</artifactId>
+                <version>${dep.ratis.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-api</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.ratis</groupId>
+                <artifactId>ratis-common</artifactId>
+                <version>${dep.ratis.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-api</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.ratis</groupId>
+                <artifactId>ratis-client</artifactId>
+                <version>${dep.ratis.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-api</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.ratis</groupId>
+                <artifactId>ratis-metrics-default</artifactId>
+                <version>${dep.ratis.version}</version>
+            </dependency>
+
+            <dependency>
                 <groupId>org.apache.kafka</groupId>
                 <artifactId>kafka-clients</artifactId>
                 <version>${dep.kafka.version}</version>
@@ -1785,240 +2303,33 @@
             </dependency>
 
             <dependency>
-                <groupId>org.apache.pinot</groupId>
-                <artifactId>presto-pinot-driver</artifactId>
-                <version>${dep.pinot.version}</version>
-                <classifier>shaded</classifier>
-                <exclusions>
-                    <exclusion>
-                        <groupId>org.apache.pinot</groupId>
-                        <artifactId>pinot-spi</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.pinot</groupId>
-                        <artifactId>pinot-common</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.pinot</groupId>
-                        <artifactId>pinot-core</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.pinot</groupId>
-                        <artifactId>pinot-segment-spi</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.pinot</groupId>
-                        <artifactId>pinot-segment-local</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.pinot</groupId>
-                        <artifactId>pinot-yammer</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>io.grpc</groupId>
-                        <artifactId>grpc-api</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>io.grpc</groupId>
-                        <artifactId>grpc-context</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.codehaus.mojo</groupId>
-                        <artifactId>animal-sniffer-annotations</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.google.protobuf</groupId>
-                        <artifactId>protobuf-java</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>commons-codec</groupId>
-                        <artifactId>commons-codec</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>commons-codec</groupId>
-                        <artifactId>commons-lang3</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.commons</groupId>
-                        <artifactId>commons-lang3</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.httpcomponents</groupId>
-                        <artifactId>httpclient</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.thrift</groupId>
-                        <artifactId>libthrift</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.github.luben</groupId>
-                        <artifactId>zstd-jni</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.glassfish.jersey.core</groupId>
-                        <artifactId>jersey-common</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.google.errorprone</groupId>
-                        <artifactId>error_prone_annotations</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.checkerframework</groupId>
-                        <artifactId>checker-compat-qual</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.reflections</groupId>
-                        <artifactId>reflections</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.slf4j</groupId>
-                        <artifactId>slf4j-api</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <artifactId>jline</artifactId>
-                        <groupId>jline</groupId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.slf4j</groupId>
-                        <artifactId>slf4j-log4j12</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.antlr</groupId>
-                        <artifactId>antlr4-annotations</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.kafka</groupId>
-                        <artifactId>kafka-clients</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.codehaus.jackson</groupId>
-                        <artifactId>jackson-mapper-asl</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.kafka</groupId>
-                        <artifactId>kafka_2.10</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>commons-beanutils</groupId>
-                        <artifactId>commons-beanutils-core</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>log4j</groupId>
-                        <artifactId>log4j</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.core</groupId>
-                        <artifactId>jackson-databind</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.core</groupId>
-                        <artifactId>jackson-core</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.fasterxml.jackson.core</groupId>
-                        <artifactId>jackson-annotations</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>javax.validation</groupId>
-                        <artifactId>validation-api</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>javax.servlet</groupId>
-                        <artifactId>javax.servlet-api</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.glassfish.hk2.external</groupId>
-                        <artifactId>jakarta.inject</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>jakarta.ws.rs</groupId>
-                        <artifactId>jakarta.ws.rs-api</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>jakarta.annotation</groupId>
-                        <artifactId>jakarta.annotation-api</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.google.guava</groupId>
-                        <artifactId>guava</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>joda-time</groupId>
-                        <artifactId>joda-time</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.httpcomponents</groupId>
-                        <artifactId>httpcore</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.zookeeper</groupId>
-                        <artifactId>zookeeper</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>commons-codec</groupId>
-                        <artifactId>commons-codec</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.slf4j</groupId>
-                        <artifactId>jcl-over-slf4j</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>javax.servlet</groupId>
-                        <artifactId>servlet-api</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.clearspring.analytics</groupId>
-                        <artifactId>stream</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>com.tdunning</groupId>
-                        <artifactId>t-digest</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.apache.datasketches</groupId>
-                        <artifactId>datasketches-java</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.roaringbitmap</groupId>
-                        <artifactId>RoaringBitmap</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>javax.inject</groupId>
-                        <artifactId>javax.inject</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.reflections</groupId>
-                        <artifactId>reflections</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>javax.validation</groupId>
-                        <artifactId>validation-api</artifactId>
-                    </exclusion>
-                </exclusions>
+                <groupId>org.apache.kafka</groupId>
+                <artifactId>kafka-metadata</artifactId>
+                <version>${dep.kafka.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>org.xerial.snappy</groupId>
                 <artifactId>snappy-java</artifactId>
-                <version>1.1.7.1</version>
+                <version>1.1.10.8</version>
             </dependency>
 
             <dependency>
                 <groupId>com.github.luben</groupId>
                 <artifactId>zstd-jni</artifactId>
-                <version>1.5.0-4</version>
+                <version>1.5.7-6</version>
             </dependency>
 
             <dependency>
                 <groupId>org.roaringbitmap</groupId>
                 <artifactId>RoaringBitmap</artifactId>
-                <version>0.9.3</version>
+                <version>1.3.0</version>
             </dependency>
 
             <dependency>
                 <groupId>org.apache.zookeeper</groupId>
                 <artifactId>zookeeper</artifactId>
-                <version>3.4.14</version>
+                <version>${dep.zookeeper.version}</version>
                 <exclusions>
                     <exclusion>
                         <artifactId>jline</artifactId>
@@ -2032,19 +2343,29 @@
                         <groupId>org.slf4j</groupId>
                         <artifactId>slf4j-log4j12</artifactId>
                     </exclusion>
+                    <exclusion>
+                        <groupId>commons-io</groupId>
+                        <artifactId>commons-io</artifactId>
+                    </exclusion>
                 </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.checkerframework</groupId>
+                <artifactId>checker-qual</artifactId>
+                <version>3.52.0</version>
             </dependency>
 
             <dependency>
                 <groupId>org.jgrapht</groupId>
                 <artifactId>jgrapht-core</artifactId>
-                <version>0.9.0</version>
+                <version>1.5.2</version>
             </dependency>
 
             <dependency>
                 <groupId>redis.clients</groupId>
                 <artifactId>jedis</artifactId>
-                <version>2.6.2</version>
+                <version>7.0.0</version>
             </dependency>
 
             <dependency>
@@ -2066,6 +2387,18 @@
                         <groupId>com.google.code.findbugs</groupId>
                         <artifactId>annotations</artifactId>
                     </exclusion>
+                    <exclusion>
+                        <groupId>com.google.inject.extensions</groupId>
+                        <artifactId>guice-multibindings</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.google.inject</groupId>
+                        <artifactId>guice</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.testng</groupId>
+                        <artifactId>testng</artifactId>
+                    </exclusion>
                 </exclusions>
             </dependency>
 
@@ -2077,6 +2410,14 @@
                     <exclusion>
                         <groupId>com.datastax.cassandra</groupId>
                         <artifactId>cassandra-driver-core</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.testng</groupId>
+                        <artifactId>testng</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.google.inject</groupId>
+                        <artifactId>guice</artifactId>
                     </exclusion>
                 </exclusions>
             </dependency>
@@ -2094,6 +2435,14 @@
                         <groupId>org.slf4j</groupId>
                         <artifactId>slf4j-log4j12</artifactId>
                     </exclusion>
+                    <exclusion>
+                        <groupId>org.testng</groupId>
+                        <artifactId>testng</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.google.inject</groupId>
+                        <artifactId>guice</artifactId>
+                    </exclusion>
                 </exclusions>
             </dependency>
 
@@ -2105,6 +2454,14 @@
                     <exclusion>
                         <groupId>com.datastax.cassandra</groupId>
                         <artifactId>cassandra-driver-core</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.testng</groupId>
+                        <artifactId>testng</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>com.google.inject</groupId>
+                        <artifactId>guice</artifactId>
                     </exclusion>
                 </exclusions>
             </dependency>
@@ -2129,26 +2486,26 @@
 
             <dependency>
                 <groupId>org.apache.lucene</groupId>
-                <artifactId>lucene-analyzers-common</artifactId>
-                <version>7.2.1</version>
-                <exclusions>
-                    <exclusion>
-                        <groupId>org.apache.lucene</groupId>
-                        <artifactId>lucene-core</artifactId>
-                    </exclusion>
-                </exclusions>
+                <artifactId>lucene-analysis-common</artifactId>
+                <version>${dep.lucene.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.lucene</groupId>
+                <artifactId>lucene-queryparser</artifactId>
+                <version>${dep.lucene.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>org.locationtech.jts</groupId>
                 <artifactId>jts-core</artifactId>
-                <version>1.18.0</version>
+                <version>${dep.jts.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>org.locationtech.jts.io</groupId>
                 <artifactId>jts-io-common</artifactId>
-                <version>1.18.0</version>
+                <version>${dep.jts.version}</version>
                 <exclusions>
                     <exclusion>
                         <groupId>junit</groupId>
@@ -2160,7 +2517,7 @@
             <dependency>
                 <groupId>org.anarres.lzo</groupId>
                 <artifactId>lzo-hadoop</artifactId>
-                <version>1.0.5</version>
+                <version>1.0.6</version>
                 <exclusions>
                     <exclusion>
                         <groupId>org.apache.hadoop</groupId>
@@ -2184,50 +2541,22 @@
             </dependency>
 
             <dependency>
-                <groupId>com.facebook.presto.cassandra</groupId>
-                <artifactId>cassandra-server</artifactId>
-                <version>2.1.16-1</version>
-                <exclusions>
-                    <exclusion>
-                        <groupId>com.googlecode.json-simple</groupId>
-                        <artifactId>json-simple</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>io.netty</groupId>
-                        <artifactId>netty-all</artifactId>
-                    </exclusion>
-                </exclusions>
-            </dependency>
-
-            <dependency>
-                <groupId>com.facebook.presto.cassandra</groupId>
-                <artifactId>cassandra-driver</artifactId>
-                <version>3.6.0-1</version>
-                <exclusions>
-                    <exclusion>
-                        <groupId>io.netty</groupId>
-                        <artifactId>*</artifactId>
-                    </exclusion>
-                </exclusions>
-            </dependency>
-
-            <dependency>
-                <groupId>io.delta</groupId>
-                <artifactId>delta-standalone_2.12</artifactId>
-                <version>0.3.0</version>
-            </dependency>
-
-            <dependency>
                 <groupId>com.facebook.presto</groupId>
                 <artifactId>presto-delta</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.facebook.presto.ranger</groupId>
+                <artifactId>ranger-apache</artifactId>
+                <version>2.1.0-3</version>
             </dependency>
 
             <!-- force newer version to be used for dependencies -->
             <dependency>
                 <groupId>org.javassist</groupId>
                 <artifactId>javassist</artifactId>
-                <version>3.22.0-GA</version>
+                <version>3.30.2-GA</version>
             </dependency>
 
             <dependency>
@@ -2239,20 +2568,218 @@
             <dependency>
                 <groupId>net.jodah</groupId>
                 <artifactId>failsafe</artifactId>
-                <version>2.0.1</version>
-            </dependency>
-
-            <dependency>
-                <groupId>com.facebook.presto.spark</groupId>
-                <artifactId>spark-core</artifactId>
-                <version>2.0.2-6</version>
-                <scope>provided</scope>
+                <version>2.4.4</version>
             </dependency>
 
             <dependency>
                 <groupId>com.clearspring.analytics</groupId>
                 <artifactId>stream</artifactId>
-                <version>2.9.5</version>
+                <version>2.9.8</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-api</artifactId>
+                <version>${dep.io.opentelemetry.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-context</artifactId>
+                <version>${dep.io.opentelemetry.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-exporter-otlp</artifactId>
+                <version>${dep.io.opentelemetry.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>com.squareup.okhttp3</groupId>
+                        <artifactId>okhttp</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-extension-trace-propagators</artifactId>
+                <version>${dep.io.opentelemetry.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-sdk</artifactId>
+                <version>${dep.io.opentelemetry.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-sdk-common</artifactId>
+                <version>${dep.io.opentelemetry.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-sdk-trace</artifactId>
+                <version>${dep.io.opentelemetry.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.opentelemetry.semconv</groupId>
+                <artifactId>opentelemetry-semconv</artifactId>
+                <version>1.37.0</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.datasketches</groupId>
+                <artifactId>datasketches-memory</artifactId>
+                <version>${dep.datasketches-memory.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.datasketches</groupId>
+                <artifactId>datasketches-java</artifactId>
+                <version>${dep.datasketches-java.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.google.code.gson</groupId>
+                <artifactId>gson</artifactId>
+                <version>${dep.gson.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.google.errorprone</groupId>
+                <artifactId>error_prone_annotations</artifactId>
+                <version>${dep.errorprone.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.google.j2objc</groupId>
+                <artifactId>j2objc-annotations</artifactId>
+                <version>${dep.j2objc.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.avro</groupId>
+                <artifactId>avro</artifactId>
+                <version>${dep.avro.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.slf4j</groupId>
+                        <artifactId>slf4j-api</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-compress</artifactId>
+                <version>${dep.commons.compress.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-lang3</artifactId>
+                <version>${dep.commons.lang3.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.cassandra</groupId>
+                <artifactId>java-driver-core</artifactId>
+                <version>${dep.cassandra-java-driver.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.cassandra</groupId>
+                <artifactId>java-driver-query-builder</artifactId>
+                <version>${dep.cassandra-java-driver.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.yaml</groupId>
+                <artifactId>snakeyaml</artifactId>
+                <version>${dep.snakeyaml.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-dbcp2</artifactId>
+                <version>2.14.0</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.arrow</groupId>
+                <artifactId>arrow-memory-core</artifactId>
+                <version>${dep.arrow.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.arrow</groupId>
+                <artifactId>arrow-memory-netty</artifactId>
+                <version>${dep.arrow.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.arrow</groupId>
+                <artifactId>arrow-vector</artifactId>
+                <version>${dep.arrow.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.arrow</groupId>
+                <artifactId>flight-core</artifactId>
+                <version>${dep.arrow.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.mariadb.jdbc</groupId>
+                <artifactId>mariadb-java-client</artifactId>
+                <version>${dep.mariadb.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.nimbusds</groupId>
+                <artifactId>nimbus-jose-jwt</artifactId>
+                <version>10.0.2</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.nimbusds</groupId>
+                <artifactId>oauth2-oidc-sdk</artifactId>
+                <version>11.30.1</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.aw2</groupId>
+                        <artifactId>asm</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.scala-lang</groupId>
+                <artifactId>scala-library</artifactId>
+                <version>${scala.version}</version>
+            </dependency>
+
+            <!-- Lance -->
+            <dependency>
+                <groupId>org.lance</groupId>
+                <artifactId>lance-core</artifactId>
+                <version>2.0.1</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.lance</groupId>
+                <artifactId>lance-namespace-core</artifactId>
+                <version>0.6.1</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.lance</groupId>
+                <artifactId>lance-namespace-apache-client</artifactId>
+                <version>0.6.1</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -2279,13 +2806,13 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-shade-plugin</artifactId>
-                    <version>3.1.1</version>
+                    <version>3.6.0</version>
                 </plugin>
 
                 <plugin>
                     <groupId>org.skife.maven</groupId>
                     <artifactId>really-executable-jar-maven-plugin</artifactId>
-                    <version>1.0.5</version>
+                    <version>2.1.1</version>
                 </plugin>
 
                 <plugin>
@@ -2301,7 +2828,7 @@
                 </plugin>
 
                 <plugin>
-                    <groupId>com.facebook.drift</groupId>
+                    <groupId>com.facebook.airlift.drift</groupId>
                     <artifactId>drift-maven-plugin</artifactId>
                     <version>${dep.drift.version}</version>
                 </plugin>
@@ -2322,18 +2849,45 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-enforcer-plugin</artifactId>
+                    <version>3.3.0</version>
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.codehaus.mojo</groupId>
+                            <artifactId>extra-enforcer-rules</artifactId>
+                            <version>1.11.0</version>
+                        </dependency>
+                    </dependencies>
                     <configuration>
                         <rules>
                             <requireUpperBoundDeps>
                                 <excludes combine.children="append">
-                                    <!-- TODO: fix this in Airlift resolver -->
-                                    <exclude>org.alluxio:alluxio-shaded-client</exclude>
-                                    <exclude>org.codehaus.plexus:plexus-utils</exclude>
                                     <exclude>com.google.guava:guava</exclude>
                                     <exclude>com.fasterxml.jackson.core:jackson-annotations</exclude>
+                                    <exclude>com.fasterxml.jackson.core:jackson-core</exclude>
+                                    <exclude>com.fasterxml.jackson.core:jackson-databind</exclude>
                                 </excludes>
                             </requireUpperBoundDeps>
                         </rules>
+                    </configuration>
+                </plugin>
+
+                <plugin>
+                    <groupId>org.basepom.maven</groupId>
+                    <artifactId>duplicate-finder-maven-plugin</artifactId>
+                    <configuration>
+                        <ignoredClassPatterns combine.children="append">
+                            <ignoredClassPattern>com.github.benmanes.caffeine.*</ignoredClassPattern>
+                            <!-- Duplicate class is being brought in by commons-io & log4j-api -->
+                            <ignoredClassPattern>META-INF.versions.9.module-info</ignoredClassPattern>
+                            <!-- Duplicate class is being brought in by several netty dependencies-->
+                            <ignoredClassPattern>META-INF.versions.11.module-info</ignoredClassPattern>
+                            <!-- Ignore duplicate classes related to lucene-core and ranger-apache -->
+                            <ignoredClassPattern>META-INF.versions.9.org.apache.lucene.*</ignoredClassPattern>
+                        </ignoredClassPatterns>
+                        <ignoredResourcePatterns combine.children="append">
+                            <ignoredResourcePattern>git.properties</ignoredResourcePattern>
+                            <ignoredResourcePattern>mime.types</ignoredResourcePattern>
+                        </ignoredResourcePatterns>
                     </configuration>
                 </plugin>
 
@@ -2346,20 +2900,9 @@
                 </plugin>
 
                 <plugin>
-                    <groupId>org.sonatype.plugins</groupId>
-                    <artifactId>nexus-staging-maven-plugin</artifactId>
-                    <version>${dep.nexus-staging-plugin.version}</version>
-                    <extensions>true</extensions>
-                    <configuration>
-                        <serverId>ossrh</serverId>
-                        <nexusUrl>https://oss.sonatype.org/</nexusUrl>
-                    </configuration>
-                </plugin>
-
-                <plugin>
                     <groupId>com.facebook.presto</groupId>
                     <artifactId>presto-maven-plugin</artifactId>
-                    <version>0.4</version>
+                    <version>0.7</version>
                     <extensions>true</extensions>
                 </plugin>
 
@@ -2379,6 +2922,13 @@
             </plugin>
 
             <plugin>
+                <groupId>ca.vanzyl.provisio.maven.plugins</groupId>
+                <artifactId>provisio-maven-plugin</artifactId>
+                <version>1.0.18</version>
+                <extensions>true</extensions>
+            </plugin>
+
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <configuration combine.children="append">
@@ -2389,6 +2939,14 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.0.0-M7</version>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.apache.maven.surefire</groupId>
+                        <artifactId>surefire-testng</artifactId>
+                        <version>3.5.6</version>
+                    </dependency>
+                </dependencies>
                 <configuration combine.children="append">
                     <includes>
                         <include>**/Test*.java</include>
@@ -2425,38 +2983,93 @@
                 </configuration>
             </plugin>
             <plugin>
-                <groupId>de.qaware.maven</groupId>
-                <artifactId>go-offline-maven-plugin</artifactId>
-                <version>1.2.8</version>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.7</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.owasp</groupId>
+                <artifactId>dependency-check-maven</artifactId>
+                <version>12.1.3</version>
                 <configuration>
-                    <dynamicDependencies>
-                        <DynamicDependency>
-                            <groupId>org.apache.maven.surefire</groupId>
-                            <artifactId>surefire-junit4</artifactId>
-                            <version>2.22.0</version>
-                            <repositoryType>PLUGIN</repositoryType>
-                        </DynamicDependency>
-                        <DynamicDependency>
-                            <groupId>com.querydsl</groupId>
-                            <artifactId>querydsl-apt</artifactId>
-                            <version>4.2.1</version>
-                            <classifier>jpa</classifier>
-                            <repositoryType>MAIN</repositoryType>
-                        </DynamicDependency>
-                        <DynamicDependency>
-                            <groupId>org.flywaydb</groupId>
-                            <artifactId>flyway-commandline</artifactId>
-                            <version>4.0.3</version>
-                            <type>zip</type>
-                            <repositoryType>MAIN</repositoryType>
-                        </DynamicDependency>
-                    </dynamicDependencies>
+                    <suppressionFiles>
+                        <suppressionFile>${air.main.basedir}/src/dependency-check-suppressions.xml</suppressionFile>
+                    </suppressionFiles>
                 </configuration>
             </plugin>
         </plugins>
     </build>
 
     <profiles>
+        <profile>
+            <id>java17</id>
+            <activation>
+                <jdk>17</jdk>
+            </activation>
+            <properties>
+                <air.test.jvm.additional-arguments>
+                    --add-opens java.base/java.io=ALL-UNNAMED
+                    --add-opens java.base/java.lang=ALL-UNNAMED
+                    --add-opens java.base/java.lang.ref=ALL-UNNAMED
+                    --add-opens java.base/java.lang.reflect=ALL-UNNAMED
+                    --add-opens java.base/java.net=ALL-UNNAMED
+                    --add-opens java.base/java.nio=ALL-UNNAMED
+                    --add-opens java.base/java.security=ALL-UNNAMED
+                    --add-opens java.base/javax.security.auth=ALL-UNNAMED
+                    --add-opens java.base/javax.security.auth.login=ALL-UNNAMED
+                    --add-opens java.base/java.text=ALL-UNNAMED
+                    --add-opens java.base/java.util=ALL-UNNAMED
+                    --add-opens java.base/java.util.concurrent=ALL-UNNAMED
+                    --add-opens java.base/java.util.concurrent.atomic=ALL-UNNAMED
+                    --add-opens java.base/java.util.regex=ALL-UNNAMED
+                    --add-opens java.base/jdk.internal.loader=ALL-UNNAMED
+                    --add-opens java.base/sun.security.action=ALL-UNNAMED
+                    --add-opens java.base/sun.security.util=ALL-UNNAMED
+                    --add-opens java.base/jdk.internal.module=ALL-UNNAMED
+                    --add-opens java.base/java.lang.module=ALL-UNNAMED
+                    --add-opens java.base/java.util.jar=ALL-UNNAMED
+                    --add-opens java.base/java.util.zip=ALL-UNNAMED
+                    --add-opens java.base/jdk.internal.util.jar=ALL-UNNAMED
+                    --add-opens java.base/sun.reflect.annotation=ALL-UNNAMED
+                    --add-opens java.base/sun.nio.fs=ALL-UNNAMED
+                    --add-opens java.base/jdk.internal.ref=ALL-UNNAMED
+                    --add-opens java.base/java.nio.charset=ALL-UNNAMED
+                    --add-opens java.base/java.nio.file.attribute=ALL-UNNAMED
+                    --add-opens java.base/java.lang.invoke=ALL-UNNAMED
+                    --add-opens java.base/sun.net.www.protocol.jar=ALL-UNNAMED
+                    --add-opens java.base/jdk.internal.perf=ALL-UNNAMED
+                </air.test.jvm.additional-arguments>
+            </properties>
+        </profile>
+        <profile>
+            <id>ui</id>
+            <activation>
+                <property>
+                    <name>!skipUI</name>
+                </property>
+            </activation>
+            <modules>
+                <module>presto-ui</module>
+            </modules>
+            <dependencyManagement>
+                <dependencies>
+                    <dependency>
+                        <groupId>com.facebook.presto</groupId>
+                        <artifactId>presto-ui</artifactId>
+                        <version>${project.version}</version>
+                        <scope>runtime</scope>
+                    </dependency>
+                </dependencies>
+            </dependencyManagement>
+        </profile>
         <profile>
             <id>tests-with-dependencies</id>
             <!--
@@ -2475,7 +3088,7 @@
 
                 java \
                   -cp ./presto-geospatial/target/presto-geospatial-*-tests-with-dependencies.jar \
-                  com.facebook.presto.plugin.geospatial.BenchmarkSTIntersects
+                  com.facebook.presto.geospatial.BenchmarkSTIntersects
             -->
             <build>
                 <plugins>
@@ -2502,11 +3115,280 @@
             <build>
                 <plugins>
                     <plugin>
-                        <groupId>org.sonatype.plugins</groupId>
-                        <artifactId>nexus-staging-maven-plugin</artifactId>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-deploy-plugin</artifactId>
+                        <configuration>
+                            <skip>true</skip>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.8.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>ossrh</publishingServerId>
+                            <autoPublish>${release.autoPublish}</autoPublish>
+                            <waitUntil>validated</waitUntil>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.4</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                                <configuration>
+                                    <gpgArguments>
+                                        <arg>--pinentry-mode</arg>
+                                        <arg>loopback</arg>
+                                    </gpgArguments>
+                                </configuration>
+                            </execution>
+                        </executions>
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+        <profile>
+            <id>out-of-tree-build</id>
+            <activation>
+                <activeByDefault>false</activeByDefault>
+                <property>
+                    <name>out-of-tree-build-root</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>unlink-out-of-tree-build-directory</id>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <phase>pre-clean</phase>
+                                <configuration>
+                                    <executable>rm</executable>
+                                    <arguments>
+                                        <argument>-rf</argument>
+                                        <argument>${project.build.directory}</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>remove-out-of-tree-build-directory</id>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <phase>pre-clean</phase>
+                                <configuration>
+                                    <executable>rm</executable>
+                                    <arguments>
+                                        <argument>-rf</argument>
+                                        <argument>${out-of-tree-build-root}/${project.groupId}:${project.artifactId}</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>create-out-of-tree-build-directory</id>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <phase>validate</phase>
+                                <configuration>
+                                    <executable>mkdir</executable>
+                                    <arguments>
+                                        <argument>-p</argument>
+                                        <argument>${out-of-tree-build-root}/${project.groupId}:${project.artifactId}</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>link-out-of-tree-build-directory</id>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <phase>validate</phase>
+                                <configuration>
+                                    <executable>ln</executable>
+                                    <arguments>
+                                        <argument>-sfT</argument>
+                                        <argument>${out-of-tree-build-root}/${project.groupId}:${project.artifactId}</argument>
+                                        <argument>${project.build.directory}</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <longModulepath>false</longModulepath>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-checkstyle-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>checkstyle</id>
+                                <configuration>
+                                    <cacheFile>${out-of-tree-build-root}/${project.groupId}:${project.artifactId}/checkstyle-cachefile</cacheFile>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>spark2</id>
+
+            <activation>
+                <activeByDefault>true</activeByDefault>
+                <property>
+                    <name>!spark-version</name>
+                </property>
+            </activation>
+
+            <properties>
+                <dep.spark.version>2.0.2-6</dep.spark.version>
+            </properties>
+
+            <modules>
+                <module>presto-spark-classloader-spark2</module>
+            </modules>
+
+            <build>
+                <pluginManagement>
+                    <plugins>
+                        <plugin>
+                            <groupId>org.apache.maven.plugins</groupId>
+                            <artifactId>maven-enforcer-plugin</artifactId>
+                            <version>3.3.0</version>
+                            <dependencies>
+                                <dependency>
+                                    <groupId>org.codehaus.mojo</groupId>
+                                    <artifactId>extra-enforcer-rules</artifactId>
+                                    <version>1.11.0</version>
+                                </dependency>
+                            </dependencies>
+                            <configuration>
+                                <skip>true</skip>
+                                <rules>
+                                    <requireUpperBoundDeps>
+                                        <excludes combine.children="append">
+                                            <!-- TODO: fix this in Airlift resolver -->
+                                            <exclude>org.codehaus.plexus:plexus-utils</exclude>
+                                            <exclude>com.google.guava:guava</exclude>
+                                            <exclude>com.fasterxml.jackson.core:jackson-annotations</exclude>
+                                            <exclude>com.fasterxml.jackson.core:jackson-core</exclude>
+                                            <exclude>com.fasterxml.jackson.core:jackson-databind</exclude>
+                                        </excludes>
+                                    </requireUpperBoundDeps>
+                                </rules>
+                            </configuration>
+                        </plugin>
+
+                        <plugin>
+                            <groupId>org.basepom.maven</groupId>
+                            <artifactId>duplicate-finder-maven-plugin</artifactId>
+                            <configuration>
+                                <skip>true</skip>
+                                <ignoredClassPatterns combine.children="append">
+                                    <ignoredClassPattern>com.github.benmanes.caffeine.*</ignoredClassPattern>
+                                    <!-- Duplicate class is being brought in by commons-io & log4j-api -->
+                                    <ignoredClassPattern>META-INF.versions.9.module-info</ignoredClassPattern>
+                                    <!-- Duplicate class is being brought in by several netty dependencies-->
+                                    <ignoredClassPattern>META-INF.versions.11.module-info</ignoredClassPattern>
+                                    <!-- Ignore duplicate classes related to lucene-core and ranger-apache -->
+                                    <ignoredClassPattern>META-INF.versions.9.org.apache.lucene.*</ignoredClassPattern>
+                                </ignoredClassPatterns>
+
+                            </configuration>
+                        </plugin>
+
+                    </plugins>
+                </pluginManagement>
+            </build>
+
+        </profile>
+        <profile>
+            <id>spark3</id>
+
+            <activation>
+                <property>
+                    <name>spark-version</name>
+                    <value>3</value>
+                </property>
+            </activation>
+
+            <properties>
+                <dep.spark.version>3.4.1-1</dep.spark.version>
+            </properties>
+
+            <modules>
+                <module>presto-spark-classloader-spark3</module>
+            </modules>
+
+            <build>
+                <pluginManagement>
+                    <plugins>
+                        <plugin>
+                            <groupId>org.apache.maven.plugins</groupId>
+                            <artifactId>maven-enforcer-plugin</artifactId>
+                            <version>3.3.0</version>
+                            <dependencies>
+                                <dependency>
+                                    <groupId>org.codehaus.mojo</groupId>
+                                    <artifactId>extra-enforcer-rules</artifactId>
+                                    <version>1.11.0</version>
+                                </dependency>
+                            </dependencies>
+                            <configuration>
+                                <skip>true</skip>
+                                <rules>
+                                    <requireUpperBoundDeps>
+                                        <excludes combine.children="append">
+                                            <!-- TODO: fix this in Airlift resolver -->
+                                            <exclude>org.codehaus.plexus:plexus-utils</exclude>
+                                            <exclude>com.google.guava:guava</exclude>
+                                            <exclude>com.fasterxml.jackson.core:jackson-annotations</exclude>
+                                            <exclude>com.fasterxml.jackson.core:jackson-core</exclude>
+                                            <exclude>com.fasterxml.jackson.core:jackson-databind</exclude>
+                                        </excludes>
+                                    </requireUpperBoundDeps>
+                                </rules>
+                            </configuration>
+                        </plugin>
+
+                        <plugin>
+                            <groupId>org.basepom.maven</groupId>
+                            <artifactId>duplicate-finder-maven-plugin</artifactId>
+                            <configuration>
+                                <skip>true</skip>
+                                <ignoredClassPatterns combine.children="append">
+                                    <ignoredClassPattern>com.github.benmanes.caffeine.*</ignoredClassPattern>
+                                    <!-- Duplicate class is being brought in by commons-io & log4j-api -->
+                                    <ignoredClassPattern>META-INF.versions.9.module-info</ignoredClassPattern>
+                                    <!-- Duplicate class is being brought in by several netty dependencies-->
+                                    <ignoredClassPattern>META-INF.versions.11.module-info</ignoredClassPattern>
+                                    <!-- Ignore duplicate classes related to lucene-core and ranger-apache -->
+                                    <ignoredClassPattern>META-INF.versions.9.org.apache.lucene.*</ignoredClassPattern>
+                                </ignoredClassPatterns>
+
+                            </configuration>
+                        </plugin>
+
+                    </plugins>
+                </pluginManagement>
+            </build>
+
         </profile>
     </profiles>
 </project>

@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.spark.planner;
 
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.execution.Lifespan;
 import com.facebook.presto.execution.ScheduledSplit;
 import com.facebook.presto.metadata.Split;
@@ -31,7 +32,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.SetMultimap;
 import com.google.common.util.concurrent.ListenableFuture;
-import io.airlift.units.DataSize;
 import org.testng.annotations.Test;
 
 import java.util.ArrayList;
@@ -41,8 +41,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.atomic.AtomicInteger;
 
+import static com.facebook.airlift.units.DataSize.Unit.BYTE;
 import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -50,7 +50,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.primitives.Ints.min;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
-import static io.airlift.units.DataSize.Unit.BYTE;
+import static java.util.Collections.nCopies;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.testng.Assert.assertEquals;
@@ -232,10 +232,12 @@ public class TestPrestoSparkSourceDistributionSplitAssigner
                     createSplitSource(splitSizes),
                     Integer.MAX_VALUE,
                     maxSplitsDataSizePerSparkPartition.toBytes(),
+                    Integer.MAX_VALUE,
                     initialPartitionCount,
                     autoTuneEnabled,
                     minSparkInputPartitionCountForAutoTune,
-                    maxSparkInputPartitionCountForAutoTune);
+                    maxSparkInputPartitionCountForAutoTune,
+                    0);
 
             Optional<SetMultimap<Integer, ScheduledSplit>> actualAssignment = assigner.getNextBatch();
             if (!splitSizes.isEmpty()) {
@@ -260,10 +262,12 @@ public class TestPrestoSparkSourceDistributionSplitAssigner
                     createSplitSource(sortedSplits),
                     splitBatchSize,
                     maxSplitsDataSizePerSparkPartition.toBytes(),
+                    Integer.MAX_VALUE,
                     initialPartitionCount,
                     autoTuneEnabled,
                     minSparkInputPartitionCountForAutoTune,
-                    maxSparkInputPartitionCountForAutoTune);
+                    maxSparkInputPartitionCountForAutoTune,
+                    0);
 
             while (true) {
                 Optional<SetMultimap<Integer, ScheduledSplit>> assignment = assigner.getNextBatch();
@@ -285,7 +289,6 @@ public class TestPrestoSparkSourceDistributionSplitAssigner
         int minSparkInputPartitionCountForAutoTune = 2;
         int maxSparkInputPartitionCountForAutoTune = 5;
         int maxSplitSizeInBytes = 2048;
-        AtomicInteger sequenceId = new AtomicInteger();
         for (int i = 0; i < 3; ++i) {
             List<Long> splitSizes = new ArrayList<>(1000);
             for (int j = 0; j < 1000; j++) {
@@ -297,10 +300,12 @@ public class TestPrestoSparkSourceDistributionSplitAssigner
                     createSplitSource(splitSizes),
                     333,
                     maxSplitDataSizePerPartition.toBytes(),
+                    Integer.MAX_VALUE,
                     initialPartitionCount,
                     true,
                     minSparkInputPartitionCountForAutoTune,
-                    maxSparkInputPartitionCountForAutoTune);
+                    maxSparkInputPartitionCountForAutoTune,
+                    0);
 
             HashMultimap<Integer, ScheduledSplit> actualAssignment = HashMultimap.create();
 
@@ -324,6 +329,130 @@ public class TestPrestoSparkSourceDistributionSplitAssigner
         }
     }
 
+    @Test
+    public void testSplitCountLimitWithAutoTuneEnabled()
+    {
+        // without a split count limit all five splits fit into a single partition under the 10 byte budget
+        assertAssignedSplits(
+                assignAllSplits(createSplitSource(nCopies(5, 1L)), Integer.MAX_VALUE, true, new DataSize(10, BYTE), Integer.MAX_VALUE, 1, 1, 4),
+                ImmutableMap.of(0, ImmutableList.of(1L, 1L, 1L, 1L, 1L)));
+
+        // with a limit of two splits per partition the same splits spread over three partitions
+        assertAssignedSplits(
+                assignAllSplits(createSplitSource(nCopies(5, 1L)), Integer.MAX_VALUE, true, new DataSize(10, BYTE), 2, 1, 1, 4),
+                ImmutableMap.of(
+                        0, ImmutableList.of(1L, 1L),
+                        1, ImmutableList.of(1L, 1L),
+                        2, ImmutableList.of(1L)));
+    }
+
+    @Test
+    public void testSplitCountLimitOverridesMaxPartitionCount()
+    {
+        // the limit is a hard bound: partition count grows past maxSparkInputPartitionCountForAutoTune (2)
+        // rather than assigning a split to a partition that is already at the limit
+        assertAssignedSplits(
+                assignAllSplits(createSplitSource(nCopies(4, 1L)), Integer.MAX_VALUE, true, new DataSize(10, BYTE), 1, 1, 1, 2),
+                ImmutableMap.of(
+                        0, ImmutableList.of(1L),
+                        1, ImmutableList.of(1L),
+                        2, ImmutableList.of(1L),
+                        3, ImmutableList.of(1L)));
+    }
+
+    @Test
+    public void testSplitCountLimitWithAutoTuneDisabled()
+    {
+        assertAssignedSplits(
+                assignAllSplits(createSplitSource(nCopies(5, 1L)), Integer.MAX_VALUE, false, new DataSize(1, BYTE), 2, 2, 1, 2),
+                ImmutableMap.of(
+                        0, ImmutableList.of(1L, 1L),
+                        1, ImmutableList.of(1L, 1L),
+                        2, ImmutableList.of(1L)));
+    }
+
+    @Test
+    public void testSplitCountLimitHoldsAcrossBatches()
+    {
+        // a batch size of two forces three batches; the limit must hold over the whole assignment, not per batch
+        assertAssignedSplits(
+                assignAllSplits(createSplitSource(nCopies(6, 1L)), 2, true, new DataSize(100, BYTE), 3, 1, 1, 4),
+                ImmutableMap.of(
+                        0, ImmutableList.of(1L, 1L, 1L),
+                        1, ImmutableList.of(1L, 1L, 1L)));
+    }
+
+    @Test
+    public void testSplitCountLimitWithSplitSizesUnavailable()
+    {
+        // round robin over two partitions until both hold two splits, then over the next two partition ids
+        assertAssignedSplitCounts(
+                assignAllSplits(createSplitSourceWithoutSplitSizes(6), Integer.MAX_VALUE, true, new DataSize(10, BYTE), 2, 2, 1, 4),
+                ImmutableMap.of(0, 2, 1, 2, 2, 1, 3, 1));
+    }
+
+    @Test
+    public void testSplitCountLimitWithMixedSplitSizeAvailability()
+    {
+        // the first batch reports split sizes and the second does not, so both assignment paths run. They must not
+        // share partition ids, otherwise partition 0 would end up with three splits against a limit of two
+        assertAssignedSplitCounts(
+                assignAllSplits(
+                        createSplitSourceWithOptionalSplitSizes(ImmutableList.of(
+                                OptionalLong.of(1L),
+                                OptionalLong.of(1L),
+                                OptionalLong.empty(),
+                                OptionalLong.empty())),
+                        2,
+                        true,
+                        new DataSize(100, BYTE),
+                        2,
+                        2,
+                        1,
+                        4),
+                ImmutableMap.of(0, 2, 1, 1, 2, 1));
+    }
+
+    private static SetMultimap<Integer, ScheduledSplit> assignAllSplits(
+            SplitSource splitSource,
+            int maxBatchSize,
+            boolean autoTuneEnabled,
+            DataSize maxSplitsDataSizePerSparkPartition,
+            int maxSplitsCountPerPartition,
+            int initialPartitionCount,
+            int minSparkInputPartitionCountForAutoTune,
+            int maxSparkInputPartitionCountForAutoTune)
+    {
+        PrestoSparkSplitAssigner assigner = new PrestoSparkSourceDistributionSplitAssigner(
+                new PlanNodeId("test"),
+                splitSource,
+                maxBatchSize,
+                maxSplitsDataSizePerSparkPartition.toBytes(),
+                maxSplitsCountPerPartition,
+                initialPartitionCount,
+                autoTuneEnabled,
+                minSparkInputPartitionCountForAutoTune,
+                maxSparkInputPartitionCountForAutoTune,
+                0);
+
+        HashMultimap<Integer, ScheduledSplit> assignment = HashMultimap.create();
+        while (true) {
+            Optional<SetMultimap<Integer, ScheduledSplit>> batch = assigner.getNextBatch();
+            if (!batch.isPresent()) {
+                break;
+            }
+            assignment.putAll(batch.get());
+        }
+        return assignment;
+    }
+
+    private static void assertAssignedSplitCounts(SetMultimap<Integer, ScheduledSplit> actual, Map<Integer, Integer> expected)
+    {
+        Map<Integer, Integer> actualCounts = actual.asMap().entrySet().stream()
+                .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().size()));
+        assertThat(actualCounts).isEqualTo(expected);
+    }
+
     private static void assertAssignedSplits(SetMultimap<Integer, ScheduledSplit> actual, Map<Integer, List<Long>> expected)
     {
         Map<Integer, List<Long>> actualAssignment = getAssignedSplitSizes(actual);
@@ -345,6 +474,18 @@ public class TestPrestoSparkSourceDistributionSplitAssigner
 
     private static SplitSource createSplitSource(List<Long> splitSizes)
     {
+        return createSplitSourceWithOptionalSplitSizes(splitSizes.stream()
+                .map(OptionalLong::of)
+                .collect(toImmutableList()));
+    }
+
+    private static SplitSource createSplitSourceWithoutSplitSizes(int splitCount)
+    {
+        return createSplitSourceWithOptionalSplitSizes(nCopies(splitCount, OptionalLong.empty()));
+    }
+
+    private static SplitSource createSplitSourceWithOptionalSplitSizes(List<OptionalLong> splitSizes)
+    {
         List<Split> splits = splitSizes.stream()
                 .map(size -> new Split(new ConnectorId("test"), TestingTransactionHandle.create(), new MockSplit(size)))
                 .collect(toImmutableList());
@@ -354,11 +495,11 @@ public class TestPrestoSparkSourceDistributionSplitAssigner
     private static class MockSplit
             implements ConnectorSplit
     {
-        private final long splitSizeInBytes;
+        private final OptionalLong splitSizeInBytes;
 
-        public MockSplit(long splitSizeInBytes)
+        public MockSplit(OptionalLong splitSizeInBytes)
         {
-            this.splitSizeInBytes = splitSizeInBytes;
+            this.splitSizeInBytes = requireNonNull(splitSizeInBytes, "splitSizeInBytes is null");
         }
 
         @Override
@@ -382,7 +523,7 @@ public class TestPrestoSparkSourceDistributionSplitAssigner
         @Override
         public OptionalLong getSplitSizeInBytes()
         {
-            return OptionalLong.of(splitSizeInBytes);
+            return splitSizeInBytes;
         }
     }
 

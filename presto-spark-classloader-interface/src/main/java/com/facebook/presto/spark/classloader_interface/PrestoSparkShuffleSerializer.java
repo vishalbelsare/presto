@@ -30,6 +30,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.Serializable;
 import java.io.UncheckedIOException;
+import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.util.NoSuchElementException;
 
@@ -80,7 +81,11 @@ public class PrestoSparkShuffleSerializer
         @Override
         public <T> T deserialize(ByteBuffer buffer, ClassTag<T> classTag)
         {
-            throw new UnsupportedOperationException("this method is never used by shuffle");
+            row.setArray(buffer.array());
+            row.setOffset(buffer.arrayOffset());
+            row.setLength(buffer.array().length - buffer.arrayOffset());
+            row.setBuffer(buffer);
+            return (T) tuple;
         }
 
         public <T> T deserialize(byte[] array, int offset, int length, ClassTag<T> classTag)
@@ -92,9 +97,13 @@ public class PrestoSparkShuffleSerializer
         }
 
         @Override
-        public <T> T deserialize(ByteBuffer bytes, ClassLoader loader, ClassTag<T> classTag)
+        public <T> T deserialize(ByteBuffer buffer, ClassLoader loader, ClassTag<T> classTag)
         {
-            throw new UnsupportedOperationException("this method is never used by shuffle");
+            row.setArray(buffer.array());
+            row.setOffset(buffer.arrayOffset());
+            row.setLength(buffer.array().length - buffer.arrayOffset());
+            row.setBuffer(buffer);
+            return (T) tuple;
         }
     }
 
@@ -239,8 +248,8 @@ public class PrestoSparkShuffleSerializer
                         throw new UncheckedIOException(e);
                     }
 
-                    buffer.position(0);
-                    buffer.limit(length);
+                    ((Buffer) buffer).position(0);
+                    ((Buffer) buffer).limit(length);
                     row.setBuffer(buffer);
                     return tuple;
                 }

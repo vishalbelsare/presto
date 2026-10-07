@@ -33,6 +33,7 @@ import com.facebook.presto.sql.tree.CurrentUser;
 import com.facebook.presto.sql.tree.DecimalLiteral;
 import com.facebook.presto.sql.tree.DereferenceExpression;
 import com.facebook.presto.sql.tree.DoubleLiteral;
+import com.facebook.presto.sql.tree.EnumLiteral;
 import com.facebook.presto.sql.tree.ExistsPredicate;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.Extract;
@@ -73,12 +74,15 @@ import com.facebook.presto.sql.tree.StringLiteral;
 import com.facebook.presto.sql.tree.SubqueryExpression;
 import com.facebook.presto.sql.tree.SubscriptExpression;
 import com.facebook.presto.sql.tree.SymbolReference;
+import com.facebook.presto.sql.tree.TableVersionExpression;
 import com.facebook.presto.sql.tree.TimeLiteral;
 import com.facebook.presto.sql.tree.TimestampLiteral;
 import com.facebook.presto.sql.tree.TryExpression;
 import com.facebook.presto.sql.tree.WhenClause;
 import com.facebook.presto.sql.tree.Window;
 import com.facebook.presto.sql.tree.WindowFrame;
+import com.facebook.presto.sql.tree.WindowReference;
+import com.facebook.presto.sql.tree.WindowSpecification;
 import com.google.common.base.CharMatcher;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
@@ -93,8 +97,9 @@ import java.util.PrimitiveIterator;
 import java.util.function.Function;
 
 import static com.facebook.presto.sql.SqlFormatter.formatSql;
+import static com.facebook.presto.sql.tree.TableVersionExpression.TableVersionOperator.EQUAL;
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.collect.Iterables.getOnlyElement;
+import static com.google.common.collect.MoreCollectors.onlyElement;
 import static java.lang.String.format;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
@@ -142,9 +147,19 @@ public final class ExpressionFormatter
         @Override
         protected String visitRow(Row node, Void context)
         {
-            return "ROW (" + Joiner.on(", ").join(node.getItems().stream()
-                    .map((child) -> process(child, context))
+            return "ROW (" + Joiner.on(", ").join(node.getFields().stream()
+                    .map((field) -> process(field, context))
                     .collect(toList())) + ")";
+        }
+
+        @Override
+        protected String visitRowField(Row.Field node, Void context)
+        {
+            String expression = process(node.getExpression(), context);
+            if (node.getName().isPresent()) {
+                return expression + " AS " + process(node.getName().get(), context);
+            }
+            return expression;
         }
 
         @Override
@@ -194,6 +209,12 @@ public final class ExpressionFormatter
         protected String visitBooleanLiteral(BooleanLiteral node, Void context)
         {
             return String.valueOf(node.getValue());
+        }
+
+        @Override
+        protected String visitEnumLiteral(EnumLiteral node, Void context)
+        {
+            return node.getType() + ": " + node.getValue();
         }
 
         @Override
@@ -379,7 +400,7 @@ public final class ExpressionFormatter
             }
 
             if (node.getWindow().isPresent()) {
-                builder.append(" OVER ").append(visitWindow(node.getWindow().get(), context));
+                builder.append(" OVER ").append(formatWindow(node.getWindow().get(), parameters));
             }
 
             return builder.toString();
@@ -602,10 +623,13 @@ public final class ExpressionFormatter
         }
 
         @Override
-        public String visitWindow(Window node, Void context)
+        public String visitWindowSpecification(WindowSpecification node, Void context)
         {
             List<String> parts = new ArrayList<>();
 
+            if (node.getExistingWindowName().isPresent()) {
+                parts.add(formatExpression(node.getExistingWindowName().get(), parameters));
+            }
             if (!node.getPartitionBy().isEmpty()) {
                 parts.add("PARTITION BY " + joinExpressions(node.getPartitionBy()));
             }
@@ -617,6 +641,12 @@ public final class ExpressionFormatter
             }
 
             return '(' + Joiner.on(' ').join(parts) + ')';
+        }
+
+        @Override
+        public String visitWindowReference(WindowReference node, Void context)
+        {
+            return formatExpression(node.getName(), parameters);
         }
 
         @Override
@@ -689,12 +719,19 @@ public final class ExpressionFormatter
                     .map((e) -> process(e, null))
                     .iterator());
         }
+
+        protected String visitTableVersion(TableVersionExpression node, Void context)
+        {
+            return "FOR " + node.getTableVersionType().name()
+                    + (node.getTableVersionOperator() == EQUAL ? " AS OF " : " BEFORE ")
+                    + process(node.getStateExpression(), context) + " ";
+        }
     }
 
     static String formatStringLiteral(String s)
     {
         s = s.replace("'", "''");
-        if (CharMatcher.inRange((char) 0x20, (char) 0x7E).matchesAllOf(s)) {
+        if (CharMatcher.inRange((char) 0x20, (char) 0x7E).or(CharMatcher.anyOf("\n\r\t")).matchesAllOf(s)) {
             return "'" + s + "'";
         }
 
@@ -704,7 +741,7 @@ public final class ExpressionFormatter
         while (iterator.hasNext()) {
             int codePoint = iterator.nextInt();
             checkArgument(codePoint >= 0, "Invalid UTF-8 encoding in characters: %s", s);
-            if (isAsciiPrintable(codePoint)) {
+            if (isAsciiPrintable(codePoint) || isWhitespace(codePoint)) {
                 char ch = (char) codePoint;
                 if (ch == '\\') {
                     builder.append(ch);
@@ -724,12 +761,26 @@ public final class ExpressionFormatter
         return builder.toString();
     }
 
+    static String formatWindow(Window window, Optional<List<Expression>> parameters)
+    {
+        if (window instanceof WindowReference) {
+            return new Formatter(parameters).process((WindowReference) window, null);
+        }
+
+        return formatWindowSpecification((WindowSpecification) window, parameters);
+    }
+
+    static String formatWindowSpecification(WindowSpecification windowSpecification, Optional<List<Expression>> parameters)
+    {
+        return new Formatter(parameters).process(windowSpecification, null);
+    }
+
     static String formatOrderBy(OrderBy orderBy, Optional<List<Expression>> parameters)
     {
         return "ORDER BY " + formatSortItems(orderBy.getSortItems(), parameters);
     }
 
-    static String formatSortItems(List<SortItem> sortItems, Optional<List<Expression>> parameters)
+    public static String formatSortItems(List<SortItem> sortItems, Optional<List<Expression>> parameters)
     {
         return Joiner.on(", ").join(sortItems.stream()
                 .map(sortItemFormatterFunction(parameters))
@@ -750,7 +801,7 @@ public final class ExpressionFormatter
             if (groupingElement instanceof SimpleGroupBy) {
                 List<Expression> columns = ((SimpleGroupBy) groupingElement).getExpressions();
                 if (columns.size() == 1) {
-                    result = formatExpression(getOnlyElement(columns), parameters);
+                    result = formatExpression(columns.stream().collect(onlyElement()), parameters);
                 }
                 else {
                     result = formatGroupingSet(columns, parameters);
@@ -779,6 +830,11 @@ public final class ExpressionFormatter
             return false;
         }
         return true;
+    }
+
+    private static boolean isWhitespace(int codePoint)
+    {
+        return codePoint == '\n' || codePoint == '\r' || codePoint == '\t';
     }
 
     private static String formatGroupingSet(List<Expression> groupingSet, Optional<List<Expression>> parameters)

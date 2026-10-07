@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.scalar.sql.SqlInvokedFunctionsPlugin;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestDistributedQueries;
@@ -26,6 +27,7 @@ import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.airlift.tpch.TpchTable.getTables;
 import static org.testng.Assert.assertEquals;
 
+@Test(singleThreaded = true)
 public class TestHivePushdownDistributedQueries
         extends AbstractTestDistributedQueries
 {
@@ -33,7 +35,7 @@ public class TestHivePushdownDistributedQueries
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return HiveQueryRunner.createQueryRunner(
+        QueryRunner queryRunner = HiveQueryRunner.createQueryRunner(
                 getTables(),
                 ImmutableMap.of("experimental.pushdown-subfields-enabled", "true",
                         "experimental.pushdown-dereference-enabled", "true"),
@@ -43,6 +45,8 @@ public class TestHivePushdownDistributedQueries
                         "hive.partial_aggregation_pushdown_enabled", "true",
                         "hive.partial_aggregation_pushdown_for_variable_length_datatypes_enabled", "true"),
                 Optional.empty());
+        queryRunner.installPlugin(new SqlInvokedFunctionsPlugin());
+        return queryRunner;
     }
 
     @Override
@@ -55,6 +59,12 @@ public class TestHivePushdownDistributedQueries
     public void testDelete()
     {
         // Hive connector currently does not support row-by-row delete
+    }
+
+    @Override
+    public void testUpdate()
+    {
+        // Updates are not supported by the connector
     }
 
     @Test

@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.cache.alluxio;
 
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
 import org.testng.annotations.Test;
 
 import java.util.Map;
@@ -23,9 +23,11 @@ import java.util.Map;
 import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
 import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
 import static com.facebook.airlift.configuration.testing.ConfigAssertions.recordDefaults;
-import static io.airlift.units.DataSize.Unit.GIGABYTE;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
+import static com.facebook.airlift.units.DataSize.Unit.GIGABYTE;
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.util.concurrent.TimeUnit.DAYS;
+import static java.util.concurrent.TimeUnit.HOURS;
+import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class TestAlluxioCacheConfig
@@ -47,7 +49,10 @@ public class TestAlluxioCacheConfig
                 .setTimeoutThreads(64)
                 .setCacheQuotaEnabled(false)
                 .setShadowCacheEnabled(false)
-                .setShadowCacheWindow(new Duration(7, DAYS)));
+                .setShadowCacheWindow(new Duration(7, DAYS))
+                .setTtlCheckInterval(new Duration(1, HOURS))
+                .setTtlEnabled(false)
+                .setTtlThreshold(new Duration(14, DAYS)));
     }
 
     @Test
@@ -68,6 +73,9 @@ public class TestAlluxioCacheConfig
                 .put("cache.alluxio.quota-enabled", "true")
                 .put("cache.alluxio.shadow-cache-enabled", "true")
                 .put("cache.alluxio.shadow-cache-window", "1d")
+                .put("cache.alluxio.ttl-check-interval", "60s")
+                .put("cache.alluxio.ttl-enabled", "true")
+                .put("cache.alluxio.ttl-threshold", "60m")
                 .build();
 
         AlluxioCacheConfig expected = new AlluxioCacheConfig()
@@ -84,7 +92,10 @@ public class TestAlluxioCacheConfig
                 .setTimeoutThreads(512)
                 .setCacheQuotaEnabled(true)
                 .setShadowCacheEnabled(true)
-                .setShadowCacheWindow(new Duration(1, DAYS));
+                .setShadowCacheWindow(new Duration(1, DAYS))
+                .setTtlCheckInterval(new Duration(60, SECONDS))
+                .setTtlEnabled(true)
+                .setTtlThreshold(new Duration(60, MINUTES));
 
         assertFullMapping(properties, expected);
     }

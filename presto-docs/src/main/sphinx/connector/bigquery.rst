@@ -22,28 +22,26 @@ Changes may include, but are not limited to:
 BigQuery Storage API
 --------------------
 
-The Storage API streams data in parallel directly from BigQuery via gRPC without
+The Storage API streams data in parallel directly from BigQuery with gRPC without
 using Google Cloud Storage as an intermediary.
 It has a number of advantages over using the previous export-based read flow
 that should generally lead to better read performance:
 
 **Direct Streaming**
 
-    It does not leave any temporary files in Google Cloud Storage. Rows are read
-    directly from BigQuery servers using an Avro wire format.
+It does not leave any temporary files in Google Cloud Storage. Rows are read 
+directly from BigQuery servers using an Avro wire format.
 
 **Column Filtering**
 
-    The new API allows column filtering to only read the data you are interested in.
-    `Backed by a columnar datastore <https://cloud.google.com/blog/big-data/2016/04/inside-capacitor-bigquerys-next-generation-columnar-storage-format>`_,
-    it can efficiently stream data without reading all columns.
+The new API allows column filtering to only read the data you are interested in. 
+`Backed by a columnar datastore <https://cloud.google.com/blog/products/bigquery/inside-capacitor-bigquerys-next-generation-columnar-storage-format>`_, 
+it can efficiently stream data without reading all columns.
 
 **Dynamic Sharding**
 
-    The API rebalances records between readers until they all complete. This means
-    that all Map phases will finish nearly concurrently. See this blog article on
-    `how dynamic sharding is similarly used in Google Cloud Dataflow
-    <https://cloud.google.com/blog/big-data/2016/05/no-shard-left-behind-dynamic-work-rebalancing-in-google-cloud-dataflow>`_.
+The API rebalances records between readers until they all complete. This means 
+that all Map phases will finish nearly concurrently. See this blog article on `how dynamic sharding is similarly used in Google Cloud Dataflow <https://cloud.google.com/blog/products/gcp/no-shard-left-behind-dynamic-work-rebalancing-in-google-cloud-dataflow>`_.
 
 Requirements
 ------------
@@ -84,9 +82,9 @@ your setup:
 Multiple GCP Projects
 ^^^^^^^^^^^^^^^^^^^^^
 
-The BigQuery connector can only access a single GCP project.Thus, if you have
+The BigQuery connector can only access a single GCP project. Thus, if you have
 data in multiple GCP projects, You need to create several catalogs, each
-pointingto a different GCP project. For example, if you have two GCP projects,
+pointing to a different GCP project. For example, if you have two GCP projects,
 one for the sales and one for analytics, you can create two properties files in
 ``etc/catalog`` named ``sales.properties`` and ``analytics.properties``, both
 having ``connector.name=bigquery`` but with different ``project-id``. This will
@@ -137,6 +135,9 @@ Property                                  Description                           
 ``bigquery.max-read-rows-retries``        The number of retries in case of retryable server issues       ``3``
 ``bigquery.credentials-key``              credentials key (base64 encoded)                               None. See `authentication <#authentication>`_
 ``bigquery.credentials-file``             JSON credentials file path                                     None. See `authentication <#authentication>`_
+``case-sensitive-name-matching``          Enable case sensitive identifier support for schema and table  ``false``
+                                          names for the connector. When disabled, names are matched
+                                          case-insensitively using lowercase normalization.          
 ========================================= ============================================================== ==============================================
 
 Data Types

@@ -36,10 +36,6 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static com.facebook.presto.common.function.OperatorType.EQUAL;
-import static com.facebook.presto.common.function.OperatorType.GREATER_THAN;
-import static com.facebook.presto.common.function.OperatorType.GREATER_THAN_OR_EQUAL;
-import static com.facebook.presto.common.function.OperatorType.LESS_THAN;
-import static com.facebook.presto.common.function.OperatorType.LESS_THAN_OR_EQUAL;
 import static com.facebook.presto.common.type.StandardTypes.BOOLEAN;
 import static com.facebook.presto.common.type.StandardTypes.VARCHAR;
 import static com.facebook.presto.expressions.LogicalRowExpressions.TRUE_CONSTANT;
@@ -75,32 +71,6 @@ public final class DynamicFilters
         }
 
         return new DynamicFilterExtractResult(staticConjuncts.build(), dynamicConjuncts.build());
-    }
-
-    public static RowExpression extractDynamicConjuncts(List<RowExpression> conjuncts, LogicalRowExpressions logicalRowExpressions)
-    {
-        ImmutableList.Builder<RowExpression> dynamicConjuncts = ImmutableList.builder();
-        for (RowExpression conjunct : conjuncts) {
-            Optional<DynamicFilterPlaceholder> placeholder = getPlaceholder(conjunct);
-            if (placeholder.isPresent()) {
-                dynamicConjuncts.add(conjunct);
-            }
-        }
-
-        return logicalRowExpressions.combineConjuncts(dynamicConjuncts.build());
-    }
-
-    public static RowExpression extractStaticConjuncts(List<RowExpression> conjuncts, LogicalRowExpressions logicalRowExpressions)
-    {
-        ImmutableList.Builder<RowExpression> staticConjuncts = ImmutableList.builder();
-        for (RowExpression conjunct : conjuncts) {
-            Optional<DynamicFilterPlaceholder> placeholder = getPlaceholder(conjunct);
-            if (!placeholder.isPresent()) {
-                staticConjuncts.add(conjunct);
-            }
-        }
-
-        return logicalRowExpressions.combineConjuncts(staticConjuncts.build());
     }
 
     public static boolean isDynamicFilter(RowExpression expression)

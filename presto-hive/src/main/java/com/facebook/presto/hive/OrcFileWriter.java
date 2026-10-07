@@ -39,9 +39,11 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TimeZone;
 import java.util.concurrent.Callable;
 import java.util.function.Supplier;
 
@@ -51,6 +53,7 @@ import static com.facebook.presto.hive.HiveErrorCode.HIVE_WRITE_VALIDATION_FAILE
 import static com.facebook.presto.hive.HiveManifestUtils.createFileStatisticsPage;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.google.common.base.MoreObjects.toStringHelper;
+import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static java.util.Objects.requireNonNull;
 
 public class OrcFileWriter
@@ -97,6 +100,43 @@ public class OrcFileWriter
                 fileInputColumnIndexes,
                 metadata,
                 hiveStorageTimeZone,
+                validationInputFactory,
+                validationMode,
+                stats,
+                dwrfEncryptionProvider,
+                dwrfWriterEncryption);
+    }
+
+    public OrcFileWriter(
+            DataSink dataSink,
+            Callable<Void> rollbackAction,
+            OrcEncoding orcEncoding,
+            List<String> columnNames,
+            List<Type> fileColumnTypes,
+            Optional<List<OrcType>> fileColumnOrcTypes,
+            CompressionKind compression,
+            OrcWriterOptions options,
+            int[] fileInputColumnIndexes,
+            Map<String, String> metadata,
+            ZoneId hiveStorageTimeZone,
+            Optional<Supplier<OrcDataSource>> validationInputFactory,
+            OrcWriteValidationMode validationMode,
+            WriterStats stats,
+            DwrfEncryptionProvider dwrfEncryptionProvider,
+            Optional<DwrfWriterEncryption> dwrfWriterEncryption)
+    {
+        this(
+                dataSink,
+                rollbackAction,
+                orcEncoding,
+                columnNames,
+                fileColumnTypes,
+                fileColumnOrcTypes,
+                compression,
+                options,
+                fileInputColumnIndexes,
+                metadata,
+                DateTimeZone.forTimeZone(TimeZone.getTimeZone(ZoneId.of(hiveStorageTimeZone.getId()))),
                 validationInputFactory,
                 validationMode,
                 stats,
@@ -206,14 +246,15 @@ public class OrcFileWriter
         try {
             orcWriter.close();
         }
-        catch (IOException | UncheckedIOException e) {
+        catch (IOException | UncheckedIOException | PrestoException e) {
             try {
                 rollbackAction.call();
             }
             catch (Exception ignored) {
                 // ignore
             }
-            throw new PrestoException(HIVE_WRITER_CLOSE_ERROR, "Error committing write to Hive", e);
+            throwIfInstanceOf(e, PrestoException.class);
+            throw new PrestoException(HIVE_WRITER_CLOSE_ERROR, "Error committing write to Hive. " + e.getMessage(), e);
         }
 
         if (validationInputFactory.isPresent()) {
@@ -242,6 +283,9 @@ public class OrcFileWriter
             finally {
                 rollbackAction.call();
             }
+        }
+        catch (PrestoException e) {
+            throw e;
         }
         catch (Exception e) {
             throw new PrestoException(HIVE_WRITER_CLOSE_ERROR, "Error rolling back write to Hive", e);

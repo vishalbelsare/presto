@@ -2,8 +2,8 @@
 CLI Kerberos Authentication
 ===========================
 
-The Presto :doc:`/installation/cli` can connect to a :doc:`Presto coordinator
-</security/server>` that has Kerberos authentication enabled.
+The :doc:`/clients/presto-cli` can connect to a Presto
+:doc:`coordinator with Kerberos authentication </security/server>` enabled.
 
 Environment Configuration
 -------------------------
@@ -32,8 +32,6 @@ principal.
     > ktadd -k /home/someuser/someuser.keytab someuser@EXAMPLE.COM
 
 .. include:: ktadd-note.fragment
-
-.. include:: jce-policy.fragment
 
 Java Keystore File for TLS
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -74,7 +72,7 @@ Option                          Description
                                 connections on.
 ``--krb5-config-path``          Kerberos configuration file.
 ``--krb5-principal``            The principal to use when authenticating to the coordinator.
-``--krb5-keytab-path``          The location of the the keytab that can be used to
+``--krb5-keytab-path``          The location of the keytab that can be used to
                                 authenticate the principal specified by ``--krb5-principal``
 ``--krb5-remote-service-name``  Presto coordinator Kerberos service name.
 ``--keystore-path``             The location of the Java Keystore file that will be used
@@ -94,7 +92,7 @@ Additional Kerberos Debugging Information
 
 You can enable additional Kerberos debugging information for the Presto CLI
 process by passing ``-Dsun.security.krb5.debug=true`` as a JVM argument when
-starting the CLI process. Doing so requires invoking the CLI JAR via ``java``
+starting the CLI process. Doing so requires invoking the CLI JAR by using ``java``
 instead of running the self-executable JAR directly. The self-executable jar
 file cannot pass the option to the JVM.
 

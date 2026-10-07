@@ -19,6 +19,7 @@ import org.weakref.jmx.Nested;
 public class ThriftHiveMetastoreStats
 {
     private final HiveMetastoreApiStats getAllDatabases = new HiveMetastoreApiStats();
+    private final HiveMetastoreApiStats getDatabases = new HiveMetastoreApiStats();
     private final HiveMetastoreApiStats getDatabase = new HiveMetastoreApiStats();
     private final HiveMetastoreApiStats getAllTables = new HiveMetastoreApiStats();
     private final HiveMetastoreApiStats getAllViews = new HiveMetastoreApiStats();
@@ -36,8 +37,10 @@ public class ThriftHiveMetastoreStats
     private final HiveMetastoreApiStats dropDatabase = new HiveMetastoreApiStats();
     private final HiveMetastoreApiStats alterDatabase = new HiveMetastoreApiStats();
     private final HiveMetastoreApiStats createTable = new HiveMetastoreApiStats();
+    private final HiveMetastoreApiStats createTableWithConstraints = new HiveMetastoreApiStats();
     private final HiveMetastoreApiStats dropTable = new HiveMetastoreApiStats();
     private final HiveMetastoreApiStats alterTable = new HiveMetastoreApiStats();
+    private final HiveMetastoreApiStats alterTableWithEnvironmentContext = new HiveMetastoreApiStats();
     private final HiveMetastoreApiStats addPartitions = new HiveMetastoreApiStats();
     private final HiveMetastoreApiStats dropPartition = new HiveMetastoreApiStats();
     private final HiveMetastoreApiStats alterPartition = new HiveMetastoreApiStats();
@@ -50,6 +53,22 @@ public class ThriftHiveMetastoreStats
     private final HiveMetastoreApiStats listRoleGrants = new HiveMetastoreApiStats();
     private final HiveMetastoreApiStats createRole = new HiveMetastoreApiStats();
     private final HiveMetastoreApiStats dropRole = new HiveMetastoreApiStats();
+    private final HiveMetastoreApiStats lock = new HiveMetastoreApiStats();
+    private final HiveMetastoreApiStats unlock = new HiveMetastoreApiStats();
+    private final HiveMetastoreApiStats getPrimaryKey = new HiveMetastoreApiStats();
+    private final HiveMetastoreApiStats getUniqueConstraints = new HiveMetastoreApiStats();
+    private final HiveMetastoreApiStats getNotNullConstraints = new HiveMetastoreApiStats();
+    private final HiveMetastoreApiStats dropConstraint = new HiveMetastoreApiStats();
+    private final HiveMetastoreApiStats addUniqueConstraint = new HiveMetastoreApiStats();
+    private final HiveMetastoreApiStats addPrimaryKeyConstraint = new HiveMetastoreApiStats();
+    private final HiveMetastoreApiStats addNotNullConstraint = new HiveMetastoreApiStats();
+
+    @Managed
+    @Nested
+    public HiveMetastoreApiStats getGetDatabases()
+    {
+        return getDatabases;
+    }
 
     @Managed
     @Nested
@@ -179,6 +198,13 @@ public class ThriftHiveMetastoreStats
 
     @Managed
     @Nested
+    public HiveMetastoreApiStats getCreateTableWithConstraints()
+    {
+        return createTableWithConstraints;
+    }
+
+    @Managed
+    @Nested
     public HiveMetastoreApiStats getDropTable()
     {
         return dropTable;
@@ -189,6 +215,13 @@ public class ThriftHiveMetastoreStats
     public HiveMetastoreApiStats getAlterTable()
     {
         return alterTable;
+    }
+
+    @Managed
+    @Nested
+    public HiveMetastoreApiStats getAlterTableWithEnvironmentContext()
+    {
+        return alterTableWithEnvironmentContext;
     }
 
     @Managed
@@ -273,5 +306,64 @@ public class ThriftHiveMetastoreStats
     public HiveMetastoreApiStats getDropRole()
     {
         return dropRole;
+    }
+
+    @Managed
+    @Nested
+    public HiveMetastoreApiStats getLock()
+    {
+        return lock;
+    }
+
+    public HiveMetastoreApiStats getGetPrimaryKey()
+    {
+        return getPrimaryKey;
+    }
+
+    @Managed
+    @Nested
+    public HiveMetastoreApiStats getUnlock()
+    {
+        return unlock;
+    }
+
+    public HiveMetastoreApiStats getGetUniqueConstraints()
+    {
+        return getUniqueConstraints;
+    }
+
+    @Managed
+    @Nested
+    public HiveMetastoreApiStats getGetNotNullConstraints()
+    {
+        return getNotNullConstraints;
+    }
+
+    @Managed
+    @Nested
+    public HiveMetastoreApiStats getDropConstraint()
+    {
+        return dropConstraint;
+    }
+
+    @Managed
+    @Nested
+    public HiveMetastoreApiStats getAddUniqueConstraint()
+    {
+        return addUniqueConstraint;
+    }
+
+    @Managed
+    @Nested
+    public HiveMetastoreApiStats getAddPrimaryKeyConstraint()
+    {
+        return addPrimaryKeyConstraint;
+    }
+
+    @Managed
+    @Nested
+    public HiveMetastoreApiStats getAddNotNullConstraint()
+    {
+        return addNotNullConstraint;
     }
 }

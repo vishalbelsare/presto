@@ -37,7 +37,6 @@ import com.facebook.presto.verifier.source.MySqlSourceQueryConfig;
 import com.facebook.presto.verifier.source.VerifierDao;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.units.Duration;
 import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
 import org.jdbi.v3.sqlobject.SqlObjectPlugin;
@@ -46,6 +45,7 @@ import javax.inject.Provider;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
 import static com.facebook.presto.sql.parser.IdentifierSymbol.AT_SIGN;
@@ -53,7 +53,6 @@ import static com.facebook.presto.sql.parser.IdentifierSymbol.COLON;
 import static com.facebook.presto.sql.parser.ParsingOptions.DecimalLiteralTreatment.AS_DOUBLE;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.verifier.framework.ClusterType.CONTROL;
-import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class VerifierTestUtil
 {
@@ -69,10 +68,12 @@ public class VerifierTestUtil
                     "INSERT INTO test SELECT * FROM source",
                     ParsingOptions.builder().setDecimalLiteralTreatment(AS_DOUBLE).build()),
             ImmutableList.of(),
-            CONTROL);
+            CONTROL,
+            Optional.empty(),
+            Optional.empty(),
+            false);
 
     private static final MySqlOptions MY_SQL_OPTIONS = MySqlOptions.builder()
-            .setCommandTimeout(new Duration(90, SECONDS))
             .build();
 
     private VerifierTestUtil() {}
@@ -95,7 +96,10 @@ public class VerifierTestUtil
     {
         TestingMySqlServer mySqlServer = new TestingMySqlServer("testuser", "testpass", ImmutableList.of(XDB), MY_SQL_OPTIONS);
         try (Handle handle = getHandle(mySqlServer)) {
-            handle.attach(VerifierDao.class).createVerifierQueriesTable(new MySqlSourceQueryConfig().getTableName());
+            MySqlSourceQueryConfig config = new MySqlSourceQueryConfig();
+            VerifierDao verifierDao = handle.attach(VerifierDao.class);
+            verifierDao.createVerifierQueriesTable(config.getTableName());
+            verifierDao.createVerifierSnapshotsTable(config.getSnapshotTableName());
         }
         return mySqlServer;
     }
@@ -134,11 +138,11 @@ public class VerifierTestUtil
     {
         Map<Column.Category, Provider<ColumnValidator>> lazyValidators = new HashMap<>();
         Map<Column.Category, Provider<ColumnValidator>> validators = ImmutableMap.of(
-                Column.Category.SIMPLE, SimpleColumnValidator::new,
+                Column.Category.SIMPLE, () -> new SimpleColumnValidator(verifierConfig, new FloatingPointColumnValidator(verifierConfig)),
                 Column.Category.FLOATING_POINT, () -> new FloatingPointColumnValidator(verifierConfig),
-                Column.Category.ARRAY, ArrayColumnValidator::new,
+                Column.Category.ARRAY, () -> new ArrayColumnValidator(verifierConfig, new FloatingPointColumnValidator(verifierConfig)),
                 Column.Category.ROW, () -> new RowColumnValidator(lazyValidators),
-                Column.Category.MAP, MapColumnValidator::new);
+                Column.Category.MAP, () -> new MapColumnValidator(verifierConfig, new FloatingPointColumnValidator(verifierConfig)));
         lazyValidators.putAll(validators);
         return new ChecksumValidator(validators);
     }

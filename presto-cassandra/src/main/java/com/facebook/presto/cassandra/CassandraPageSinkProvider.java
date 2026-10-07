@@ -13,7 +13,6 @@
  */
 package com.facebook.presto.cassandra;
 
-import com.datastax.driver.core.ProtocolVersion;
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
 import com.facebook.presto.spi.ConnectorOutputTableHandle;
 import com.facebook.presto.spi.ConnectorPageSink;
@@ -21,8 +20,7 @@ import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PageSinkContext;
 import com.facebook.presto.spi.connector.ConnectorPageSinkProvider;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-
-import javax.inject.Inject;
+import jakarta.inject.Inject;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
@@ -31,13 +29,11 @@ public class CassandraPageSinkProvider
         implements ConnectorPageSinkProvider
 {
     private final CassandraSession cassandraSession;
-    private final ProtocolVersion protocolVersion;
 
     @Inject
-    public CassandraPageSinkProvider(CassandraSession cassandraSession, CassandraClientConfig cassandraClientConfig)
+    public CassandraPageSinkProvider(CassandraSession cassandraSession)
     {
         this.cassandraSession = requireNonNull(cassandraSession, "cassandraSession is null");
-        this.protocolVersion = requireNonNull(cassandraClientConfig, "cassandraClientConfig is null").getProtocolVersion();
     }
 
     @Override
@@ -50,7 +46,7 @@ public class CassandraPageSinkProvider
 
         return new CassandraPageSink(
                 cassandraSession,
-                protocolVersion,
+                session,
                 handle.getSchemaName(),
                 handle.getTableName(),
                 handle.getColumnNames(),
@@ -68,7 +64,7 @@ public class CassandraPageSinkProvider
 
         return new CassandraPageSink(
                 cassandraSession,
-                protocolVersion,
+                session,
                 handle.getSchemaName(),
                 handle.getTableName(),
                 handle.getColumnNames(),

@@ -13,15 +13,23 @@
  */
 package com.facebook.presto.tests;
 
+import com.facebook.presto.spi.plan.AggregationNode;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.MaterializedRow;
+import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.DataProvider;
+import org.testng.annotations.Optional;
+import org.testng.annotations.Parameters;
 import org.testng.annotations.Test;
 
 import java.util.List;
 
 import static com.facebook.presto.Session.builder;
-import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
+import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.anyTree;
+import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.expression;
+import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.node;
+import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.project;
+import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.tableScan;
 import static com.facebook.presto.testing.MaterializedResult.resultBuilder;
 import static com.facebook.presto.tests.QueryAssertions.assertEqualsIgnoreOrder;
 import static java.lang.String.format;
@@ -209,7 +217,7 @@ public abstract class AbstractTestAggregations
                         "  GROUP BY orderkey " +
                         "HAVING COUNT(DISTINCT partkey) != CARDINALITY(ARRAY_DISTINCT(ARRAY_AGG(partkey))))",
                 "VALUES 0");
-        assertQuery(builder(TEST_SESSION)
+        assertQuery(builder(getSession())
                         .setSystemProperty("use_mark_distinct", "false")
                         .build(),
                 " SELECT COUNT(*) FROM (SELECT orderkey, COUNT(DISTINCT partkey) FROM lineitem " +
@@ -644,18 +652,23 @@ public abstract class AbstractTestAggregations
         assertQuery("SELECT NULLIF(1, orderkey), count(*) FROM orders GROUP BY orderkey");
     }
 
+    @Parameters("storageFormat")
     @Test
-    public void testGroupByExtract()
+    public void testGroupByExtract(@Optional("PARQUET") String storageFormat)
     {
+        // DWRF does not support date type.
+        String format = (System.getProperty("storageFormat") == null) ? storageFormat : System.getProperty("storageFormat");
+        String orderdate = format.equals("DWRF") ? "cast(orderdate as DATE)" : "orderdate";
+
         // whole expression in group by
-        assertQuery("SELECT EXTRACT(YEAR FROM orderdate), count(*) FROM orders GROUP BY EXTRACT(YEAR FROM orderdate)");
+        assertQuery(format("SELECT EXTRACT(YEAR FROM %s), count(*) FROM orders GROUP BY EXTRACT(YEAR FROM %s)", orderdate, orderdate));
 
         assertQuery(
-                "SELECT EXTRACT(YEAR FROM orderdate), count(*) FROM orders GROUP BY 1",
-                "SELECT EXTRACT(YEAR FROM orderdate), count(*) FROM orders GROUP BY EXTRACT(YEAR FROM orderdate)");
+                format("SELECT EXTRACT(YEAR FROM %s), count(*) FROM orders GROUP BY 1", orderdate),
+                format("SELECT EXTRACT(YEAR FROM %s), count(*) FROM orders GROUP BY EXTRACT(YEAR FROM %s)", orderdate, orderdate));
 
         // argument in group by
-        assertQuery("SELECT EXTRACT(YEAR FROM orderdate), count(*) FROM orders GROUP BY orderdate");
+        assertQuery(format("SELECT EXTRACT(YEAR FROM %s), count(*) FROM orders GROUP BY orderdate", orderdate));
     }
 
     @Test
@@ -697,20 +710,20 @@ public abstract class AbstractTestAggregations
         assertQuery("SELECT approx_distinct(orderdate, 0.023) FROM orders", "SELECT 2443");
 
         // test timestamp
-        assertQuery("SELECT approx_distinct(CAST(orderdate AS TIMESTAMP)) FROM orders", "SELECT 2347");
-        assertQuery("SELECT approx_distinct(CAST(orderdate AS TIMESTAMP), 0.023) FROM orders", "SELECT 2347");
+        assertQuery("SELECT approx_distinct(CAST(orderdate AS TIMESTAMP)) FROM orders", "SELECT 2384");
+        assertQuery("SELECT approx_distinct(CAST(orderdate AS TIMESTAMP), 0.023) FROM orders", "SELECT 2384");
 
         // test timestamp with time zone
         assertQuery("SELECT approx_distinct(CAST(orderdate AS TIMESTAMP WITH TIME ZONE)) FROM orders", "SELECT 2347");
         assertQuery("SELECT approx_distinct(CAST(orderdate AS TIMESTAMP WITH TIME ZONE), 0.023) FROM orders", "SELECT 2347");
 
         // test time
-        assertQuery("SELECT approx_distinct(CAST(from_unixtime(custkey) AS TIME)) FROM orders", "SELECT 996");
-        assertQuery("SELECT approx_distinct(CAST(from_unixtime(custkey) AS TIME), 0.023) FROM orders", "SELECT 996");
+        assertQuery("SELECT approx_distinct(CAST(from_unixtime(custkey) AS TIME)) FROM orders", "SELECT 993");
+        assertQuery("SELECT approx_distinct(CAST(from_unixtime(custkey) AS TIME), 0.023) FROM orders", "SELECT 993");
 
         // test time with time zone
-        assertQuery("SELECT approx_distinct(CAST(from_unixtime(custkey) AS TIME WITH TIME ZONE)) FROM orders", "SELECT 996");
-        assertQuery("SELECT approx_distinct(CAST(from_unixtime(custkey) AS TIME WITH TIME ZONE), 0.023) FROM orders", "SELECT 996");
+        assertQuery("SELECT approx_distinct(CAST(from_unixtime(custkey) AS TIME WITH TIME ZONE)) FROM orders", "SELECT 975");
+        assertQuery("SELECT approx_distinct(CAST(from_unixtime(custkey) AS TIME WITH TIME ZONE), 0.023) FROM orders", "SELECT 975");
 
         // test short decimal
         assertQuery("SELECT approx_distinct(CAST(custkey AS DECIMAL(18, 0))) FROM orders", "SELECT 990");
@@ -761,42 +774,42 @@ public abstract class AbstractTestAggregations
     public void testSumDataSizeForStats()
     {
         // varchar
-        assertQuery("SELECT \"$internal$sum_data_size_for_stats\"(comment) FROM orders", "SELECT sum(length(comment)) FROM orders");
+        assertQuery("SELECT \"sum_data_size_for_stats\"(comment) FROM orders", "SELECT sum(length(comment)) FROM orders");
 
         // char
         // Presto removes trailing whitespaces when casting to CHAR.
         // Hard code the expected data size since there is no easy to way to compute it in H2.
-        assertQuery("SELECT \"$internal$sum_data_size_for_stats\"(CAST(comment AS CHAR(1000))) FROM orders", "SELECT 725468");
+        assertQuery("SELECT \"sum_data_size_for_stats\"(CAST(comment AS CHAR(1000))) FROM orders", "SELECT 725468");
 
         // varbinary
-        assertQuery("SELECT \"$internal$sum_data_size_for_stats\"(CAST(comment AS VARBINARY)) FROM orders", "SELECT sum(length(comment)) FROM orders");
+        assertQuery("SELECT \"sum_data_size_for_stats\"(CAST(comment AS VARBINARY)) FROM orders", "SELECT sum(length(comment)) FROM orders");
 
         // array
-        assertQuery("SELECT \"$internal$sum_data_size_for_stats\"(ARRAY[comment]) FROM orders", "SELECT sum(length(comment)) FROM orders");
-        assertQuery("SELECT \"$internal$sum_data_size_for_stats\"(ARRAY[comment, comment]) FROM orders", "SELECT 2 * sum(length(comment)) FROM orders");
+        assertQuery("SELECT \"sum_data_size_for_stats\"(ARRAY[comment]) FROM orders", "SELECT sum(length(comment)) FROM orders");
+        assertQuery("SELECT \"sum_data_size_for_stats\"(ARRAY[comment, comment]) FROM orders", "SELECT 2 * sum(length(comment)) FROM orders");
 
         // map
-        assertQuery("SELECT \"$internal$sum_data_size_for_stats\"(map(ARRAY[1], ARRAY[comment])) FROM orders", "SELECT 4 * count(*) + sum(length(comment)) FROM orders");
-        assertQuery("SELECT \"$internal$sum_data_size_for_stats\"(map(ARRAY[1, 2], ARRAY[comment, comment])) FROM orders", "SELECT 2 * 4 * count(*) + 2 * sum(length(comment)) FROM orders");
+        assertQuery("SELECT \"sum_data_size_for_stats\"(map(ARRAY[1], ARRAY[comment])) FROM orders", "SELECT 4 * count(*) + sum(length(comment)) FROM orders");
+        assertQuery("SELECT \"sum_data_size_for_stats\"(map(ARRAY[1, 2], ARRAY[comment, comment])) FROM orders", "SELECT 2 * 4 * count(*) + 2 * sum(length(comment)) FROM orders");
 
         // row
-        assertQuery("SELECT \"$internal$sum_data_size_for_stats\"(ROW(comment)) FROM orders", "SELECT sum(length(comment)) FROM orders");
-        assertQuery("SELECT \"$internal$sum_data_size_for_stats\"(ROW(comment, comment)) FROM orders", "SELECT 2 * sum(length(comment)) FROM orders");
+        assertQuery("SELECT \"sum_data_size_for_stats\"(ROW(comment)) FROM orders", "SELECT sum(length(comment)) FROM orders");
+        assertQuery("SELECT \"sum_data_size_for_stats\"(ROW(comment, comment)) FROM orders", "SELECT 2 * sum(length(comment)) FROM orders");
     }
 
     @Test
     public void testMaxDataSizeForStats()
     {
         // varchar
-        assertQuery("SELECT \"$internal$max_data_size_for_stats\"(comment) FROM orders", "SELECT max(length(comment)) FROM orders");
+        assertQuery("SELECT \"max_data_size_for_stats\"(comment) FROM orders", "SELECT max(length(comment)) FROM orders");
 
         // char
-        assertQuery("SELECT \"$internal$max_data_size_for_stats\"(CAST(comment AS CHAR(1000))) FROM orders", "SELECT max(length(comment)) FROM orders");
+        assertQuery("SELECT \"max_data_size_for_stats\"(CAST(comment AS CHAR(1000))) FROM orders", "SELECT max(length(comment)) FROM orders");
 
         // varbinary
-        assertQuery("SELECT \"$internal$max_data_size_for_stats\"(CAST(comment AS VARBINARY)) FROM orders", "SELECT max(length(comment)) FROM orders");
+        assertQuery("SELECT \"max_data_size_for_stats\"(CAST(comment AS VARBINARY)) FROM orders", "SELECT max(length(comment)) FROM orders");
 
-        // $internal$max_data_size_for_stats is not needed for array, map and row
+        // max_data_size_for_stats is not needed for array, map and row
     }
 
     @Test
@@ -857,8 +870,8 @@ public abstract class AbstractTestAggregations
         List<MaterializedRow> actualRows = actual.getMaterializedRows();
         assertEquals(actualRows.size(), 1);
         assertTrue(Double.isNaN(((List<Double>) actualRows.get(0).getField(0)).get(0)));
-        assertEquals(((List<Double>) actualRows.get(0).getField(0)).get(1), 2.0);
-        assertEquals(((List<Double>) actualRows.get(0).getField(0)).get(2), 3.0);
+        assertEquals(((List<Double>) actualRows.get(0).getField(0)).get(1).doubleValue(), 2.0);
+        assertEquals(((List<Double>) actualRows.get(0).getField(0)).get(2).doubleValue(), 3.0);
     }
 
     @Test
@@ -1114,20 +1127,33 @@ public abstract class AbstractTestAggregations
                         "SELECT NULL, NULL, SUM(CAST(quantity AS BIGINT)) FROM lineitem");
     }
 
+    @Parameters("storageFormat")
     @Test
-    public void testGroupingSetMixedExpressionAndColumn()
+    public void testGroupingSetMixedExpressionAndColumn(@Optional("PARQUET") String storageFormat)
     {
-        assertQuery("SELECT suppkey, month(shipdate), SUM(CAST(quantity AS BIGINT)) FROM lineitem GROUP BY month(shipdate), ROLLUP(suppkey)",
-                "SELECT suppkey, month(shipdate), SUM(CAST(quantity AS BIGINT)) FROM lineitem GROUP BY month(shipdate), suppkey UNION ALL " +
-                        "SELECT NULL, month(shipdate), SUM(CAST(quantity AS BIGINT)) FROM lineitem GROUP BY month(shipdate)");
+        // DWRF does not support date type.
+        String format = (System.getProperty("storageFormat") == null) ? storageFormat : System.getProperty("storageFormat");
+        String shipdate = format.equals("DWRF") ? "cast(shipdate as DATE)" : "shipdate";
+
+        assertQuery(format("SELECT suppkey, month(%s), SUM(CAST(quantity AS BIGINT)) FROM lineitem GROUP BY month(%s), ROLLUP(suppkey)",
+                        shipdate, shipdate),
+                format("SELECT suppkey, month(%s), SUM(CAST(quantity AS BIGINT)) FROM lineitem GROUP BY month(%s), suppkey UNION ALL " +
+                                "SELECT NULL, month(%s), SUM(CAST(quantity AS BIGINT)) FROM lineitem GROUP BY month(%s)",
+                        shipdate, shipdate, shipdate, shipdate));
     }
 
+    @Parameters("storageFormat")
     @Test
-    public void testGroupingSetMixedExpressionAndOrdinal()
+    public void testGroupingSetMixedExpressionAndOrdinal(@Optional("PARQUET") String storageFormat)
     {
-        assertQuery("SELECT suppkey, month(shipdate), SUM(CAST(quantity AS BIGINT)) FROM lineitem GROUP BY 2, ROLLUP(suppkey)",
-                "SELECT suppkey, month(shipdate), SUM(CAST(quantity AS BIGINT)) FROM lineitem GROUP BY month(shipdate), suppkey UNION ALL " +
-                        "SELECT NULL, month(shipdate), SUM(CAST(quantity AS BIGINT)) FROM lineitem GROUP BY month(shipdate)");
+        // DWRF does not support date type.
+        String format = (System.getProperty("storageFormat") == null) ? storageFormat : System.getProperty("storageFormat");
+        String shipdate = format.equals("DWRF") ? "cast(shipdate as DATE)" : "shipdate";
+
+        assertQuery(format("SELECT suppkey, month(%s), SUM(CAST(quantity AS BIGINT)) FROM lineitem GROUP BY 2, ROLLUP(suppkey)", shipdate),
+                format("SELECT suppkey, month(%s), SUM(CAST(quantity AS BIGINT)) FROM lineitem GROUP BY month(%s), suppkey UNION ALL " +
+                                "SELECT NULL, month(%s), SUM(CAST(quantity AS BIGINT)) FROM lineitem GROUP BY month(%s)",
+                        shipdate, shipdate, shipdate, shipdate));
     }
 
     @Test
@@ -1295,6 +1321,36 @@ public abstract class AbstractTestAggregations
         assertQuery(format("SELECT value_at_quantile(%s_agg(CAST(orderkey AS DOUBLE), 2, 0.0001E0), 0.5E0) > 0 FROM lineitem", type), "SELECT true");
         assertQuery(format("SELECT value_at_quantile(%s_agg(CAST(quantity AS DOUBLE), 3, 0.0001E0), 0.5E0) > 0 FROM lineitem", type), "SELECT true");
         assertQuery(format("SELECT value_at_quantile(%s_agg(CAST(quantity AS DOUBLE), 4, 0.0001E0), 0.5E0) > 0 FROM lineitem", type), "SELECT true");
+
+        // values_at_quantiles returns a non-decreasing array.
+        assertQuery(format("SELECT v[1] <= v[2] AND v[2] <= v[3] FROM (" +
+                        "SELECT values_at_quantiles(%s_agg(CAST(orderkey AS DOUBLE)), ARRAY[0.1E0, 0.5E0, 0.9E0]) v FROM lineitem)",
+                type),
+                "SELECT true");
+
+        // scale_{q,t}digest preserves the quantile value within tolerance.
+        assertQuery(format("SELECT abs(value_at_quantile(scale_%s(d, 2E0), 0.5E0) - value_at_quantile(d, 0.5E0)) " +
+                        "/ value_at_quantile(d, 0.5E0) < 0.05E0 FROM (" +
+                        "SELECT %s_agg(CAST(orderkey AS DOUBLE)) d FROM lineitem)",
+                type,
+                type),
+                "SELECT true");
+
+        // quantile_at_value / value_at_quantile round-trip near 0.5.
+        assertQuery(format("SELECT quantile_at_value(d, value_at_quantile(d, 0.5E0)) BETWEEN 0.3E0 AND 0.7E0 FROM (" +
+                        "SELECT %s_agg(CAST(orderkey AS DOUBLE)) d FROM lineitem)",
+                type),
+                "SELECT true");
+
+        // Nulls are ignored when other values are present.
+        assertQuery(format("SELECT value_at_quantile(%s_agg(CASE WHEN orderkey %% 2 = 0 THEN CAST(orderkey AS DOUBLE) END), 0.5E0) > 0 FROM lineitem",
+                type),
+                "SELECT true");
+
+        // All-null input produces a null aggregate.
+        assertQuery(format("SELECT value_at_quantile(%s_agg(CAST(NULL AS DOUBLE)), 0.5E0) IS NULL FROM lineitem",
+                type),
+                "SELECT true");
     }
 
     /**
@@ -1351,6 +1407,62 @@ public abstract class AbstractTestAggregations
                 "SELECT partkey, true FROM lineitem GROUP BY partkey");
     }
 
+    /**
+     * reservoir_sample(initial_sample, initial_processed_count, value, desired_sample_size)
+     * draws a fixed-size sample and returns row(processed_count bigint, sample array(T)).
+     * The sampled elements are chosen at random, so the assertions check deterministic
+     * properties (processed count, sample cardinality, value domain) rather than the
+     * specific elements. Comprehensive correctness lives in TestReservoirSampleAggregation.
+     *
+     * <p>Although this test is declared in presto-tests, it also exercises the native
+     * (Velox) implementation: presto-native-tests/AbstractTestAggregationsNative extends
+     * this class, so the method is inherited and executed against the native query runner.
+     */
+    @Test
+    public void testReservoirSample()
+    {
+        // Single aggregation over orders covering three properties in one scan: processed_count
+        // equals the input row count, the sample is capped at the desired size, and every sampled
+        // element belongs to the input domain (orderkey is positive). Each property is its own
+        // output column so a failure points at the specific property that diverged.
+        assertQuery(
+                "SELECT rs.processed_count, " +
+                        "cardinality(rs.sample), " +
+                        "cardinality(filter(rs.sample, x -> x > 0)) = cardinality(rs.sample) " +
+                        "FROM (SELECT reservoir_sample(NULL, 0, orderkey, 10) AS rs FROM orders) t",
+                "SELECT count(*), 10, true FROM orders");
+
+        // When the input is smaller than the desired size the entire input is kept.
+        assertQuery(
+                "SELECT cardinality(rs.sample) FROM (SELECT reservoir_sample(NULL, 0, orderkey, 100) AS rs FROM (SELECT orderkey FROM orders LIMIT 40) o) t",
+                "SELECT 40");
+
+        // A constant input yields a sample of that constant value; verify the size and contents
+        // rather than the exact array shape.
+        assertQuery(
+                "SELECT cardinality(rs.sample) = 3 AND cardinality(filter(rs.sample, x -> x = 1.0E0)) = 3 FROM (SELECT reservoir_sample(NULL, 0, 1.0E0, 3) AS rs FROM orders) t",
+                "SELECT true");
+
+        // Null values still count toward processed_count (the function is called on null input).
+        assertQuery(
+                "SELECT rs.processed_count FROM (SELECT reservoir_sample(NULL, 0, CASE WHEN orderkey % 2 = 0 THEN orderkey END, 10) AS rs FROM orders) t",
+                "SELECT count(*) FROM orders");
+
+        // A non-empty initial sample with a non-zero initial_processed_count is merged with the new
+        // rows (resume behavior): processed_count accounts for both the seed and the new rows, and
+        // because the combined size does not exceed the desired size the seed elements are retained.
+        assertQuery(
+                "SELECT rs.processed_count = 5 AND cardinality(rs.sample) = 5 " +
+                        "AND contains(rs.sample, 100) AND contains(rs.sample, 200) " +
+                        "FROM (SELECT reservoir_sample(ARRAY[100, 200], 2, x, 5) AS rs FROM (VALUES 1, 2, 3) t(x)) u",
+                "SELECT true");
+
+        // GROUP BY: processed_count per group equals the group's row count.
+        assertQuery(
+                "SELECT orderpriority, rs.processed_count FROM (SELECT orderpriority, reservoir_sample(NULL, 0, orderkey, 5) AS rs FROM orders GROUP BY orderpriority) t",
+                "SELECT orderpriority, count(*) FROM orders GROUP BY orderpriority");
+    }
+
     @Test
     public void testGroupedRow()
     {
@@ -1362,6 +1474,28 @@ public abstract class AbstractTestAggregations
                         "   GROUP BY orderkey" +
                         ")",
                 "SELECT 15000, 15000");
+    }
+
+    @Test
+    public void testRemoveRedundantDistinctOverGroupBy()
+    {
+        String trigger = "SELECT DISTINCT suppkey, COUNT(*) FROM lineitem GROUP BY suppkey";
+        assertQuery(trigger, trigger);
+
+        String doNotTrigger = "SELECT DISTINCT suppkey, cnt FROM (SELECT suppkey, COUNT(*) AS cnt FROM lineitem GROUP BY suppkey " +
+                "UNION ALL SELECT suppkey, COUNT(*) AS cnt FROM lineitem GROUP BY suppkey) order by 1, 2";
+        assertQuery(doNotTrigger, doNotTrigger);
+    }
+
+    @Test
+    public void testRemoveConstantBeforeGroupBy()
+    {
+        String query = "SELECT nationkey, cast(1 as varchar) from nation group by nationkey, cast(1 as varchar)";
+        // Test that constant("1") project is above aggregation node.
+        assertPlan(query,
+                anyTree(project(
+                        ImmutableMap.of("expr", expression("1")),
+                        node(AggregationNode.class, anyTree(tableScan("nation"))))));
     }
 
     @DataProvider(name = "getType")

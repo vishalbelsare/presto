@@ -17,8 +17,7 @@ import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.orc.ColumnWriterOptions;
 import com.facebook.presto.orc.DwrfDataEncryptor;
-import com.facebook.presto.orc.checkpoint.BooleanStreamCheckpoint;
-import com.facebook.presto.orc.checkpoint.ByteStreamCheckpoint;
+import com.facebook.presto.orc.checkpoint.StreamCheckpoint;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
 import com.facebook.presto.orc.metadata.CompressedMetadataWriter;
 import com.facebook.presto.orc.metadata.MetadataWriter;
@@ -26,6 +25,7 @@ import com.facebook.presto.orc.metadata.RowGroupIndex;
 import com.facebook.presto.orc.metadata.Stream;
 import com.facebook.presto.orc.metadata.Stream.StreamKind;
 import com.facebook.presto.orc.metadata.statistics.ColumnStatistics;
+import com.facebook.presto.orc.metadata.statistics.IntegerStatisticsBuilder;
 import com.facebook.presto.orc.stream.ByteOutputStream;
 import com.facebook.presto.orc.stream.PresentOutputStream;
 import com.facebook.presto.orc.stream.StreamDataOutput;
@@ -42,6 +42,7 @@ import java.util.Optional;
 
 import static com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind.DIRECT;
 import static com.facebook.presto.orc.metadata.CompressionKind.NONE;
+import static com.facebook.presto.orc.writer.ColumnWriterUtils.buildRowGroupIndexes;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
@@ -53,31 +54,34 @@ public class ByteColumnWriter
     private static final ColumnEncoding COLUMN_ENCODING = new ColumnEncoding(DIRECT, 0);
 
     private final int column;
+    private final int sequence;
     private final Type type;
     private final boolean compressed;
     private final ByteOutputStream dataStream;
     private final PresentOutputStream presentStream;
-    private CompressedMetadataWriter metadataWriter;
+    private final CompressedMetadataWriter metadataWriter;
 
     private final List<ColumnStatistics> rowGroupColumnStatistics = new ArrayList<>();
     private long columnStatisticsRetainedSizeInBytes;
-
-    private int nonNullValueCount;
+    private IntegerStatisticsBuilder statisticsBuilder;
 
     private boolean closed;
 
-    public ByteColumnWriter(int column, Type type, ColumnWriterOptions columnWriterOptions, Optional<DwrfDataEncryptor> dwrfEncryptor, MetadataWriter metadataWriter)
+    public ByteColumnWriter(int column, int sequence, Type type, ColumnWriterOptions columnWriterOptions, Optional<DwrfDataEncryptor> dwrfEncryptor, MetadataWriter metadataWriter)
     {
         checkArgument(column >= 0, "column is negative");
+        checkArgument(sequence >= 0, "sequence is negative");
         requireNonNull(columnWriterOptions, "columnWriterOptions is null");
         requireNonNull(dwrfEncryptor, "dwrfEncryptor is null");
         requireNonNull(metadataWriter, "metadataWriter is null");
         this.column = column;
+        this.sequence = sequence;
         this.type = requireNonNull(type, "type is null");
         this.compressed = columnWriterOptions.getCompressionKind() != NONE;
         this.dataStream = new ByteOutputStream(columnWriterOptions, dwrfEncryptor);
         this.presentStream = new PresentOutputStream(columnWriterOptions, dwrfEncryptor);
         this.metadataWriter = new CompressedMetadataWriter(metadataWriter, columnWriterOptions, dwrfEncryptor);
+        this.statisticsBuilder = new IntegerStatisticsBuilder();
     }
 
     @Override
@@ -107,22 +111,25 @@ public class ByteColumnWriter
         // record values
         for (int position = 0; position < block.getPositionCount(); position++) {
             if (!block.isNull(position)) {
-                dataStream.writeByte((byte) type.getLong(block, position));
-                nonNullValueCount++;
+                byte value = (byte) type.getLong(block, position);
+                dataStream.writeByte(value);
+                statisticsBuilder.addValue(value);
             }
         }
         // For byte columns, null and values has the same size (1 byte)
-        return block.getPositionCount() * NULL_SIZE;
+        long rawSize = block.getPositionCount() * NULL_SIZE;
+        statisticsBuilder.incrementRawSize(rawSize);
+        return rawSize;
     }
 
     @Override
     public Map<Integer, ColumnStatistics> finishRowGroup()
     {
         checkState(!closed);
-        ColumnStatistics statistics = new ColumnStatistics((long) nonNullValueCount, null);
+        ColumnStatistics statistics = statisticsBuilder.buildColumnStatistics();
         rowGroupColumnStatistics.add(statistics);
         columnStatisticsRetainedSizeInBytes += statistics.getRetainedSizeInBytes();
-        nonNullValueCount = 0;
+        statisticsBuilder = new IntegerStatisticsBuilder();
         return ImmutableMap.of(column, statistics);
     }
 
@@ -142,38 +149,15 @@ public class ByteColumnWriter
     }
 
     @Override
-    public List<StreamDataOutput> getIndexStreams()
+    public List<StreamDataOutput> getIndexStreams(Optional<List<? extends StreamCheckpoint>> prependCheckpoints)
             throws IOException
     {
         checkState(closed);
 
-        ImmutableList.Builder<RowGroupIndex> rowGroupIndexes = ImmutableList.builder();
-
-        List<ByteStreamCheckpoint> dataCheckpoints = dataStream.getCheckpoints();
-        Optional<List<BooleanStreamCheckpoint>> presentCheckpoints = presentStream.getCheckpoints();
-        for (int i = 0; i < rowGroupColumnStatistics.size(); i++) {
-            int groupId = i;
-            ColumnStatistics columnStatistics = rowGroupColumnStatistics.get(groupId);
-            ByteStreamCheckpoint dataCheckpoint = dataCheckpoints.get(groupId);
-            Optional<BooleanStreamCheckpoint> presentCheckpoint = presentCheckpoints.map(checkpoints -> checkpoints.get(groupId));
-            List<Integer> positions = createByteColumnPositionList(compressed, dataCheckpoint, presentCheckpoint);
-            rowGroupIndexes.add(new RowGroupIndex(positions, columnStatistics));
-        }
-
-        Slice slice = metadataWriter.writeRowIndexes(rowGroupIndexes.build());
-        Stream stream = new Stream(column, StreamKind.ROW_INDEX, slice.length(), false);
+        List<RowGroupIndex> rowGroupIndexes = buildRowGroupIndexes(compressed, rowGroupColumnStatistics, prependCheckpoints, presentStream, dataStream);
+        Slice slice = metadataWriter.writeRowIndexes(rowGroupIndexes);
+        Stream stream = new Stream(column, sequence, StreamKind.ROW_INDEX, slice.length(), false);
         return ImmutableList.of(new StreamDataOutput(slice, stream));
-    }
-
-    private static List<Integer> createByteColumnPositionList(
-            boolean compressed,
-            ByteStreamCheckpoint dataCheckpoint,
-            Optional<BooleanStreamCheckpoint> presentCheckpoint)
-    {
-        ImmutableList.Builder<Integer> positionList = ImmutableList.builder();
-        presentCheckpoint.ifPresent(booleanStreamCheckpoint -> positionList.addAll(booleanStreamCheckpoint.toPositionList(compressed)));
-        positionList.addAll(dataCheckpoint.toPositionList(compressed));
-        return positionList.build();
     }
 
     @Override
@@ -182,8 +166,8 @@ public class ByteColumnWriter
         checkState(closed);
 
         ImmutableList.Builder<StreamDataOutput> outputDataStreams = ImmutableList.builder();
-        presentStream.getStreamDataOutput(column).ifPresent(outputDataStreams::add);
-        outputDataStreams.add(dataStream.getStreamDataOutput(column));
+        presentStream.getStreamDataOutput(column, sequence).ifPresent(outputDataStreams::add);
+        outputDataStreams.add(dataStream.getStreamDataOutput(column, sequence));
         return outputDataStreams.build();
     }
 
@@ -207,6 +191,6 @@ public class ByteColumnWriter
         presentStream.reset();
         rowGroupColumnStatistics.clear();
         columnStatisticsRetainedSizeInBytes = 0;
-        nonNullValueCount = 0;
+        statisticsBuilder = new IntegerStatisticsBuilder();
     }
 }

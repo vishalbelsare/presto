@@ -15,13 +15,16 @@ package com.facebook.presto.iceberg;
 
 import com.facebook.airlift.bootstrap.LifeCycleManager;
 import com.facebook.presto.hive.HiveTransactionHandle;
-import com.facebook.presto.iceberg.optimizer.IcebergPlanOptimizerProvider;
-import com.facebook.presto.spi.ConnectorPlanOptimizer;
+import com.facebook.presto.iceberg.function.IcebergBucketFunction;
+import com.facebook.presto.iceberg.function.changelog.ApplyChangelogFunction;
+import com.facebook.presto.iceberg.transaction.IcebergTransactionManager;
+import com.facebook.presto.iceberg.transaction.IcebergTransactionMetadata;
 import com.facebook.presto.spi.SystemTable;
 import com.facebook.presto.spi.classloader.ThreadContextClassLoader;
 import com.facebook.presto.spi.connector.Connector;
 import com.facebook.presto.spi.connector.ConnectorAccessControl;
 import com.facebook.presto.spi.connector.ConnectorCapabilities;
+import com.facebook.presto.spi.connector.ConnectorCommitHandle;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.facebook.presto.spi.connector.ConnectorNodePartitioningProvider;
 import com.facebook.presto.spi.connector.ConnectorPageSinkProvider;
@@ -30,6 +33,8 @@ import com.facebook.presto.spi.connector.ConnectorPlanOptimizerProvider;
 import com.facebook.presto.spi.connector.ConnectorSplitManager;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
 import com.facebook.presto.spi.connector.classloader.ClassLoaderSafeConnectorMetadata;
+import com.facebook.presto.spi.procedure.BaseProcedure;
+import com.facebook.presto.spi.procedure.DistributedProcedure;
 import com.facebook.presto.spi.procedure.Procedure;
 import com.facebook.presto.spi.session.PropertyMetadata;
 import com.facebook.presto.spi.transaction.IsolationLevel;
@@ -38,9 +43,11 @@ import com.google.common.collect.ImmutableSet;
 
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.facebook.presto.spi.connector.ConnectorCapabilities.NOT_NULL_COLUMN_CONSTRAINT;
-import static com.facebook.presto.spi.transaction.IsolationLevel.SERIALIZABLE;
+import static com.facebook.presto.spi.connector.EmptyConnectorCommitHandle.INSTANCE;
+import static com.facebook.presto.spi.transaction.IsolationLevel.REPEATABLE_READ;
 import static com.facebook.presto.spi.transaction.IsolationLevel.checkConnectorSupports;
 import static com.google.common.collect.Sets.immutableEnumSet;
 import static java.util.Objects.requireNonNull;
@@ -59,9 +66,11 @@ public class IcebergConnector
     private final List<PropertyMetadata<?>> sessionProperties;
     private final List<PropertyMetadata<?>> schemaProperties;
     private final List<PropertyMetadata<?>> tableProperties;
+    private final List<PropertyMetadata<?>> materializedViewProperties;
+    private final List<PropertyMetadata<?>> columnProperties;
     private final ConnectorAccessControl accessControl;
-    private final Set<Procedure> procedures;
-    private final ConnectorPlanOptimizer planOptimizer;
+    private final Set<BaseProcedure<?>> procedures;
+    private final ConnectorPlanOptimizerProvider planOptimizerProvider;
 
     public IcebergConnector(
             LifeCycleManager lifeCycleManager,
@@ -75,9 +84,11 @@ public class IcebergConnector
             List<PropertyMetadata<?>> sessionProperties,
             List<PropertyMetadata<?>> schemaProperties,
             List<PropertyMetadata<?>> tableProperties,
+            List<PropertyMetadata<?>> materializedViewProperties,
+            List<PropertyMetadata<?>> columnProperties,
             ConnectorAccessControl accessControl,
-            Set<Procedure> procedures,
-            ConnectorPlanOptimizer planOptimizer)
+            Set<BaseProcedure<?>> procedures,
+            ConnectorPlanOptimizerProvider planOptimizerProvider)
     {
         this.lifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null");
         this.transactionManager = requireNonNull(transactionManager, "transactionManager is null");
@@ -90,15 +101,17 @@ public class IcebergConnector
         this.sessionProperties = ImmutableList.copyOf(requireNonNull(sessionProperties, "sessionProperties is null"));
         this.schemaProperties = ImmutableList.copyOf(requireNonNull(schemaProperties, "schemaProperties is null"));
         this.tableProperties = ImmutableList.copyOf(requireNonNull(tableProperties, "tableProperties is null"));
+        this.materializedViewProperties = ImmutableList.copyOf(requireNonNull(materializedViewProperties, "materializedViewProperties is null"));
+        this.columnProperties = ImmutableList.copyOf(requireNonNull(columnProperties, "columnProperties is null"));
         this.accessControl = requireNonNull(accessControl, "accessControl is null");
         this.procedures = requireNonNull(procedures, "procedures is null");
-        this.planOptimizer = requireNonNull(planOptimizer, "planOptimizer is null");
+        this.planOptimizerProvider = requireNonNull(planOptimizerProvider, "planOptimizerProvider is null");
     }
 
     @Override
     public boolean isSingleStatementWritesOnly()
     {
-        return true;
+        return false;
     }
 
     @Override
@@ -147,7 +160,13 @@ public class IcebergConnector
     @Override
     public Set<Procedure> getProcedures()
     {
-        return procedures;
+        return getProcedures(Procedure.class);
+    }
+
+    @Override
+    public Set<DistributedProcedure> getDistributedProcedures()
+    {
+        return getProcedures(DistributedProcedure.class);
     }
 
     @Override
@@ -169,32 +188,53 @@ public class IcebergConnector
     }
 
     @Override
+    public List<PropertyMetadata<?>> getColumnProperties()
+    {
+        return columnProperties;
+    }
+
+    @Override
+    public List<PropertyMetadata<?>> getMaterializedViewProperties()
+    {
+        return materializedViewProperties;
+    }
+
+    @Override
     public ConnectorAccessControl getAccessControl()
     {
         return accessControl;
     }
 
     @Override
-    public ConnectorTransactionHandle beginTransaction(IsolationLevel isolationLevel, boolean readOnly)
+    public ConnectorTransactionHandle beginTransaction(IsolationLevel isolationLevel, boolean autoCommitContext, boolean readOnly)
     {
-        checkConnectorSupports(SERIALIZABLE, isolationLevel);
+        checkConnectorSupports(REPEATABLE_READ, isolationLevel);
         ConnectorTransactionHandle transaction = new HiveTransactionHandle();
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(getClass().getClassLoader())) {
-            transactionManager.put(transaction, metadataFactory.create());
+            transactionManager.put(transaction, metadataFactory.create(isolationLevel, autoCommitContext));
         }
         return transaction;
     }
 
     @Override
-    public void commit(ConnectorTransactionHandle transaction)
+    public ConnectorCommitHandle commit(ConnectorTransactionHandle transaction)
     {
-        transactionManager.remove(transaction);
+        IcebergTransactionMetadata icebergTransactionMetadata = transactionManager.get(transaction);
+        if (icebergTransactionMetadata != null) {
+            icebergTransactionMetadata.commit();
+            transactionManager.remove(transaction);
+        }
+        return INSTANCE;
     }
 
     @Override
     public void rollback(ConnectorTransactionHandle transaction)
     {
-        transactionManager.remove(transaction);
+        IcebergTransactionMetadata icebergTransactionMetadata = transactionManager.get(transaction);
+        if (icebergTransactionMetadata != null) {
+            icebergTransactionMetadata.rollback();
+            transactionManager.remove(transaction);
+        }
     }
 
     @Override
@@ -206,6 +246,23 @@ public class IcebergConnector
     @Override
     public ConnectorPlanOptimizerProvider getConnectorPlanOptimizerProvider()
     {
-        return new IcebergPlanOptimizerProvider(planOptimizer);
+        return planOptimizerProvider;
+    }
+
+    @Override
+    public Set<Class<?>> getSystemFunctions()
+    {
+        return ImmutableSet.<Class<?>>builder()
+                .add(ApplyChangelogFunction.class)
+                .add(IcebergBucketFunction.class)
+                .add(IcebergBucketFunction.Bucket.class)
+                .build();
+    }
+
+    private <T extends BaseProcedure<?>> Set<T> getProcedures(Class<T> clazz)
+    {
+        return procedures.stream().filter(clazz::isInstance)
+                .map(clazz::cast)
+                .collect(Collectors.toSet());
     }
 }

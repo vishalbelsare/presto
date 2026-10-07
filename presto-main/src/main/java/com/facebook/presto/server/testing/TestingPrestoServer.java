@@ -28,10 +28,15 @@ import com.facebook.airlift.jaxrs.JaxrsModule;
 import com.facebook.airlift.jmx.testing.TestingJmxModule;
 import com.facebook.airlift.json.JsonModule;
 import com.facebook.airlift.json.smile.SmileModule;
+import com.facebook.airlift.node.NodeInfo;
 import com.facebook.airlift.node.testing.TestingNodeModule;
 import com.facebook.airlift.tracetoken.TraceTokenModule;
 import com.facebook.drift.server.DriftServer;
 import com.facebook.drift.transport.netty.server.DriftNettyServerTransport;
+import com.facebook.presto.ClientRequestFilterManager;
+import com.facebook.presto.ClientRequestFilterModule;
+import com.facebook.presto.builtin.tools.WorkerFunctionRegistryTool;
+import com.facebook.presto.common.AuthClientConfigs;
 import com.facebook.presto.connector.ConnectorManager;
 import com.facebook.presto.cost.StatsCalculator;
 import com.facebook.presto.dispatcher.DispatchManager;
@@ -48,59 +53,68 @@ import com.facebook.presto.memory.ClusterMemoryManager;
 import com.facebook.presto.memory.LocalMemoryManager;
 import com.facebook.presto.metadata.AllNodes;
 import com.facebook.presto.metadata.CatalogManager;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.InternalNode;
 import com.facebook.presto.metadata.InternalNodeManager;
 import com.facebook.presto.metadata.Metadata;
+import com.facebook.presto.nodeManager.PluginNodeManager;
 import com.facebook.presto.resourcemanager.ResourceManagerClusterStateProvider;
-import com.facebook.presto.security.AccessControl;
 import com.facebook.presto.security.AccessControlManager;
 import com.facebook.presto.server.GracefulShutdownHandler;
+import com.facebook.presto.server.InternalCommunicationConfig;
 import com.facebook.presto.server.PluginManager;
+import com.facebook.presto.server.PrestoObjectMapperProvider;
 import com.facebook.presto.server.ServerInfoResource;
 import com.facebook.presto.server.ServerMainModule;
 import com.facebook.presto.server.ShutdownAction;
 import com.facebook.presto.server.security.ServerSecurityModule;
+import com.facebook.presto.spi.ClientRequestFilterFactory;
 import com.facebook.presto.spi.ConnectorId;
+import com.facebook.presto.spi.CoordinatorPlugin;
+import com.facebook.presto.spi.NodeManager;
 import com.facebook.presto.spi.Plugin;
 import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.eventlistener.EventListener;
+import com.facebook.presto.spi.function.SqlFunction;
 import com.facebook.presto.spi.memory.ClusterMemoryPoolManager;
 import com.facebook.presto.split.PageSourceManager;
 import com.facebook.presto.split.SplitManager;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
+import com.facebook.presto.sql.expressions.ExpressionOptimizerManager;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.parser.SqlParserOptions;
 import com.facebook.presto.sql.planner.ConnectorPlanOptimizerManager;
 import com.facebook.presto.sql.planner.NodePartitioningManager;
 import com.facebook.presto.sql.planner.Plan;
-import com.facebook.presto.storage.TempStorageManager;
+import com.facebook.presto.sql.planner.sanity.PlanCheckerProviderManager;
 import com.facebook.presto.testing.ProcedureTester;
 import com.facebook.presto.testing.TestingAccessControlManager;
 import com.facebook.presto.testing.TestingEventListenerManager;
-import com.facebook.presto.testing.TestingTempStorageManager;
+import com.facebook.presto.testing.TestingPrestoServerModule;
 import com.facebook.presto.testing.TestingWarningCollectorModule;
 import com.facebook.presto.transaction.TransactionManager;
 import com.facebook.presto.ttl.clusterttlprovidermanagers.ClusterTtlProviderManagerModule;
 import com.facebook.presto.ttl.nodettlfetchermanagers.NodeTtlFetcherManagerModule;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.module.afterburner.AfterburnerModule;
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.net.HostAndPort;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import com.google.inject.Injector;
 import com.google.inject.Key;
 import com.google.inject.Module;
 import com.google.inject.Scopes;
+import com.google.inject.util.Modules;
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.FilterConfig;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
 import org.weakref.jmx.guice.MBeanModule;
-
-import javax.annotation.concurrent.GuardedBy;
-import javax.servlet.Filter;
-import javax.servlet.FilterChain;
-import javax.servlet.FilterConfig;
-import javax.servlet.ServletException;
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -119,6 +133,7 @@ import java.util.concurrent.CountDownLatch;
 import static com.facebook.airlift.configuration.ConditionalModule.installModuleIf;
 import static com.facebook.airlift.discovery.client.ServiceAnnouncement.serviceAnnouncement;
 import static com.facebook.airlift.json.JsonBinder.jsonBinder;
+import static com.facebook.presto.server.PrestoServer.createAuthClientConfigs;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.nullToEmpty;
 import static com.google.common.base.Throwables.throwIfUnchecked;
@@ -135,10 +150,12 @@ public class TestingPrestoServer
         implements Closeable
 {
     private final Injector injector;
-    private final Path baseDataDir;
+    private final Path dataDirectory;
     private final boolean preserveData;
     private final LifeCycleManager lifeCycleManager;
     private final PluginManager pluginManager;
+    private final FunctionAndTypeManager functionAndTypeManager;
+    private final WorkerFunctionRegistryTool workerFunctionRegistryTool;
     private final ConnectorManager connectorManager;
     private final TestingHttpServer server;
     private final CatalogManager catalogManager;
@@ -164,11 +181,19 @@ public class TestingPrestoServer
     private final TaskManager taskManager;
     private final GracefulShutdownHandler gracefulShutdownHandler;
     private final ShutdownAction shutdownAction;
+    private final ExpressionOptimizerManager expressionManager;
     private final RequestBlocker requestBlocker;
     private final boolean resourceManager;
+    private final boolean catalogServer;
+    private final boolean coordinatorSidecar;
     private final boolean coordinator;
+    private final boolean nodeSchedulerIncludeCoordinator;
     private final ServerInfoResource serverInfoResource;
     private final ResourceManagerClusterStateProvider clusterStateProvider;
+    private final PlanCheckerProviderManager planCheckerProviderManager;
+    private final NodeManager pluginNodeManager;
+    private final ClientRequestFilterManager clientRequestFilterManager;
+    private final AuthClientConfigs authClientConfigs;
 
     public static class TestShutdownAction
             implements ShutdownAction
@@ -209,6 +234,11 @@ public class TestingPrestoServer
         this(true, ImmutableMap.of(), null, null, new SqlParserOptions(), additionalModules);
     }
 
+    public TestingPrestoServer(Map<String, String> properties) throws Exception
+    {
+        this(true, properties, null, null, new SqlParserOptions(), ImmutableList.of());
+    }
+
     public TestingPrestoServer(
             boolean coordinator,
             Map<String, String> properties,
@@ -228,42 +258,101 @@ public class TestingPrestoServer
             URI discoveryUri,
             SqlParserOptions parserOptions,
             List<Module> additionalModules,
-            Optional<Path> baseDataDir)
+            Optional<Path> dataDirectory)
             throws Exception
     {
-        this(false, false, coordinator, properties, environment, discoveryUri, parserOptions, additionalModules, baseDataDir);
+        this(
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                coordinator,
+                false,
+                properties,
+                environment,
+                discoveryUri,
+                parserOptions,
+                additionalModules,
+                dataDirectory);
     }
 
     public TestingPrestoServer(
             boolean resourceManager,
             boolean resourceManagerEnabled,
+            boolean catalogServer,
+            boolean catalogServerEnabled,
+            boolean coordinatorSidecar,
+            boolean coordinatorSidecarEnabled,
             boolean coordinator,
+            boolean skipLoadingResourceGroupConfigurationManager,
             Map<String, String> properties,
             String environment,
             URI discoveryUri,
             SqlParserOptions parserOptions,
             List<Module> additionalModules,
-            Optional<Path> baseDataDir)
+            Optional<Path> dataDirectory)
+            throws Exception
+    {
+        this(
+                resourceManager,
+                resourceManagerEnabled,
+                catalogServer,
+                catalogServerEnabled,
+                coordinatorSidecar,
+                coordinatorSidecarEnabled,
+                coordinator,
+                skipLoadingResourceGroupConfigurationManager,
+                true,
+                properties,
+                environment,
+                discoveryUri,
+                parserOptions,
+                additionalModules,
+                dataDirectory);
+    }
+
+    public TestingPrestoServer(
+            boolean resourceManager,
+            boolean resourceManagerEnabled,
+            boolean catalogServer,
+            boolean catalogServerEnabled,
+            boolean coordinatorSidecar,
+            boolean coordinatorSidecarEnabled,
+            boolean coordinator,
+            boolean skipLoadingResourceGroupConfigurationManager,
+            boolean loadDefaultSystemAccessControl,
+            Map<String, String> properties,
+            String environment,
+            URI discoveryUri,
+            SqlParserOptions parserOptions,
+            List<Module> additionalModules,
+            Optional<Path> dataDirectory)
             throws Exception
     {
         this.resourceManager = resourceManager;
+        this.catalogServer = catalogServer;
+        this.coordinatorSidecar = coordinatorSidecar;
         this.coordinator = coordinator;
 
-        this.baseDataDir = baseDataDir.orElseGet(TestingPrestoServer::tempDirectory);
-        this.preserveData = baseDataDir.isPresent();
+        this.dataDirectory = dataDirectory.orElseGet(TestingPrestoServer::tempDirectory);
+        this.preserveData = dataDirectory.isPresent();
 
         properties = new HashMap<>(properties);
+        this.nodeSchedulerIncludeCoordinator = (properties.getOrDefault("node-scheduler.include-coordinator", "true")).equals("true");
         String coordinatorPort = properties.remove("http-server.http.port");
         if (coordinatorPort == null) {
             coordinatorPort = "0";
         }
 
-        Map<String, String> serverProperties = getServerProperties(resourceManagerEnabled, properties, environment, discoveryUri);
+        Map<String, String> serverProperties = getServerProperties(resourceManagerEnabled, catalogServerEnabled, coordinatorSidecarEnabled, properties, environment, discoveryUri);
 
         ImmutableList.Builder<Module> modules = ImmutableList.<Module>builder()
                 .add(new TestingNodeModule(Optional.ofNullable(environment)))
                 .add(new TestingHttpServerModule(parseInt(coordinator ? coordinatorPort : "0")))
-                .add(new JsonModule())
+                .add(Modules.override(new JsonModule()).with(
+                        binder -> binder.bind(ObjectMapper.class).toProvider(PrestoObjectMapperProvider.class)))
                 .add(installModuleIf(
                         FeaturesConfig.class,
                         FeaturesConfig::isJsonSerdeCodeGenerationEnabled,
@@ -280,17 +369,10 @@ public class TestingPrestoServer
                 .add(new QueryPrerequisitesManagerModule())
                 .add(new NodeTtlFetcherManagerModule())
                 .add(new ClusterTtlProviderManagerModule())
+                .add(new ClientRequestFilterModule())
+                .add(new TestingPrestoServerModule(loadDefaultSystemAccessControl))
                 .add(binder -> {
-                    binder.bind(TestingAccessControlManager.class).in(Scopes.SINGLETON);
-                    binder.bind(TestingEventListenerManager.class).in(Scopes.SINGLETON);
-                    binder.bind(TestingTempStorageManager.class).in(Scopes.SINGLETON);
-                    binder.bind(AccessControlManager.class).to(TestingAccessControlManager.class).in(Scopes.SINGLETON);
-                    binder.bind(EventListenerManager.class).to(TestingEventListenerManager.class).in(Scopes.SINGLETON);
-                    binder.bind(TempStorageManager.class).to(TestingTempStorageManager.class).in(Scopes.SINGLETON);
-                    binder.bind(AccessControl.class).to(AccessControlManager.class).in(Scopes.SINGLETON);
                     binder.bind(ShutdownAction.class).to(TestShutdownAction.class).in(Scopes.SINGLETON);
-                    binder.bind(GracefulShutdownHandler.class).in(Scopes.SINGLETON);
-                    binder.bind(ProcedureTester.class).in(Scopes.SINGLETON);
                     binder.bind(RequestBlocker.class).in(Scopes.SINGLETON);
                     newSetBinder(binder, Filter.class, TheServlet.class).addBinding()
                             .to(RequestBlocker.class).in(Scopes.SINGLETON);
@@ -328,15 +410,23 @@ public class TestingPrestoServer
 
         connectorManager = injector.getInstance(ConnectorManager.class);
 
+        functionAndTypeManager = injector.getInstance(FunctionAndTypeManager.class);
+        workerFunctionRegistryTool = injector.getInstance(WorkerFunctionRegistryTool.class);
+
         server = injector.getInstance(TestingHttpServer.class);
         catalogManager = injector.getInstance(CatalogManager.class);
         transactionManager = injector.getInstance(TransactionManager.class);
         sqlParser = injector.getInstance(SqlParser.class);
         metadata = injector.getInstance(Metadata.class);
-        accessControl = injector.getInstance(TestingAccessControlManager.class);
+        accessControl = (TestingAccessControlManager) injector.getInstance(AccessControlManager.class);
         procedureTester = injector.getInstance(ProcedureTester.class);
         splitManager = injector.getInstance(SplitManager.class);
         pageSourceManager = injector.getInstance(PageSourceManager.class);
+        expressionManager = injector.getInstance(ExpressionOptimizerManager.class);
+        authClientConfigs =
+                createAuthClientConfigs(
+                        injector.getInstance(InternalCommunicationConfig.class),
+                        injector.getInstance(NodeInfo.class));
         if (coordinator) {
             dispatchManager = injector.getInstance(DispatchManager.class);
             queryManager = injector.getInstance(QueryManager.class);
@@ -344,12 +434,17 @@ public class TestingPrestoServer
             this.resourceGroupManager = resourceGroupManager instanceof InternalResourceGroupManager
                     ? Optional.of((InternalResourceGroupManager<?>) resourceGroupManager)
                     : Optional.empty();
+            if (!skipLoadingResourceGroupConfigurationManager) {
+                resourceGroupManager.loadConfigurationManager();
+            }
             nodePartitioningManager = injector.getInstance(NodePartitioningManager.class);
             planOptimizerManager = injector.getInstance(ConnectorPlanOptimizerManager.class);
             clusterMemoryManager = injector.getInstance(ClusterMemoryManager.class);
             statsCalculator = injector.getInstance(StatsCalculator.class);
             eventListenerManager = ((TestingEventListenerManager) injector.getInstance(EventListenerManager.class));
             clusterStateProvider = null;
+            planCheckerProviderManager = injector.getInstance(PlanCheckerProviderManager.class);
+            expressionManager.loadExpressionOptimizerFactories(authClientConfigs);
         }
         else if (resourceManager) {
             dispatchManager = null;
@@ -361,6 +456,31 @@ public class TestingPrestoServer
             statsCalculator = null;
             eventListenerManager = ((TestingEventListenerManager) injector.getInstance(EventListenerManager.class));
             clusterStateProvider = injector.getInstance(ResourceManagerClusterStateProvider.class);
+            planCheckerProviderManager = null;
+        }
+        else if (coordinatorSidecar) {
+            dispatchManager = null;
+            queryManager = null;
+            resourceGroupManager = Optional.empty();
+            nodePartitioningManager = null;
+            planOptimizerManager = null;
+            clusterMemoryManager = null;
+            statsCalculator = null;
+            eventListenerManager = null;
+            clusterStateProvider = null;
+            planCheckerProviderManager = null;
+        }
+        else if (catalogServer) {
+            dispatchManager = null;
+            queryManager = null;
+            resourceGroupManager = Optional.empty();
+            nodePartitioningManager = null;
+            planOptimizerManager = null;
+            clusterMemoryManager = null;
+            statsCalculator = null;
+            eventListenerManager = null;
+            clusterStateProvider = null;
+            planCheckerProviderManager = null;
         }
         else {
             dispatchManager = null;
@@ -372,6 +492,7 @@ public class TestingPrestoServer
             statsCalculator = null;
             eventListenerManager = null;
             clusterStateProvider = null;
+            planCheckerProviderManager = null;
         }
         localMemoryManager = injector.getInstance(LocalMemoryManager.class);
         nodeManager = injector.getInstance(InternalNodeManager.class);
@@ -382,6 +503,8 @@ public class TestingPrestoServer
         announcer = injector.getInstance(Announcer.class);
         requestBlocker = injector.getInstance(RequestBlocker.class);
         serverInfoResource = injector.getInstance(ServerInfoResource.class);
+        pluginNodeManager = injector.getInstance(PluginNodeManager.class);
+        clientRequestFilterManager = injector.getInstance(ClientRequestFilterManager.class);
 
         // Announce Thrift server address
         DriftServer driftServer = injector.getInstance(DriftServer.class);
@@ -393,18 +516,28 @@ public class TestingPrestoServer
         refreshNodes();
     }
 
-    private Map<String, String> getServerProperties(boolean resourceManagerEnabled, Map<String, String> properties, String environment, URI discoveryUri)
+    private Map<String, String> getServerProperties(
+            boolean resourceManagerEnabled,
+            boolean catalogServerEnabled,
+            boolean coordinatorSidecarEnabled,
+            Map<String, String> properties,
+            String environment,
+            URI discoveryUri)
     {
         Map<String, String> serverProperties = new HashMap<>();
         serverProperties.put("coordinator", String.valueOf(coordinator));
         serverProperties.put("resource-manager", String.valueOf(resourceManager));
         serverProperties.put("resource-manager-enabled", String.valueOf(resourceManagerEnabled));
+        serverProperties.put("catalog-server", String.valueOf(catalogServer));
+        serverProperties.put("catalog-server-enabled", String.valueOf(catalogServerEnabled));
+        serverProperties.put("coordinator-sidecar-enabled", String.valueOf(coordinatorSidecarEnabled));
         serverProperties.put("presto.version", "testversion");
         serverProperties.put("task.concurrency", "4");
         serverProperties.put("task.max-worker-threads", "4");
         serverProperties.put("exchange.client-threads", "4");
         serverProperties.put("optimizer.ignore-stats-calculator-failures", "false");
-        if (coordinator || resourceManager) {
+        serverProperties.put("internal-communication.shared-secret", "internal-shared-secret");
+        if (coordinator || resourceManager || catalogServer || coordinatorSidecar) {
             // enabling failure detector in tests can make them flakey
             serverProperties.put("failure-detector.enabled", "false");
         }
@@ -416,6 +549,11 @@ public class TestingPrestoServer
         // Add these last so explicitly specified properties override the defaults
         serverProperties.putAll(properties);
         return ImmutableMap.copyOf(serverProperties);
+    }
+
+    public void registerWorkerFunctions()
+    {
+        functionAndTypeManager.registerWorkerFunctions(workerFunctionRegistryTool.getWorkerFunctions());
     }
 
     @Override
@@ -432,15 +570,41 @@ public class TestingPrestoServer
             throw new RuntimeException(e);
         }
         finally {
-            if (isDirectory(baseDataDir) && !preserveData) {
-                deleteRecursively(baseDataDir, ALLOW_INSECURE);
+            if (isDirectory(dataDirectory) && !preserveData) {
+                deleteRecursively(dataDirectory, ALLOW_INSECURE);
             }
         }
+    }
+
+    public AuthClientConfigs getAuthClientConfigs()
+    {
+        return authClientConfigs;
+    }
+
+    public PluginManager getPluginManager()
+    {
+        return pluginManager;
     }
 
     public void installPlugin(Plugin plugin)
     {
         pluginManager.installPlugin(plugin);
+    }
+
+    public void registerWorkerAggregateFunctions(List<? extends SqlFunction> aggregateFunctions)
+    {
+        functionAndTypeManager.registerWorkerAggregateFunctions(aggregateFunctions);
+    }
+
+    public void installCoordinatorPlugin(CoordinatorPlugin plugin)
+    {
+        pluginManager.installCoordinatorPlugin(plugin);
+    }
+
+    public void triggerConflictCheckWithBuiltInFunctions()
+    {
+        metadata.getFunctionAndTypeManager()
+                .getBuiltInPluginFunctionNamespaceManager().triggerConflictCheckWithBuiltInFunctions();
     }
 
     public DispatchManager getDispatchManager()
@@ -475,13 +639,16 @@ public class TestingPrestoServer
     public ConnectorId createCatalog(String catalogName, String connectorName, Map<String, String> properties)
     {
         ConnectorId connectorId = connectorManager.createConnection(catalogName, connectorName, properties);
+        if (coordinator && !nodeSchedulerIncludeCoordinator) {
+            return connectorId;
+        }
         updateConnectorIdAnnouncement(announcer, connectorId, nodeManager);
         return connectorId;
     }
 
-    public Path getBaseDataDir()
+    public Path getDataDirectory()
     {
-        return baseDataDir;
+        return dataDirectory;
     }
 
     public URI getBaseUrl()
@@ -503,6 +670,11 @@ public class TestingPrestoServer
     {
         URI httpsUri = server.getHttpServerInfo().getHttpsUri();
         return HostAndPort.fromParts(httpsUri.getHost(), httpsUri.getPort());
+    }
+
+    public URI getHttpBaseUrl()
+    {
+        return server.getHttpServerInfo().getHttpUri();
     }
 
     public CatalogManager getCatalogManager()
@@ -531,10 +703,10 @@ public class TestingPrestoServer
         return statsCalculator;
     }
 
-    public Optional<EventListener> getEventListener()
+    public List<EventListener> getEventListeners()
     {
         checkState(coordinator, "not a coordinator");
-        return eventListenerManager.getEventListener();
+        return eventListenerManager.getEventListeners();
     }
 
     public TestingAccessControlManager getAccessControl()
@@ -567,6 +739,16 @@ public class TestingPrestoServer
         return nodeManager;
     }
 
+    public NodeManager getPluginNodeManager()
+    {
+        return pluginNodeManager;
+    }
+
+    public FunctionAndTypeManager getFunctionAndTypeManager()
+    {
+        return functionAndTypeManager;
+    }
+
     public NodePartitioningManager getNodePartitioningManager()
     {
         return nodePartitioningManager;
@@ -589,6 +771,11 @@ public class TestingPrestoServer
         return (ClusterMemoryManager) clusterMemoryManager;
     }
 
+    public PlanCheckerProviderManager getPlanCheckerProviderManager()
+    {
+        return planCheckerProviderManager;
+    }
+
     public GracefulShutdownHandler getGracefulShutdownHandler()
     {
         return gracefulShutdownHandler;
@@ -609,9 +796,19 @@ public class TestingPrestoServer
         return shutdownAction;
     }
 
+    public ExpressionOptimizerManager getExpressionManager()
+    {
+        return expressionManager;
+    }
+
     public boolean isCoordinator()
     {
         return coordinator;
+    }
+
+    public boolean nodeSchedulerIncludeCoordinator()
+    {
+        return nodeSchedulerIncludeCoordinator;
     }
 
     public boolean isResourceManager()
@@ -651,7 +848,7 @@ public class TestingPrestoServer
         requestBlocker.unblock();
     }
 
-    private static void updateConnectorIdAnnouncement(Announcer announcer, ConnectorId connectorId, InternalNodeManager nodeManager)
+    public static void updateConnectorIdAnnouncement(Announcer announcer, ConnectorId connectorId, InternalNodeManager nodeManager)
     {
         //
         // This code was copied from PrestoServer, and is a hack that should be removed when the connectorId property is removed
@@ -760,5 +957,12 @@ public class TestingPrestoServer
     private static int driftServerPort(DriftServer server)
     {
         return ((DriftNettyServerTransport) server.getServerTransport()).getPort();
+    }
+
+    public ClientRequestFilterManager getClientRequestFilterManager(List<ClientRequestFilterFactory> requestFilterFactory)
+    {
+        requestFilterFactory.forEach(clientRequestFilterManager::registerClientRequestFilterFactory);
+        clientRequestFilterManager.loadClientRequestFilters();
+        return clientRequestFilterManager;
     }
 }

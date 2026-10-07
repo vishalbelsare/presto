@@ -14,9 +14,9 @@
 package com.facebook.presto.common.block;
 
 import io.airlift.slice.Slice;
+import io.airlift.slice.SliceTooLargeException;
 import io.airlift.slice.Slices;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.Arrays;
 
@@ -73,6 +73,14 @@ public final class BlockUtil
     {
         if (position < 0 || position >= positionCount) {
             throw new IllegalArgumentException(format("Invalid position %s in block with %s positions", position, positionCount));
+        }
+    }
+
+    static void checkValidSliceRange(int sourceIndex, int length)
+    {
+        //sourceIndex + length can overflow integer range
+        if (sourceIndex > MAX_ARRAY_SIZE - length) {
+            throw new SliceTooLargeException(format("Cannot allocate slice larger than %d bytes", MAX_ARRAY_SIZE));
         }
     }
 
@@ -196,12 +204,28 @@ public final class BlockUtil
         return Arrays.copyOfRange(array, index, index + length);
     }
 
-    static int countUsedPositions(boolean[] positions)
+    static int countSelectedPositionsFromOffsets(boolean[] positions, int[] offsets, int offsetBase)
     {
+        checkArrayRange(offsets, offsetBase, positions.length);
         int used = 0;
-        for (boolean position : positions) {
-            if (position) {
-                used++;
+        for (int i = 0; i < positions.length; i++) {
+            int offsetStart = offsets[offsetBase + i];
+            int offsetEnd = offsets[offsetBase + i + 1];
+            used += ((positions[i] ? 1 : 0) * (offsetEnd - offsetStart));
+        }
+        return used;
+    }
+
+    static int countAndMarkSelectedPositionsFromOffsets(boolean[] positions, int[] offsets, int offsetBase, boolean[] elementPositions)
+    {
+        checkArrayRange(offsets, offsetBase, positions.length);
+        int used = 0;
+        for (int i = 0; i < positions.length; i++) {
+            int offsetStart = offsets[offsetBase + i];
+            int offsetEnd = offsets[offsetBase + i + 1];
+            if (positions[i]) {
+                used += (offsetEnd - offsetStart);
+                Arrays.fill(elementPositions, offsetStart, offsetEnd, true);
             }
         }
         return used;

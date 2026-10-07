@@ -29,8 +29,7 @@ import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-
-import javax.inject.Inject;
+import jakarta.inject.Inject;
 
 import java.util.List;
 import java.util.Map;
@@ -38,18 +37,22 @@ import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.util.Locale.ROOT;
 import static java.util.Objects.requireNonNull;
 
 public class PrometheusMetadata
         implements ConnectorMetadata
 {
     private final PrometheusClient prometheusClient;
+    private final boolean caseSensitiveNameMatchingEnabled;
 
     @Inject
-    public PrometheusMetadata(PrometheusClient prometheusClient)
+    public PrometheusMetadata(PrometheusClient prometheusClient, PrometheusConnectorConfig config)
     {
         requireNonNull(prometheusClient, "client is null");
+        requireNonNull(config, "config is null");
         this.prometheusClient = prometheusClient;
+        this.caseSensitiveNameMatchingEnabled = config.isCaseSensitiveNameMatchingEnabled();
     }
 
     private static List<String> listSchemaNames()
@@ -78,11 +81,15 @@ public class PrometheusMetadata
     }
 
     @Override
-    public List<ConnectorTableLayoutResult> getTableLayouts(ConnectorSession session, ConnectorTableHandle table, Constraint<ColumnHandle> constraint, Optional<Set<ColumnHandle>> desiredColumns)
+    public ConnectorTableLayoutResult getTableLayoutForConstraint(
+            ConnectorSession session,
+            ConnectorTableHandle table,
+            Constraint<ColumnHandle> constraint,
+            Optional<Set<ColumnHandle>> desiredColumns)
     {
         PrometheusTableHandle tableHandle = (PrometheusTableHandle) table;
         ConnectorTableLayout layout = new ConnectorTableLayout(new PrometheusTableLayoutHandle(tableHandle, constraint.getSummary()));
-        return ImmutableList.of(new ConnectorTableLayoutResult(layout, constraint.getSummary()));
+        return new ConnectorTableLayoutResult(layout, constraint.getSummary());
     }
 
     @Override
@@ -169,5 +176,11 @@ public class PrometheusMetadata
             return listTables(session, Optional.ofNullable(prefix.getSchemaName()));
         }
         return ImmutableList.of(prefix.toSchemaTableName());
+    }
+
+    @Override
+    public String normalizeIdentifier(ConnectorSession session, String identifier)
+    {
+        return caseSensitiveNameMatchingEnabled ? identifier : identifier.toLowerCase(ROOT);
     }
 }

@@ -52,41 +52,48 @@ import static java.util.Objects.requireNonNull;
 public class JdbcMetadata
         implements ConnectorMetadata
 {
+    private final JdbcMetadataCache jdbcMetadataCache;
     private final JdbcClient jdbcClient;
     private final boolean allowDropTable;
-
+    private final String url;
     private final AtomicReference<Runnable> rollbackAction = new AtomicReference<>();
 
-    public JdbcMetadata(JdbcClient jdbcClient, boolean allowDropTable)
+    public JdbcMetadata(JdbcMetadataCache jdbcMetadataCache, JdbcClient jdbcClient, boolean allowDropTable, TableLocationProvider tableLocationProvider)
     {
+        this.jdbcMetadataCache = requireNonNull(jdbcMetadataCache, "jdbcMetadataCache is null");
         this.jdbcClient = requireNonNull(jdbcClient, "client is null");
         this.allowDropTable = allowDropTable;
+        this.url = requireNonNull(tableLocationProvider, "tableLocationProvider is null").getTableLocation();
     }
 
     @Override
     public boolean schemaExists(ConnectorSession session, String schemaName)
     {
-        return jdbcClient.schemaExists(JdbcIdentity.from(session), schemaName);
+        return jdbcClient.schemaExists(session, JdbcIdentity.from(session), schemaName);
     }
 
     @Override
     public List<String> listSchemaNames(ConnectorSession session)
     {
-        return ImmutableList.copyOf(jdbcClient.getSchemaNames(JdbcIdentity.from(session)));
+        return ImmutableList.copyOf(jdbcClient.getSchemaNames(session, JdbcIdentity.from(session)));
     }
 
     @Override
     public JdbcTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName)
     {
-        return jdbcClient.getTableHandle(JdbcIdentity.from(session), tableName);
+        return jdbcMetadataCache.getTableHandle(session, tableName);
     }
 
     @Override
-    public List<ConnectorTableLayoutResult> getTableLayouts(ConnectorSession session, ConnectorTableHandle table, Constraint<ColumnHandle> constraint, Optional<Set<ColumnHandle>> desiredColumns)
+    public ConnectorTableLayoutResult getTableLayoutForConstraint(
+            ConnectorSession session,
+            ConnectorTableHandle table,
+            Constraint<ColumnHandle> constraint,
+            Optional<Set<ColumnHandle>> desiredColumns)
     {
         JdbcTableHandle tableHandle = (JdbcTableHandle) table;
         ConnectorTableLayout layout = new ConnectorTableLayout(new JdbcTableLayoutHandle(session.getSqlFunctionProperties(), tableHandle, constraint.getSummary(), Optional.empty()));
-        return ImmutableList.of(new ConnectorTableLayoutResult(layout, constraint.getSummary()));
+        return new ConnectorTableLayoutResult(layout, constraint.getSummary());
     }
 
     @Override
@@ -101,8 +108,8 @@ public class JdbcMetadata
         JdbcTableHandle handle = (JdbcTableHandle) table;
 
         ImmutableList.Builder<ColumnMetadata> columnMetadata = ImmutableList.builder();
-        for (JdbcColumnHandle column : jdbcClient.getColumns(session, handle)) {
-            columnMetadata.add(column.getColumnMetadata());
+        for (JdbcColumnHandle column : jdbcMetadataCache.getColumns(session, handle)) {
+            columnMetadata.add(column.getColumnMetadata(session, jdbcClient));
         }
         return new ConnectorTableMetadata(handle.getSchemaTableName(), columnMetadata.build());
     }
@@ -110,7 +117,7 @@ public class JdbcMetadata
     @Override
     public List<SchemaTableName> listTables(ConnectorSession session, Optional<String> schemaName)
     {
-        return jdbcClient.getTableNames(JdbcIdentity.from(session), schemaName);
+        return jdbcClient.getTableNames(session, JdbcIdentity.from(session), schemaName);
     }
 
     @Override
@@ -119,8 +126,8 @@ public class JdbcMetadata
         JdbcTableHandle jdbcTableHandle = (JdbcTableHandle) tableHandle;
 
         ImmutableMap.Builder<String, ColumnHandle> columnHandles = ImmutableMap.builder();
-        for (JdbcColumnHandle column : jdbcClient.getColumns(session, jdbcTableHandle)) {
-            columnHandles.put(column.getColumnMetadata().getName(), column);
+        for (JdbcColumnHandle column : jdbcMetadataCache.getColumns(session, jdbcTableHandle)) {
+            columnHandles.put(column.getColumnMetadata(session, jdbcClient).getName(), column);
         }
         return columnHandles.build();
     }
@@ -130,15 +137,15 @@ public class JdbcMetadata
     {
         ImmutableMap.Builder<SchemaTableName, List<ColumnMetadata>> columns = ImmutableMap.builder();
         List<SchemaTableName> tables;
-        if (prefix.getTableName() != null) {
+        if (prefix.getSchemaName() != null && prefix.getTableName() != null) {
             tables = ImmutableList.of(new SchemaTableName(prefix.getSchemaName(), prefix.getTableName()));
         }
         else {
-            tables = listTables(session, Optional.of(prefix.getSchemaName()));
+            tables = listTables(session, Optional.ofNullable(prefix.getSchemaName()));
         }
         for (SchemaTableName tableName : tables) {
             try {
-                JdbcTableHandle tableHandle = jdbcClient.getTableHandle(JdbcIdentity.from(session), tableName);
+                JdbcTableHandle tableHandle = jdbcMetadataCache.getTableHandle(session, tableName);
                 if (tableHandle == null) {
                     continue;
                 }
@@ -164,14 +171,15 @@ public class JdbcMetadata
             throw new PrestoException(PERMISSION_DENIED, "DROP TABLE is disabled in this catalog");
         }
         JdbcTableHandle handle = (JdbcTableHandle) tableHandle;
-        jdbcClient.dropTable(JdbcIdentity.from(session), handle);
+        jdbcClient.dropTable(session, JdbcIdentity.from(session), handle);
+        jdbcMetadataCache.invalidateTable(session, handle);
     }
 
     @Override
     public ConnectorOutputTableHandle beginCreateTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, Optional<ConnectorNewTableLayout> layout)
     {
         JdbcOutputTableHandle handle = jdbcClient.beginCreateTable(session, tableMetadata);
-        setRollback(() -> jdbcClient.rollbackCreateTable(JdbcIdentity.from(session), handle));
+        setRollback(() -> jdbcClient.rollbackCreateTable(session, JdbcIdentity.from(session), handle));
         return handle;
     }
 
@@ -185,9 +193,9 @@ public class JdbcMetadata
     public Optional<ConnectorOutputMetadata> finishCreateTable(ConnectorSession session, ConnectorOutputTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
         JdbcOutputTableHandle handle = (JdbcOutputTableHandle) tableHandle;
-        jdbcClient.commitCreateTable(JdbcIdentity.from(session), handle);
+        jdbcClient.commitCreateTable(session, JdbcIdentity.from(session), handle);
         clearRollback();
-        return Optional.empty();
+        return Optional.of(new JdbcOutputMetadata(url));
     }
 
     private void setRollback(Runnable action)
@@ -209,15 +217,22 @@ public class JdbcMetadata
     public ConnectorInsertTableHandle beginInsert(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
         JdbcOutputTableHandle handle = jdbcClient.beginInsertTable(session, getTableMetadata(session, tableHandle));
-        setRollback(() -> jdbcClient.rollbackCreateTable(JdbcIdentity.from(session), handle));
+        setRollback(() -> jdbcClient.rollbackCreateTable(session, JdbcIdentity.from(session), handle));
         return handle;
+    }
+
+    @Override
+    public void truncateTable(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        JdbcTableHandle handle = (JdbcTableHandle) tableHandle;
+        jdbcClient.truncateTable(session, JdbcIdentity.from(session), handle);
     }
 
     @Override
     public Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
         JdbcOutputTableHandle jdbcInsertHandle = (JdbcOutputTableHandle) tableHandle;
-        jdbcClient.finishInsertTable(JdbcIdentity.from(session), jdbcInsertHandle);
+        jdbcClient.finishInsertTable(session, JdbcIdentity.from(session), jdbcInsertHandle);
         return Optional.empty();
     }
 
@@ -225,7 +240,8 @@ public class JdbcMetadata
     public void addColumn(ConnectorSession session, ConnectorTableHandle table, ColumnMetadata columnMetadata)
     {
         JdbcTableHandle tableHandle = (JdbcTableHandle) table;
-        jdbcClient.addColumn(JdbcIdentity.from(session), tableHandle, columnMetadata);
+        jdbcClient.addColumn(session, JdbcIdentity.from(session), tableHandle, columnMetadata);
+        jdbcMetadataCache.invalidateTable(session, tableHandle);
     }
 
     @Override
@@ -233,7 +249,8 @@ public class JdbcMetadata
     {
         JdbcTableHandle tableHandle = (JdbcTableHandle) table;
         JdbcColumnHandle columnHandle = (JdbcColumnHandle) column;
-        jdbcClient.dropColumn(JdbcIdentity.from(session), tableHandle, columnHandle);
+        jdbcClient.dropColumn(session, JdbcIdentity.from(session), tableHandle, columnHandle);
+        jdbcMetadataCache.invalidateTable(session, tableHandle);
     }
 
     @Override
@@ -241,14 +258,17 @@ public class JdbcMetadata
     {
         JdbcTableHandle tableHandle = (JdbcTableHandle) table;
         JdbcColumnHandle columnHandle = (JdbcColumnHandle) column;
-        jdbcClient.renameColumn(JdbcIdentity.from(session), tableHandle, columnHandle, target);
+        jdbcClient.renameColumn(session, JdbcIdentity.from(session), tableHandle, columnHandle, target);
+        jdbcMetadataCache.invalidateTable(session, tableHandle);
     }
 
     @Override
     public void renameTable(ConnectorSession session, ConnectorTableHandle table, SchemaTableName newTableName)
     {
         JdbcTableHandle tableHandle = (JdbcTableHandle) table;
-        jdbcClient.renameTable(JdbcIdentity.from(session), tableHandle, newTableName);
+        jdbcClient.renameTable(session, JdbcIdentity.from(session), tableHandle, newTableName);
+        jdbcMetadataCache.invalidateTable(session, tableHandle);
+        jdbcMetadataCache.invalidateTableHandle(session, newTableName);
     }
 
     @Override
@@ -257,5 +277,17 @@ public class JdbcMetadata
         JdbcTableHandle handle = (JdbcTableHandle) tableHandle;
         List<JdbcColumnHandle> columns = columnHandles.stream().map(JdbcColumnHandle.class::cast).collect(Collectors.toList());
         return jdbcClient.getTableStatistics(session, handle, columns, constraint.getSummary());
+    }
+
+    @Override
+    public String normalizeIdentifier(ConnectorSession session, String identifier)
+    {
+        return jdbcClient.normalizeIdentifier(session, identifier);
+    }
+
+    @Override
+    public Optional<Object> getInfo(ConnectorTableLayoutHandle tableHandle)
+    {
+        return Optional.of(new JdbcInputInfo(url));
     }
 }

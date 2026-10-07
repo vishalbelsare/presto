@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.hive.benchmark;
 
-import com.facebook.presto.cache.CacheConfig;
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.PageBuilder;
 import com.facebook.presto.common.block.BlockBuilder;
@@ -22,10 +22,8 @@ import com.facebook.presto.common.type.Type;
 import com.facebook.presto.hadoop.HadoopNative;
 import com.facebook.presto.hive.HdfsEnvironment;
 import com.facebook.presto.hive.HiveClientConfig;
+import com.facebook.presto.hive.HiveCommonClientConfig;
 import com.facebook.presto.hive.HiveCompressionCodec;
-import com.facebook.presto.hive.HiveSessionProperties;
-import com.facebook.presto.hive.OrcFileWriterConfig;
-import com.facebook.presto.hive.ParquetFileWriterConfig;
 import com.facebook.presto.spi.ConnectorPageSource;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.testing.TestingConnectorSession;
@@ -35,7 +33,6 @@ import io.airlift.tpch.OrderColumn;
 import io.airlift.tpch.TpchColumn;
 import io.airlift.tpch.TpchEntity;
 import io.airlift.tpch.TpchTable;
-import io.airlift.units.DataSize;
 import it.unimi.dsi.fastutil.ints.IntArrays;
 import org.openjdk.jmh.annotations.AuxCounters;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -64,6 +61,7 @@ import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.DateType.DATE;
 import static com.facebook.presto.common.type.DoubleType.DOUBLE;
@@ -71,12 +69,12 @@ import static com.facebook.presto.common.type.IntegerType.INTEGER;
 import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
 import static com.facebook.presto.hive.HiveTestUtils.METASTORE_CLIENT_CONFIG;
 import static com.facebook.presto.hive.HiveTestUtils.createTestHdfsEnvironment;
+import static com.facebook.presto.hive.HiveTestUtils.getAllSessionProperties;
 import static com.facebook.presto.hive.HiveTestUtils.mapType;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static io.airlift.tpch.TpchTable.LINE_ITEM;
 import static io.airlift.tpch.TpchTable.ORDERS;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.lang.String.format;
 import static java.nio.file.Files.createTempDirectory;
 import static java.util.stream.Collectors.toList;
@@ -98,12 +96,9 @@ public class HiveFileFormatBenchmark
     @SuppressWarnings("deprecation")
     private static final HiveClientConfig CONFIG = new HiveClientConfig();
 
-    private static final ConnectorSession SESSION = new TestingConnectorSession(
-            new HiveSessionProperties(
-                    CONFIG,
-                    new OrcFileWriterConfig(),
-                    new ParquetFileWriterConfig(),
-                    new CacheConfig()).getSessionProperties());
+    private static final ConnectorSession SESSION = new TestingConnectorSession(getAllSessionProperties(
+            CONFIG,
+            new HiveCommonClientConfig()));
 
     private static final HdfsEnvironment HDFS_ENVIRONMENT = createTestHdfsEnvironment(CONFIG, METASTORE_CLIENT_CONFIG);
 
@@ -294,7 +289,7 @@ public class HiveFileFormatBenchmark
                 PageBuilder pageBuilder = new PageBuilder(ImmutableList.of(type));
                 ImmutableList.Builder<Page> pages = ImmutableList.builder();
 
-                int[] keys = new int[] {1, 2, 3, 4, 5};
+                int[] keys = {1, 2, 3, 4, 5};
 
                 long dataSize = 0;
                 while (dataSize < MIN_DATA_SIZE) {
@@ -368,7 +363,7 @@ public class HiveFileFormatBenchmark
                 PageBuilder pageBuilder = new PageBuilder(ImmutableList.of(type));
                 ImmutableList.Builder<Page> pages = ImmutableList.builder();
 
-                int[] keys = new int[] {1, 2, 3, 4, 5};
+                int[] keys = {1, 2, 3, 4, 5};
 
                 long dataSize = 0;
                 while (dataSize < MIN_DATA_SIZE) {
@@ -595,7 +590,7 @@ public class HiveFileFormatBenchmark
         for (RunResult result : results) {
             Statistics inputSizeStats = result.getSecondaryResults().get("inputSize").getStatistics();
             Statistics outputSizeStats = result.getSecondaryResults().get("outputSize").getStatistics();
-            double compressionRatio = 1.0 * inputSizeStats.getSum() / outputSizeStats.getSum();
+            double compressionRatio = inputSizeStats.getSum() / outputSizeStats.getSum();
             String compression = result.getParams().getParam("compression");
             String fileFormat = result.getParams().getParam("fileFormat");
             String dataSet = result.getParams().getParam("dataSet");

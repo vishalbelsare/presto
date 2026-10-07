@@ -37,11 +37,13 @@ import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.PrincipalType;
 import com.facebook.presto.spi.security.RoleGrant;
 import com.facebook.presto.spi.security.SelectedRole;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.AbstractIterator;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Streams;
 import com.google.common.primitives.Shorts;
+import jakarta.annotation.Nullable;
 import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.api.BinaryColumnStatsData;
 import org.apache.hadoop.hive.metastore.api.BooleanColumnStatsData;
@@ -62,8 +64,6 @@ import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.StringColumnStatsData;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
-
-import javax.annotation.Nullable;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -118,6 +118,7 @@ import static com.google.common.base.Strings.nullToEmpty;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.lang.Math.round;
 import static java.lang.String.format;
+import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
@@ -134,6 +135,8 @@ public final class ThriftMetastoreUtil
 {
     private static final String PUBLIC_ROLE_NAME = "public";
     private static final String ADMIN_ROLE_NAME = "admin";
+    public static final String LAST_DATA_COMMIT_TIME = "lastDataCommitTime";
+    public static final String ROW_ID_PARTITION_COMPONENT_KEY = "rowIDPartitionComponent";
 
     private ThriftMetastoreUtil() {}
 
@@ -146,6 +149,7 @@ public final class ThriftMetastoreUtil
         result.setOwnerType(toMetastoreApiPrincipalType(database.getOwnerType()));
         database.getComment().ifPresent(result::setDescription);
         result.setParameters(database.getParameters());
+        database.getCatalogName().ifPresent(result::setCatalogName);
         return result;
     }
 
@@ -153,6 +157,7 @@ public final class ThriftMetastoreUtil
     {
         org.apache.hadoop.hive.metastore.api.Table result = new org.apache.hadoop.hive.metastore.api.Table();
 
+        table.getCatalogName().ifPresent(result::setCatName);
         result.setDbName(table.getDatabaseName());
         result.setTableName(table.getTableName());
         result.setOwner(table.getOwner());
@@ -367,6 +372,7 @@ public final class ThriftMetastoreUtil
     public static org.apache.hadoop.hive.metastore.api.Partition toMetastoreApiPartition(Partition partition, ColumnConverter columnConverter)
     {
         org.apache.hadoop.hive.metastore.api.Partition result = new org.apache.hadoop.hive.metastore.api.Partition();
+        partition.getCatalogName().ifPresent(result::setCatName);
         result.setDbName(partition.getDatabaseName());
         result.setTableName(partition.getTableName());
         result.setValues(partition.getValues());
@@ -478,6 +484,22 @@ public final class ThriftMetastoreUtil
         return serdeInfo;
     }
 
+    // extract lastDataCommitTime from partition params.
+    public static long getLastDataCommitTime(org.apache.hadoop.hive.metastore.api.Partition partition)
+    {
+        if (!partition.isSetParameters()) {
+            return 0L;
+        }
+
+        Map<String, String> parameters = partition.getParameters();
+        try {
+            return Long.parseLong(parameters.getOrDefault(LAST_DATA_COMMIT_TIME, "0"));
+        }
+        catch (NumberFormatException e) {
+            return 0L;
+        }
+    }
+
     public static Partition fromMetastoreApiPartition(org.apache.hadoop.hive.metastore.api.Partition partition, PartitionMutator partitionMutator, ColumnConverter columnConverter)
     {
         StorageDescriptor storageDescriptor = partition.getSd();
@@ -486,6 +508,7 @@ public final class ThriftMetastoreUtil
         }
 
         Partition.Builder partitionBuilder = Partition.builder()
+                .setCatalogName(Optional.ofNullable(partition.getCatName()))
                 .setDatabaseName(partition.getDbName())
                 .setTableName(partition.getTableName())
                 .setValues(partition.getValues())
@@ -493,7 +516,9 @@ public final class ThriftMetastoreUtil
                         .map(fieldSchema -> columnConverter.toColumn(fieldSchema))
                         .collect(toList()))
                 .setParameters(partition.getParameters())
-                .setCreateTime(partition.getCreateTime());
+                .setCreateTime(partition.getCreateTime())
+                .setRowIdPartitionComponent(getRowIDPartitionComponent(partition))
+                .setLastDataCommitTime(getLastDataCommitTime(partition));
 
         // mutate apache partition to Presto partition
         partitionMutator.mutate(partitionBuilder, partition);
@@ -849,7 +874,7 @@ public final class ThriftMetastoreUtil
         return new Decimal(Shorts.checkedCast(decimal.scale()), ByteBuffer.wrap(decimal.unscaledValue().toByteArray()));
     }
 
-    private static OptionalLong toMetastoreDistinctValuesCount(OptionalLong distinctValuesCount, OptionalLong nullsCount)
+    public static OptionalLong toMetastoreDistinctValuesCount(OptionalLong distinctValuesCount, OptionalLong nullsCount)
     {
         // metastore counts null as a distinct value
         if (distinctValuesCount.isPresent() && nullsCount.isPresent()) {
@@ -858,7 +883,7 @@ public final class ThriftMetastoreUtil
         return OptionalLong.empty();
     }
 
-    private static OptionalDouble getAverageColumnLength(OptionalLong totalSizeInBytes, OptionalLong rowCount, OptionalLong nullsCount)
+    public static OptionalDouble getAverageColumnLength(OptionalLong totalSizeInBytes, OptionalLong rowCount, OptionalLong nullsCount)
     {
         if (totalSizeInBytes.isPresent() && rowCount.isPresent() && nullsCount.isPresent()) {
             long nonNullsCount = rowCount.getAsLong() - nullsCount.getAsLong();
@@ -868,5 +893,18 @@ public final class ThriftMetastoreUtil
             return OptionalDouble.of(((double) totalSizeInBytes.getAsLong()) / nonNullsCount);
         }
         return OptionalDouble.empty();
+    }
+
+    @VisibleForTesting
+    static Optional<byte[]> getRowIDPartitionComponent(org.apache.hadoop.hive.metastore.api.Partition partition)
+    {
+        if (partition.isSetParameters()) {
+            Map<String, String> parameters = partition.getParameters();
+            if (parameters.containsKey(ROW_ID_PARTITION_COMPONENT_KEY)) {
+                String encoded = parameters.get(ROW_ID_PARTITION_COMPONENT_KEY);
+                return Optional.of(encoded.getBytes(ISO_8859_1));
+            }
+        }
+        return Optional.empty();
     }
 }

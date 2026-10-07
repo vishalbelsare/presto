@@ -13,12 +13,11 @@
  */
 package com.facebook.presto.delta;
 
+import com.facebook.airlift.configuration.AbstractConfigurationAwareModule;
 import com.facebook.presto.cache.CacheConfig;
 import com.facebook.presto.cache.CacheFactory;
-import com.facebook.presto.cache.CacheManager;
 import com.facebook.presto.cache.CacheStats;
 import com.facebook.presto.cache.ForCachingFileSystem;
-import com.facebook.presto.cache.NoOpCacheManager;
 import com.facebook.presto.cache.filemerge.FileMergeCacheConfig;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeManager;
@@ -38,19 +37,24 @@ import com.facebook.presto.hive.cache.HiveCachingHdfsConfiguration;
 import com.facebook.presto.hive.gcs.GcsConfigurationInitializer;
 import com.facebook.presto.hive.gcs.HiveGcsConfig;
 import com.facebook.presto.hive.gcs.HiveGcsConfigurationInitializer;
-import com.facebook.presto.hive.metastore.CachingHiveMetastore;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
+import com.facebook.presto.hive.metastore.HiveMetastoreCacheStats;
 import com.facebook.presto.hive.metastore.HivePartitionMutator;
+import com.facebook.presto.hive.metastore.InMemoryCachingHiveMetastore;
+import com.facebook.presto.hive.metastore.InvalidateMetastoreCacheProcedure;
+import com.facebook.presto.hive.metastore.MetastoreCacheSpecProvider;
+import com.facebook.presto.hive.metastore.MetastoreCacheStats;
 import com.facebook.presto.hive.metastore.MetastoreConfig;
+import com.facebook.presto.hive.metastore.thrift.ThriftHiveMetastoreConfig;
+import com.facebook.presto.spi.procedure.Procedure;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.deser.std.FromStringDeserializer;
 import com.google.inject.Binder;
-import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
-
-import javax.inject.Inject;
-import javax.inject.Singleton;
+import com.google.inject.multibindings.Multibinder;
+import jakarta.inject.Inject;
+import jakarta.inject.Singleton;
 
 import java.util.concurrent.ExecutorService;
 
@@ -67,7 +71,7 @@ import static org.weakref.jmx.ObjectNames.generatedNameOf;
 import static org.weakref.jmx.guice.ExportBinder.newExporter;
 
 public class DeltaModule
-        implements Module
+        extends AbstractConfigurationAwareModule
 {
     private final String connectorId;
     private final TypeManager typeManager;
@@ -79,7 +83,7 @@ public class DeltaModule
     }
 
     @Override
-    public void configure(Binder binder)
+    protected void setup(Binder binder)
     {
         binder.bind(TypeManager.class).toInstance(typeManager);
         configBinder(binder).bindConfig(FileMergeCacheConfig.class);
@@ -94,13 +98,18 @@ public class DeltaModule
         binder.bind(DeltaSplitManager.class).in(Scopes.SINGLETON);
         binder.bind(DeltaPageSourceProvider.class).in(Scopes.SINGLETON);
         binder.bind(DeltaSessionProperties.class).in(Scopes.SINGLETON);
+        binder.bind(DeltaTableProperties.class).in(Scopes.SINGLETON);
         binder.bind(DeltaPlanOptimizerProvider.class).in(Scopes.SINGLETON);
         configBinder(binder).bindConfig(DeltaConfig.class);
 
         configBinder(binder).bindConfig(MetastoreConfig.class);
         configBinder(binder).bindConfig(HiveClientConfig.class);
         configBinder(binder).bindConfig(MetastoreClientConfig.class);
-        binder.bind(ExtendedHiveMetastore.class).to(CachingHiveMetastore.class).in(Scopes.SINGLETON);
+        configBinder(binder).bindConfig(ThriftHiveMetastoreConfig.class);
+        binder.bind(MetastoreCacheSpecProvider.class).in(Scopes.SINGLETON);
+        binder.bind(MetastoreCacheStats.class).to(HiveMetastoreCacheStats.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(MetastoreCacheStats.class).as(generatedNameOf(MetastoreCacheStats.class, connectorId));
+        binder.bind(ExtendedHiveMetastore.class).to(InMemoryCachingHiveMetastore.class).in(Scopes.SINGLETON);
         binder.bind(HdfsConfiguration.class).annotatedWith(ForMetastoreHdfsEnvironment.class).to(HiveCachingHdfsConfiguration.class).in(Scopes.SINGLETON);
 
         configBinder(binder).bindConfig(HiveGcsConfig.class);
@@ -117,6 +126,11 @@ public class DeltaModule
 
         binder.bind(FileFormatDataSourceStats.class).in(Scopes.SINGLETON);
         newExporter(binder).export(FileFormatDataSourceStats.class).as(generatedNameOf(FileFormatDataSourceStats.class, connectorId));
+
+        Multibinder<Procedure> procedures = newSetBinder(binder, Procedure.class);
+        if (buildConfigObject(MetastoreClientConfig.class).isInvalidateMetastoreCacheProcedureEnabled()) {
+            procedures.addBinding().toProvider(InvalidateMetastoreCacheProcedure.class).in(Scopes.SINGLETON);
+        }
     }
 
     public static final class TypeDeserializer
@@ -136,13 +150,6 @@ public class DeltaModule
         {
             return typeManager.getType(parseTypeSignature(value));
         }
-    }
-
-    @Singleton
-    @Provides
-    public CacheManager createCacheManager(CacheConfig cacheConfig, FileMergeCacheConfig fileMergeCacheConfig, CacheStats cacheStats)
-    {
-        return new NoOpCacheManager();
     }
 
     @ForCachingHiveMetastore

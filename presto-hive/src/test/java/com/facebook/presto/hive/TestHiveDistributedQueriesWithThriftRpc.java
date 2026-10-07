@@ -13,14 +13,17 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.scalar.sql.SqlInvokedFunctionsPlugin;
 import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestDistributedQueries;
 import com.google.common.collect.ImmutableMap;
+import org.testng.annotations.Test;
 
 import java.util.Optional;
 
 import static io.airlift.tpch.TpchTable.getTables;
 
+@Test(singleThreaded = true)
 public class TestHiveDistributedQueriesWithThriftRpc
         extends AbstractTestDistributedQueries
 {
@@ -28,13 +31,15 @@ public class TestHiveDistributedQueriesWithThriftRpc
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return HiveQueryRunner.createQueryRunner(
+        QueryRunner queryRunner = HiveQueryRunner.createQueryRunner(
                 getTables(),
                 ImmutableMap.of(
                         "internal-communication.task-communication-protocol", "THRIFT",
                         "internal-communication.server-info-communication-protocol", "THRIFT"),
                 ImmutableMap.of(),
                 Optional.empty());
+        queryRunner.installPlugin(new SqlInvokedFunctionsPlugin());
+        return queryRunner;
     }
 
     @Override
@@ -47,6 +52,12 @@ public class TestHiveDistributedQueriesWithThriftRpc
     public void testDelete()
     {
         // Hive connector currently does not support row-by-row delete
+    }
+
+    @Override
+    public void testUpdate()
+    {
+        // Updates are not supported by the connector
     }
 
     // Hive specific tests should normally go in TestHiveIntegrationSmokeTest

@@ -39,16 +39,6 @@ public class TestDruidQueryGenerator
             Map<String, String> outputVariables)
     {
         PlanNode planNode = planBuilderConsumer.apply(createPlanBuilder(sessionHolder));
-        testDQL(givenDruidConfig, planNode, expectedDQL, sessionHolder, outputVariables);
-    }
-
-    private void testDQL(
-            DruidConfig givenDruidConfig,
-            PlanNode planNode,
-            String expectedDQL,
-            SessionHolder sessionHolder,
-            Map<String, String> outputVariables)
-    {
         DruidQueryGenerator.DruidQueryGeneratorResult druidQueryGeneratorResult = new DruidQueryGenerator(functionAndTypeManager, functionAndTypeManager, standardFunctionResolution).generate(planNode, sessionHolder.getConnectorSession()).get();
         if (expectedDQL.contains("__expressions__")) {
             String expressions = planNode.getOutputVariables().stream().map(v -> outputVariables.get(v.getName())).filter(v -> v != null).collect(Collectors.joining(", "));
@@ -186,9 +176,6 @@ public class TestDruidQueryGenerator
     @Test
     public void testTimestampLiteralPushdown()
     {
-        //the timezone of the session is Pacific/Apia UTC+13
-        //the timezone of the connector session is UTC
-        //so the time needs to be adjust for 13 hours if the timezone not specified
         testDQL(
                 planBuilder -> project(
                         planBuilder,
@@ -197,7 +184,7 @@ public class TestDruidQueryGenerator
                                 tableScan(planBuilder, druidTable, regionId, city, fare, datetime),
                                 getRowExpression("datetime = timestamp '2016-06-26 19:00:00.000'", defaultSessionHolder)),
                         ImmutableList.of("city", "datetime")),
-                "SELECT \"city\", \"datetime\" FROM \"realtimeOnly\" WHERE (\"datetime\" = TIMESTAMP '2016-06-26 06:00:00.000')");
+                "SELECT \"city\", \"datetime\" FROM \"realtimeOnly\" WHERE (\"datetime\" = TIMESTAMP '2016-06-26 19:00:00.000')");
         //test timestamp with timezone
         testDQL(
                 planBuilder -> project(

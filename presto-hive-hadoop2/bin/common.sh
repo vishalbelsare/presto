@@ -21,7 +21,7 @@ function retry() {
 }
 
 function hadoop_master_container(){
-  docker-compose -f "${DOCKER_COMPOSE_LOCATION}" ps -q hadoop-master
+  docker compose -f "${DOCKER_COMPOSE_LOCATION}" ps -q hadoop-master
 }
 
 function hadoop_master_ip() {
@@ -33,8 +33,8 @@ function check_hadoop() {
   HADOOP_MASTER_CONTAINER=$(hadoop_master_container)
   docker exec ${HADOOP_MASTER_CONTAINER} supervisorctl status hive-server2 | grep -iq running && \
     docker exec ${HADOOP_MASTER_CONTAINER} supervisorctl status hive-metastore | grep -iq running && \
-    docker exec ${HADOOP_MASTER_CONTAINER} netstat -lpn | grep -iq 0.0.0.0:10000 &&
-    docker exec ${HADOOP_MASTER_CONTAINER} netstat -lpn | grep -iq 0.0.0.0:9083
+    docker exec ${HADOOP_MASTER_CONTAINER} netstat -lpn | grep -iq :10000 &&
+    docker exec ${HADOOP_MASTER_CONTAINER} netstat -lpn | grep -iq :9083
 }
 
 function exec_in_hadoop_master_container() {
@@ -54,7 +54,7 @@ function stop_unnecessary_hadoop_services() {
 
 function cleanup_docker_containers() {
   # stop containers started with "up"
-  docker-compose -f "${DOCKER_COMPOSE_LOCATION}" down
+  docker compose -f "${DOCKER_COMPOSE_LOCATION}" down
 
   # docker logs processes are being terminated as soon as docker container are stopped
   # wait for docker logs termination
@@ -67,8 +67,8 @@ function termination_handler(){
   exit 130
 }
 
-export HADOOP_BASE_IMAGE="${HADOOP_BASE_IMAGE:-prestodb/hdp2.6-hive}"
-export DOCKER_IMAGES_VERSION=${DOCKER_IMAGES_VERSION:-5}
+export HADOOP_BASE_IMAGE="${HADOOP_BASE_IMAGE:-prestodb/hdp3.1-hive}"
+export DOCKER_IMAGES_VERSION=${DOCKER_IMAGES_VERSION:-11}
 
 SCRIPT_DIR="${BASH_SOURCE%/*}"
 INTEGRATION_TESTS_ROOT="${SCRIPT_DIR}/.."
@@ -76,7 +76,7 @@ PROJECT_ROOT="${INTEGRATION_TESTS_ROOT}/.."
 DOCKER_COMPOSE_LOCATION="${INTEGRATION_TESTS_ROOT}/conf/docker-compose.yml"
 
 # check docker and docker compose installation
-docker-compose version
+docker compose version
 docker version
 
 # extract proxy IP
@@ -89,21 +89,21 @@ fi
 
 function start_docker_containers() {
   # stop already running containers
-  docker-compose -f "${DOCKER_COMPOSE_LOCATION}" down || true
+  docker compose -f "${DOCKER_COMPOSE_LOCATION}" down || true
 
   # catch terminate signals
   trap termination_handler INT TERM
 
   # pull docker images
   if [[ "${CONTINUOUS_INTEGRATION:-false}" == 'true' ]]; then
-    docker-compose -f "${DOCKER_COMPOSE_LOCATION}" pull
+    docker compose -f "${DOCKER_COMPOSE_LOCATION}" pull
   fi
 
   # start containers
-  docker-compose -f "${DOCKER_COMPOSE_LOCATION}" up -d
+  retry docker compose -f "${DOCKER_COMPOSE_LOCATION}" up -d
 
   # start docker logs for hadoop container
-  docker-compose -f "${DOCKER_COMPOSE_LOCATION}" logs --no-color hadoop-master &
+  docker compose -f "${DOCKER_COMPOSE_LOCATION}" logs --no-color hadoop-master &
 
   # wait until hadoop processes is started
   retry check_hadoop

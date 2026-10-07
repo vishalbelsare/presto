@@ -17,9 +17,8 @@ import com.facebook.presto.pinot.PinotClusterInfoFetcher.TimeBoundary;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
+import jakarta.inject.Inject;
 import org.apache.pinot.spi.data.Schema;
-
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Map;
@@ -54,6 +53,7 @@ public class PinotConnection
                 .refreshAfterWrite(metadataCacheExpiryMillis, TimeUnit.MILLISECONDS)
                 .build(asyncReloading(CacheLoader.from(pinotClusterInfoFetcher::getAllTables), executor));
 
+        boolean nullHandlingEnabled = PinotQueryOptionsUtils.isNullHandlingEnabled(pinotConfig.getQueryOptions());
         this.pinotTableColumnCache =
                 CacheBuilder.newBuilder()
                         .refreshAfterWrite(metadataCacheExpiryMillis, TimeUnit.MILLISECONDS)
@@ -64,7 +64,10 @@ public class PinotConnection
                                     throws Exception
                             {
                                 Schema tablePinotSchema = pinotClusterInfoFetcher.getTableSchema(tableName);
-                                return PinotColumnUtils.getPinotColumnsForPinotSchema(tablePinotSchema, pinotConfig.isInferDateTypeInSchema(), pinotConfig.isInferTimestampTypeInSchema());
+                                return PinotColumnUtils.getPinotColumnsForPinotSchema(tablePinotSchema, pinotConfig.isInferDateTypeInSchema(),
+                                        pinotConfig.isInferTimestampTypeInSchema(),
+                                        nullHandlingEnabled,
+                                        pinotConfig.isCaseSensitiveNameMatchingEnabled());
                             }
                         }, executor));
 

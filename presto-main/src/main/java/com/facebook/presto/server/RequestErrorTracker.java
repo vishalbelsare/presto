@@ -15,17 +15,16 @@ package com.facebook.presto.server;
 
 import com.facebook.airlift.event.client.ServiceUnavailableException;
 import com.facebook.airlift.log.Logger;
+import com.facebook.airlift.units.Duration;
+import com.facebook.presto.common.util.Backoff;
 import com.facebook.presto.execution.TaskId;
-import com.facebook.presto.server.remotetask.Backoff;
 import com.facebook.presto.spi.ErrorCodeSupplier;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.PrestoTransportException;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListenableFutureTask;
-import io.airlift.units.Duration;
-
-import javax.annotation.concurrent.ThreadSafe;
+import com.google.errorprone.annotations.ThreadSafe;
 
 import java.io.EOFException;
 import java.net.SocketException;
@@ -62,7 +61,7 @@ public class RequestErrorTracker
 
     private final Queue<Throwable> errorsSinceLastSuccess = new ConcurrentLinkedQueue<>();
 
-    private RequestErrorTracker(Object id, URI uri, ErrorCodeSupplier errorCode, String nodeErrorMessage, Duration maxErrorDuration, ScheduledExecutorService scheduledExecutor, String jobDescription)
+    public RequestErrorTracker(Object id, URI uri, ErrorCodeSupplier errorCode, String nodeErrorMessage, Duration maxErrorDuration, ScheduledExecutorService scheduledExecutor, String jobDescription)
     {
         this.id = requireNonNull(id, "id is null");
         this.uri = requireNonNull(uri, "uri is null");
@@ -116,7 +115,14 @@ public class RequestErrorTracker
         }
 
         if (reason instanceof RejectedExecutionException) {
-            throw new PrestoException(errorCode, reason);
+            if (reason.getMessage() == null) {
+                throw new PrestoException(errorCode, reason);
+            }
+
+            // We want to do exponential backoff to allow OOT killer to kill queries and not fail immediately.
+            if (!reason.getMessage().contains("Max requests queued per destination")) {
+                throw new PrestoException(errorCode, reason);
+            }
         }
 
         // log failure message

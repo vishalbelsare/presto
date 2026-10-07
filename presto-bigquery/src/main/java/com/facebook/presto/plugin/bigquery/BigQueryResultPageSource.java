@@ -29,8 +29,9 @@ import com.facebook.presto.common.type.TypeSignatureParameter;
 import com.facebook.presto.common.type.VarbinaryType;
 import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.spi.ConnectorPageSource;
-import com.google.cloud.bigquery.storage.v1beta1.BigQueryStorageClient;
-import com.google.cloud.bigquery.storage.v1beta1.Storage;
+import com.google.cloud.bigquery.storage.v1.BigQueryReadClient;
+import com.google.cloud.bigquery.storage.v1.ReadRowsRequest;
+import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
@@ -71,44 +72,45 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.slice.Slices.utf8Slice;
 import static java.lang.String.format;
+import static java.util.Objects.requireNonNull;
 
 public class BigQueryResultPageSource
         implements ConnectorPageSource
 {
     static final AvroDecimalConverter DECIMAL_CONVERTER = new AvroDecimalConverter();
     private static final Logger log = Logger.get(BigQueryResultPageSource.class);
-    private final BigQueryStorageClient bigQueryStorageClient;
+    private final BigQueryReadClient bigQueryReadClient;
     private final BigQuerySplit split;
-    private final BigQueryTableHandle table;
-    private final ImmutableList<BigQueryColumnHandle> columns;
+    private final List<String> columnNames;
     private final ImmutableList<Type> columnTypes;
     private final AtomicLong readBytes;
     private final PageBuilder pageBuilder;
-    private Iterator<Storage.ReadRowsResponse> responses;
+    private Iterator<ReadRowsResponse> responses;
     private boolean closed;
     private long completedPositions;
 
     public BigQueryResultPageSource(
-            BigQueryStorageClientFactory bigQueryStorageClientFactory,
+            BigQueryReadClientFactory bigQueryReadClientFactory,
             int maxReadRowsRetries,
             BigQuerySplit split,
-            BigQueryTableHandle table,
             ImmutableList<BigQueryColumnHandle> columns)
     {
-        this.bigQueryStorageClient = bigQueryStorageClientFactory.createBigQueryStorageClient();
+        this.bigQueryReadClient = bigQueryReadClientFactory.createBigQueryReadClient();
         this.split = split;
-        this.table = table;
-        this.columns = columns;
+        requireNonNull(columns, "columns is null");
+        this.columnNames = columns.stream()
+                .map(BigQueryColumnHandle::getName)
+                .collect(toImmutableList());
         this.readBytes = new AtomicLong();
-        this.columnTypes = columns.stream().map(BigQueryColumnHandle::getPrestoType).collect(toImmutableList());
+        this.columnTypes = columns.stream()
+                .map(BigQueryColumnHandle::getPrestoType)
+                .collect(toImmutableList());
         this.pageBuilder = new PageBuilder(columnTypes);
 
         log.debug("Starting to read from %s", split.getStreamName());
-        Storage.ReadRowsRequest.Builder readRowsRequest = Storage.ReadRowsRequest.newBuilder()
-                .setReadPosition(Storage.StreamPosition.newBuilder()
-                        .setStream(Storage.Stream.newBuilder()
-                                .setName(split.getStreamName())));
-        responses = new ReadRowsHelper(bigQueryStorageClient, readRowsRequest, maxReadRowsRetries).readRows();
+        ReadRowsRequest.Builder readRowsRequest = ReadRowsRequest.newBuilder()
+                .setReadStream(split.getStreamName());
+        responses = new ReadRowsHelper(bigQueryReadClient, readRowsRequest, maxReadRowsRetries).readRows();
         closed = false;
     }
 
@@ -140,13 +142,13 @@ public class BigQueryResultPageSource
     public Page getNextPage()
     {
         checkState(pageBuilder.isEmpty(), "PageBuilder is not empty at the beginning of a new page");
-        Storage.ReadRowsResponse response = responses.next();
+        ReadRowsResponse response = responses.next();
         Iterable<GenericRecord> records = parse(response);
         for (GenericRecord record : records) {
             pageBuilder.declarePosition();
             for (int column = 0; column < columnTypes.size(); column++) {
                 BlockBuilder output = pageBuilder.getBlockBuilder(column);
-                appendTo(columnTypes.get(column), record.get(column), output);
+                appendTo(columnTypes.get(column), record.get(columnNames.get(column)), output);
             }
         }
 
@@ -274,11 +276,11 @@ public class BigQueryResultPageSource
     public void close()
             throws IOException
     {
-        bigQueryStorageClient.close();
+        bigQueryReadClient.close();
         closed = true;
     }
 
-    Iterable<GenericRecord> parse(Storage.ReadRowsResponse response)
+    Iterable<GenericRecord> parse(ReadRowsResponse response)
     {
         byte[] buffer = response.getAvroRows().getSerializedBinaryRows().toByteArray();
         readBytes.addAndGet(buffer.length);
@@ -287,7 +289,7 @@ public class BigQueryResultPageSource
         return () -> new AvroBinaryIterator(avroSchema, buffer);
     }
 
-    Stream<GenericRecord> toRecords(Storage.ReadRowsResponse response)
+    Stream<GenericRecord> toRecords(ReadRowsResponse response)
     {
         byte[] buffer = response.getAvroRows().getSerializedBinaryRows().toByteArray();
         readBytes.addAndGet(buffer.length);

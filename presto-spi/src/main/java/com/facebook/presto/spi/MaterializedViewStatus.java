@@ -18,6 +18,7 @@ import com.facebook.presto.common.predicate.TupleDomain;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static com.facebook.presto.spi.MaterializedViewStatus.MaterializedViewState.FULLY_MATERIALIZED;
 import static com.facebook.presto.spi.MaterializedViewStatus.MaterializedViewState.NOT_MATERIALIZED;
@@ -41,11 +42,26 @@ public class MaterializedViewStatus
     {
         private final List<TupleDomain<String>> predicateDisjuncts;
         private final List<String> columnNames;
+        private final TupleDomain<String> incrementalRefreshPredicate;
 
         public MaterializedDataPredicates(List<TupleDomain<String>> predicateDisjuncts, List<String> keys)
         {
+            this(predicateDisjuncts, keys, TupleDomain.all());
+        }
+
+        /**
+         * @param incrementalRefreshPredicate narrowing predicate applied to base scans during
+         *        incremental refresh only. Stitching must ignore it — applying a narrowing
+         *        predicate to a stale-read would drop rows the stitched query needs to deliver.
+         */
+        public MaterializedDataPredicates(
+                List<TupleDomain<String>> predicateDisjuncts,
+                List<String> keys,
+                TupleDomain<String> incrementalRefreshPredicate)
+        {
             this.predicateDisjuncts = unmodifiableList(new ArrayList<>(requireNonNull(predicateDisjuncts, "partitionSpecs is null")));
             this.columnNames = unmodifiableList(new ArrayList<>(requireNonNull(keys, "keys is null")));
+            this.incrementalRefreshPredicate = requireNonNull(incrementalRefreshPredicate, "incrementalRefreshPredicate is null");
         }
 
         public boolean isEmpty()
@@ -62,20 +78,35 @@ public class MaterializedViewStatus
         {
             return columnNames;
         }
+
+        public TupleDomain<String> getIncrementalRefreshPredicate()
+        {
+            return incrementalRefreshPredicate;
+        }
     }
 
     private final MaterializedViewState materializedViewState;
     private final Map<SchemaTableName, MaterializedDataPredicates> partitionsFromBaseTables;
+    private final Optional<Long> lastFreshTime;
 
     public MaterializedViewStatus(MaterializedViewState materializedViewState)
     {
-        this(materializedViewState, emptyMap());
+        this(materializedViewState, emptyMap(), Optional.empty());
     }
 
     public MaterializedViewStatus(MaterializedViewState materializedViewState, Map<SchemaTableName, MaterializedDataPredicates> partitionsFromBaseTables)
     {
+        this(materializedViewState, partitionsFromBaseTables, Optional.empty());
+    }
+
+    public MaterializedViewStatus(
+            MaterializedViewState materializedViewState,
+            Map<SchemaTableName, MaterializedDataPredicates> partitionsFromBaseTables,
+            Optional<Long> lastFreshTime)
+    {
         this.materializedViewState = requireNonNull(materializedViewState, "materializedViewState is null");
         this.partitionsFromBaseTables = requireNonNull(partitionsFromBaseTables, "partitionsFromBaseTables is null");
+        this.lastFreshTime = requireNonNull(lastFreshTime, "lastFreshTime is null");
     }
 
     public MaterializedViewState getMaterializedViewState()
@@ -106,5 +137,10 @@ public class MaterializedViewStatus
     public Map<SchemaTableName, MaterializedDataPredicates> getPartitionsFromBaseTables()
     {
         return partitionsFromBaseTables;
+    }
+
+    public Optional<Long> getLastFreshTime()
+    {
+        return lastFreshTime;
     }
 }

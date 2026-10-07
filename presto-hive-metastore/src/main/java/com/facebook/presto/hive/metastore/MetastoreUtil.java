@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.hive.metastore;
 
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.predicate.Domain;
@@ -23,6 +24,7 @@ import com.facebook.presto.common.type.CharType;
 import com.facebook.presto.common.type.DateType;
 import com.facebook.presto.common.type.DecimalType;
 import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.common.type.DistinctType;
 import com.facebook.presto.common.type.DoubleType;
 import com.facebook.presto.common.type.EnumType;
 import com.facebook.presto.common.type.IntegerType;
@@ -37,45 +39,54 @@ import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeWithName;
 import com.facebook.presto.common.type.VarbinaryType;
 import com.facebook.presto.common.type.VarcharType;
+import com.facebook.presto.hive.ColumnConverter;
 import com.facebook.presto.hive.HdfsContext;
 import com.facebook.presto.hive.HdfsEnvironment;
 import com.facebook.presto.hive.HiveBasicStatistics;
 import com.facebook.presto.hive.HiveType;
+import com.facebook.presto.hive.PartitionNameWithVersion;
 import com.facebook.presto.hive.PartitionOfflineException;
 import com.facebook.presto.hive.TableOfflineException;
+import com.facebook.presto.hive.TypeTranslator;
+import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.ConnectorTableMetadata;
+import com.facebook.presto.spi.ConnectorViewDefinition;
 import com.facebook.presto.spi.ErrorCodeSupplier;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.StandardErrorCode;
 import com.facebook.presto.spi.TableNotFoundException;
+import com.facebook.presto.spi.ViewNotFoundException;
+import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.statistics.ColumnStatisticType;
 import com.google.common.base.CharMatcher;
 import com.google.common.base.Joiner;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.primitives.Longs;
 import io.airlift.slice.Slice;
+import jakarta.annotation.Nullable;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hive.common.FileUtils;
+import org.apache.hadoop.hive.common.type.Date;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
+import org.apache.hadoop.hive.common.type.Timestamp;
 import org.apache.hadoop.hive.metastore.ProtectMode;
 import org.apache.hadoop.io.Text;
 import org.joda.time.DateTimeZone;
 import org.joda.time.format.DateTimeFormatter;
 import org.joda.time.format.ISODateTimeFormat;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.math.BigInteger;
-import java.sql.Date;
-import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -99,7 +110,18 @@ import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.common.type.Varchars.isVarcharType;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_PARTITION_VALUE;
+import static com.facebook.presto.hive.HiveType.HIVE_STRING;
+import static com.facebook.presto.hive.HiveType.toHiveType;
+import static com.facebook.presto.hive.metastore.HivePrivilegeInfo.HivePrivilege.DELETE;
+import static com.facebook.presto.hive.metastore.HivePrivilegeInfo.HivePrivilege.INSERT;
+import static com.facebook.presto.hive.metastore.HivePrivilegeInfo.HivePrivilege.SELECT;
+import static com.facebook.presto.hive.metastore.HivePrivilegeInfo.HivePrivilege.UPDATE;
+import static com.facebook.presto.hive.metastore.PrestoTableType.MANAGED_TABLE;
+import static com.facebook.presto.hive.metastore.PrestoTableType.VIRTUAL_VIEW;
+import static com.facebook.presto.hive.metastore.StorageFormat.VIEW_STORAGE_FORMAT;
+import static com.facebook.presto.spi.StandardErrorCode.INVALID_TABLE_PROPERTY;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
+import static com.facebook.presto.spi.security.PrincipalType.USER;
 import static com.facebook.presto.spi.statistics.ColumnStatisticType.MAX_VALUE;
 import static com.facebook.presto.spi.statistics.ColumnStatisticType.MAX_VALUE_SIZE_IN_BYTES;
 import static com.facebook.presto.spi.statistics.ColumnStatisticType.MIN_VALUE;
@@ -111,10 +133,14 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.base.Strings.padEnd;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.io.BaseEncoding.base16;
 import static java.lang.Float.intBitsToFloat;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Locale.ENGLISH;
+import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
 import static org.apache.hadoop.hive.common.FileUtils.unescapePathName;
 import static org.apache.hadoop.hive.metastore.ColumnType.typeToThriftType;
@@ -129,12 +155,13 @@ import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_
 import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_NAME;
 import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_PARTITION_COLUMNS;
 import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_PARTITION_COLUMN_TYPES;
-import static org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_DDL;
 import static org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_LIB;
 import static org.joda.time.DateTimeZone.UTC;
 
 public class MetastoreUtil
 {
+    private static final Logger log = Logger.get(MetastoreUtil.class);
+
     public static final String METASTORE_HEADERS = "metastore_headers";
     public static final String PRESTO_OFFLINE = "presto_offline";
     public static final String AVRO_SCHEMA_URL_KEY = "avro.schema.url";
@@ -143,6 +170,7 @@ public class MetastoreUtil
     public static final String PRESTO_QUERY_ID_NAME = "presto_query_id";
     public static final String HIVE_DEFAULT_DYNAMIC_PARTITION = "__HIVE_DEFAULT_PARTITION__";
     public static final String USER_DEFINED_TYPE_ENCODING_ENABLED = "user_defined_type_encoding";
+    public static final String DEFAULT_METASTORE_USER = "presto";
 
     @SuppressWarnings("OctalInteger")
     public static final FsPermission ALL_PERMISSIONS = new FsPermission((short) 0777);
@@ -159,6 +187,15 @@ public class MetastoreUtil
     // rather than copying the old transient_lastDdlTime to hive partition.
     private static final String TRANSIENT_LAST_DDL_TIME = "transient_lastDdlTime";
     private static final Set<String> STATS_PROPERTIES = ImmutableSet.of(NUM_FILES, NUM_ROWS, RAW_DATA_SIZE, TOTAL_SIZE, TRANSIENT_LAST_DDL_TIME);
+    private static final Set<ColumnStatisticType> ORDERABLE_STATS = ImmutableSet.of(MIN_VALUE, MAX_VALUE);
+    public static final String ICEBERG_TABLE_TYPE_NAME = "table_type";
+    public static final String ICEBERG_TABLE_TYPE_VALUE = "iceberg";
+    public static final String SPARK_TABLE_PROVIDER_KEY = "spark.sql.sources.provider";
+    public static final String DELTA_LAKE_PROVIDER = "delta";
+    public static final String TABLE_COMMENT = "comment";
+    public static final String PRESTO_VIEW_COMMENT = "Presto View";
+    public static final String PRESTO_VERSION_NAME = "presto_version";
+    public static final String PRESTO_VIEW_EXPANDED_TEXT_MARKER = "/* Presto View */";
 
     private MetastoreUtil()
     {
@@ -272,8 +309,6 @@ public class MetastoreUtil
         schema.setProperty(META_TABLE_COLUMN_TYPES, columnTypes);
         schema.setProperty("columns.comments", columnCommentBuilder.toString());
 
-        schema.setProperty(SERIALIZATION_DDL, toThriftDdl(tableName, partitionDataColumns));
-
         String partString = "";
         String partStringSep = "";
         String partTypesString = "";
@@ -379,6 +414,11 @@ public class MetastoreUtil
     public static ProtectMode getProtectMode(Table table)
     {
         return getProtectMode(table.getParameters());
+    }
+
+    public static String makePartitionName(Table table, Partition partition)
+    {
+        return makePartName(table.getPartitionColumns(), partition.getValues());
     }
 
     public static String makePartName(List<Column> partitionColumns, List<String> values)
@@ -641,11 +681,11 @@ public class MetastoreUtil
         }
         if (DateType.DATE.equals(type)) {
             long days = type.getLong(block, position);
-            return new Date(UTC.getMillisKeepLocal(DateTimeZone.getDefault(), TimeUnit.DAYS.toMillis(days)));
+            return Date.ofEpochMilli(UTC.getMillisKeepLocal(DateTimeZone.getDefault(), TimeUnit.DAYS.toMillis(days)));
         }
         if (TimestampType.TIMESTAMP.equals(type)) {
             long millisUtc = type.getLong(block, position);
-            return new Timestamp(millisUtc);
+            return Timestamp.ofEpochMilli(millisUtc);
         }
         if (type instanceof DecimalType) {
             DecimalType decimalType = (DecimalType) type;
@@ -765,7 +805,7 @@ public class MetastoreUtil
         for (Entry<Column, Domain> partitionPredicate : partitionPredicates.entrySet()) {
             Domain domain = partitionPredicate.getValue();
             if (!domain.isAll()) {
-                if (domain != null && domain.isNullableSingleValue()) {
+                if (domain.isNullableSingleValue()) {
                     Object value = domain.getNullableSingleValue();
                     Type type = domain.getType();
                     filter.add(convertRawValueToString(value, type));
@@ -878,6 +918,13 @@ public class MetastoreUtil
         if (type instanceof TypeWithName) {
             return getSupportedColumnStatistics(((TypeWithName) type).getType());
         }
+        if (type instanceof DistinctType) {
+            Set<ColumnStatisticType> stats = getSupportedColumnStatistics(((DistinctType) type).getBaseType());
+            if (!type.isOrderable()) {
+                stats = stats.stream().filter(stat -> !ORDERABLE_STATS.contains(stat)).collect(toImmutableSet());
+            }
+            return stats;
+        }
         if (type instanceof EnumType) {
             return getSupportedColumnStatistics(((EnumType) type).getValueType());
         }
@@ -942,6 +989,171 @@ public class MetastoreUtil
         }
         catch (Exception e) {
             return false;
+        }
+    }
+
+    public static boolean isManagedTable(String tableType)
+    {
+        return tableType.equals(MANAGED_TABLE.name());
+    }
+
+    public static void deleteDirectoryRecursively(HdfsContext context, HdfsEnvironment hdfsEnvironment, Path path, boolean recursive)
+    {
+        try {
+            hdfsEnvironment.getFileSystem(context, path).delete(path, recursive);
+        }
+        catch (IOException | RuntimeException e) {
+            // don't fail if unable to delete path
+            log.warn(e, "Failed to delete path: " + path.toString());
+        }
+    }
+
+    public static boolean isDeltaLakeTable(Table table)
+    {
+        return isDeltaLakeTable(table.getParameters());
+    }
+
+    public static boolean isDeltaLakeTable(Map<String, String> tableParameters)
+    {
+        return tableParameters.containsKey(SPARK_TABLE_PROVIDER_KEY)
+                && tableParameters.get(SPARK_TABLE_PROVIDER_KEY).toLowerCase(ENGLISH).equals(DELTA_LAKE_PROVIDER);
+    }
+
+    public static boolean isIcebergTable(Table table)
+    {
+        return isIcebergTable(table.getParameters());
+    }
+
+    public static boolean isIcebergTable(Map<String, String> tableParameters)
+    {
+        return ICEBERG_TABLE_TYPE_VALUE.equalsIgnoreCase(tableParameters.get(ICEBERG_TABLE_TYPE_NAME));
+    }
+
+    public static boolean isIcebergView(Table table)
+    {
+        return "true".equalsIgnoreCase(table.getParameters().get(PRESTO_VIEW_FLAG));
+    }
+
+    public static PrincipalPrivileges buildInitialPrivilegeSet(String tableOwner)
+    {
+        PrestoPrincipal owner = new PrestoPrincipal(USER, tableOwner);
+        return new PrincipalPrivileges(
+                ImmutableMultimap.<String, HivePrivilegeInfo>builder()
+                        .put(tableOwner, new HivePrivilegeInfo(SELECT, true, owner, owner))
+                        .put(tableOwner, new HivePrivilegeInfo(INSERT, true, owner, owner))
+                        .put(tableOwner, new HivePrivilegeInfo(UPDATE, true, owner, owner))
+                        .put(tableOwner, new HivePrivilegeInfo(DELETE, true, owner, owner))
+                        .build(),
+                ImmutableMultimap.of());
+    }
+
+    public static Map<String, String> createViewProperties(ConnectorSession session, String prestoVersion)
+    {
+        return ImmutableMap.<String, String>builder()
+                .put(TABLE_COMMENT, PRESTO_VIEW_COMMENT)
+                .put(PRESTO_VIEW_FLAG, "true")
+                .put(PRESTO_VERSION_NAME, prestoVersion)
+                .put(PRESTO_QUERY_ID_NAME, session.getQueryId())
+                .build();
+    }
+
+    public static Table createTableObjectForViewCreation(ConnectorSession session, ConnectorTableMetadata viewMetadata, Map<String, String> properties, TypeTranslator typeTranslator, MetastoreContext metastoreContext, String encodedViewData)
+    {
+        List<Column> columns = new ArrayList<>();
+        ColumnConverter columnConverter = metastoreContext.getColumnConverter();
+
+        for (ColumnMetadata column : viewMetadata.getColumns()) {
+            try {
+                HiveType hiveType = toHiveType(typeTranslator, column.getType());
+                columns.add(new Column(column.getName(), hiveType, column.getComment(), columnConverter.getTypeMetadata(hiveType, column.getType().getTypeSignature())));
+            }
+            catch (PrestoException e) {
+                // if a view uses any unsupported hive types, include only a dummy column value
+                if (e.getErrorCode().equals(NOT_SUPPORTED.toErrorCode())) {
+                    columns = ImmutableList.of(
+                            new Column(
+                                    "dummy",
+                                    HIVE_STRING,
+                                    Optional.of(format("Using dummy because column %s uses unsupported Hive type %s ", column.getName(), column.getType())),
+                                    Optional.empty()));
+                    break;
+                }
+                else {
+                    throw e;
+                }
+            }
+        }
+
+        SchemaTableName viewName = viewMetadata.getTable();
+
+        Table.Builder tableBuilder = Table.builder()
+                .setDatabaseName(viewName.getSchemaName())
+                .setTableName(viewName.getTableName())
+                .setOwner(session.getUser())
+                .setTableType(VIRTUAL_VIEW)
+                .setDataColumns(columns)
+                .setPartitionColumns(ImmutableList.of())
+                .setParameters(properties)
+                .setViewOriginalText(Optional.of(encodedViewData))
+                .setViewExpandedText(Optional.of(PRESTO_VIEW_EXPANDED_TEXT_MARKER));
+
+        tableBuilder.getStorageBuilder()
+                .setStorageFormat(VIEW_STORAGE_FORMAT)
+                .setLocation("");
+        return tableBuilder.build();
+    }
+
+    public static void verifyAndPopulateViews(Table table, SchemaTableName schemaTableName, String decodedData, ImmutableMap.Builder<SchemaTableName, ConnectorViewDefinition> views)
+    {
+        views.put(schemaTableName, new ConnectorViewDefinition(
+                schemaTableName,
+                Optional.ofNullable(table.getOwner()),
+                decodedData));
+    }
+
+    public static void checkIfNullView(ConnectorViewDefinition view, SchemaTableName viewName)
+    {
+        if (view == null) {
+            throw new ViewNotFoundException(viewName);
+        }
+    }
+
+    public static List<PartitionNameWithVersion> getPartitionNamesWithEmptyVersion(Collection<String> partitions)
+    {
+        return partitions.stream()
+                .map(partition -> new PartitionNameWithVersion(partition, Optional.empty()))
+                .collect(toImmutableList());
+    }
+
+    public static List<String> getPartitionNames(Collection<PartitionNameWithVersion> partitionNameWithVersions)
+    {
+        return partitionNameWithVersions.stream()
+                .map(PartitionNameWithVersion::getPartitionName)
+                .collect(toImmutableList());
+    }
+
+    /**
+     * Gets the external path for a given location
+     * @param hdfsEnvironment a non-null {@link HdfsEnvironment} with the HDFS credentials
+     * @param context a non-null {@link HdfsContext} with the table information
+     * @param location a non-null {@link String} with the physical table location
+     * @return a {@link Path} to the physical table location
+     * @throws PrestoException if either the physical location does not exist or if it is not a directory
+     */
+    public static Path getExternalPath(HdfsEnvironment hdfsEnvironment, HdfsContext context, String location)
+    {
+        requireNonNull(hdfsEnvironment);
+        requireNonNull(context);
+        requireNonNull(location);
+        try {
+            Path path = new Path(location);
+            if (!hdfsEnvironment.getFileSystem(context, path).getFileStatus(path).isDirectory()) {
+                throw new PrestoException(INVALID_TABLE_PROPERTY, "External location must be a directory");
+            }
+            return path;
+        }
+        catch (IllegalArgumentException | IOException e) {
+            throw new PrestoException(INVALID_TABLE_PROPERTY, "External location is not a valid file system URI", e);
         }
     }
 }

@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.cache.CachingFileSystem;
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.type.BigintType;
 import com.facebook.presto.common.type.BooleanType;
@@ -32,10 +33,8 @@ import com.facebook.presto.hive.RecordFileWriter.ExtendedRecordWriter;
 import com.facebook.presto.hive.metastore.Database;
 import com.facebook.presto.hive.metastore.MetastoreContext;
 import com.facebook.presto.hive.metastore.Partition;
-import com.facebook.presto.hive.metastore.PrestoTableType;
 import com.facebook.presto.hive.metastore.SemiTransactionalHiveMetastore;
 import com.facebook.presto.hive.metastore.Storage;
-import com.facebook.presto.hive.metastore.Table;
 import com.facebook.presto.hive.s3.PrestoS3FileSystem;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
@@ -46,25 +45,31 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Shorts;
 import com.google.common.primitives.SignedBytes;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.HadoopExtendedFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.viewfs.ViewFileSystem;
 import org.apache.hadoop.hive.common.type.HiveVarchar;
+import org.apache.hadoop.hive.common.type.Timestamp;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.ProtectMode;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator.RecordWriter;
+import org.apache.hadoop.hive.ql.exec.TextRecordWriter;
+import org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat;
 import org.apache.hadoop.hive.ql.io.HiveOutputFormat;
 import org.apache.hadoop.hive.ql.io.RCFile;
 import org.apache.hadoop.hive.ql.io.RCFileOutputFormat;
 import org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat;
+import org.apache.hadoop.hive.serde.serdeConstants;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.Serializer;
-import org.apache.hadoop.hive.serde2.io.DateWritable;
+import org.apache.hadoop.hive.serde2.io.DateWritableV2;
 import org.apache.hadoop.hive.serde2.io.DoubleWritable;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.hive.serde2.io.ShortWritable;
-import org.apache.hadoop.hive.serde2.io.TimestampWritable;
+import org.apache.hadoop.hive.serde2.io.TimestampWritableV2;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory;
 import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector.PrimitiveCategory;
@@ -76,6 +81,7 @@ import org.apache.hadoop.hive.serde2.typeinfo.MapTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.StructTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
+import org.apache.hadoop.io.BinaryComparable;
 import org.apache.hadoop.io.BooleanWritable;
 import org.apache.hadoop.io.ByteWritable;
 import org.apache.hadoop.io.BytesWritable;
@@ -91,6 +97,7 @@ import org.apache.hadoop.mapred.Reporter;
 import org.apache.hive.common.util.ReflectionUtil;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -116,18 +123,17 @@ import static com.facebook.presto.hive.metastore.MetastoreUtil.isRowType;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.isUserDefinedTypeEncodingEnabled;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.pathExists;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.verifyOnline;
-import static com.facebook.presto.hive.metastore.PrestoTableType.MANAGED_TABLE;
-import static com.facebook.presto.hive.metastore.PrestoTableType.MATERIALIZED_VIEW;
-import static com.facebook.presto.hive.metastore.PrestoTableType.TEMPORARY_TABLE;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.lang.Float.intBitsToFloat;
+import static java.lang.Integer.parseInt;
 import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.UUID.randomUUID;
 import static java.util.stream.Collectors.toList;
-import static org.apache.hadoop.hive.conf.HiveConf.ConfVars.COMPRESSRESULT;
+import static org.apache.hadoop.hive.conf.HiveConf.ConfVars.COMPRESS_RESULT;
 import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_COLUMNS;
+import static org.apache.hadoop.hive.ql.exec.Utilities.createCompressedStream;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.getPrimitiveJavaObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.getPrimitiveWritableObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaBooleanObjectInspector;
@@ -164,13 +170,21 @@ public final class HiveWriteUtils
 
     public static RecordWriter createRecordWriter(Path target, JobConf conf, Properties properties, String outputFormatName, ConnectorSession session)
     {
+        return createRecordWriter(target, conf, properties, outputFormatName, session, Optional.empty());
+    }
+
+    public static RecordWriter createRecordWriter(Path target, JobConf conf, Properties properties, String outputFormatName, ConnectorSession session, Optional<TextCSVHeaderWriter> textCSVHeaderWriter)
+    {
         try {
-            boolean compress = HiveConf.getBoolVar(conf, COMPRESSRESULT);
+            boolean compress = HiveConf.getBoolVar(conf, COMPRESS_RESULT);
             if (outputFormatName.equals(RCFileOutputFormat.class.getName())) {
                 return createRcFileWriter(target, conf, properties, compress);
             }
             if (outputFormatName.equals(MapredParquetOutputFormat.class.getName())) {
                 return createParquetWriter(target, conf, properties, compress, session);
+            }
+            if (outputFormatName.equals(HiveIgnoreKeyTextOutputFormat.class.getName())) {
+                return createTextCsvFileWriter(target, conf, properties, compress, textCSVHeaderWriter);
             }
             Object writer = Class.forName(outputFormatName).getConstructor().newInstance();
             return ((HiveOutputFormat<?, ?>) writer).getHiveRecordWriter(conf, target, Text.class, compress, properties, Reporter.NULL);
@@ -222,11 +236,68 @@ public final class HiveWriteUtils
         };
     }
 
+    private static RecordWriter createTextCsvFileWriter(Path target, JobConf conf, Properties properties, boolean compress, Optional<TextCSVHeaderWriter> textCSVHeaderWriter)
+                    throws IOException
+    {
+        String rowSeparatorString = properties.getProperty(serdeConstants.LINE_DELIM, "\n");
+
+        int rowSeparatorByte;
+        try {
+            rowSeparatorByte = Byte.parseByte(rowSeparatorString);
+        }
+        catch (NumberFormatException e) {
+            rowSeparatorByte = rowSeparatorString.charAt(0);
+        }
+
+        FSDataOutputStream output = target.getFileSystem(conf).create(target, Reporter.NULL);
+        OutputStream compressedOutput = createCompressedStream(conf, output, compress);
+        TextRecordWriter writer = new TextRecordWriter();
+        writer.initialize(compressedOutput, conf);
+        Optional<String> skipHeaderLine = Optional.ofNullable(properties.getProperty("skip.header.line.count"));
+        if (skipHeaderLine.isPresent()) {
+            if (parseInt(skipHeaderLine.get()) == 1) {
+                textCSVHeaderWriter
+                                .orElseThrow(() -> new IllegalArgumentException("TextHeaderWriter must not be empty when skip.header.line.count is set to 1"))
+                                .write(compressedOutput, rowSeparatorByte);
+            }
+        }
+        int finalRowSeparatorByte = rowSeparatorByte;
+        return new ExtendedRecordWriter()
+        {
+            private long length;
+
+            @Override
+            public long getWrittenBytes()
+            {
+                return length;
+            }
+
+            @Override
+            public void write(Writable value)
+                            throws IOException
+            {
+                BinaryComparable binary = (BinaryComparable) value;
+                compressedOutput.write(binary.getBytes(), 0, binary.getLength());
+                compressedOutput.write(finalRowSeparatorByte);
+            }
+
+            @Override
+            public void close(boolean abort)
+                            throws IOException
+            {
+                writer.close();
+                if (!abort) {
+                    length = target.getFileSystem(conf).getFileStatus(target).getLen();
+                }
+            }
+        };
+    }
+
     public static Serializer initializeSerializer(Configuration conf, Properties properties, String serializerName)
     {
         try {
             Serializer result = (Serializer) Class.forName(serializerName).getConstructor().newInstance();
-            result.initialize(conf, properties);
+            ((AbstractSerDe) result).initialize(conf, properties, null);
             return result;
         }
         catch (ClassNotFoundException e) {
@@ -299,24 +370,6 @@ public final class HiveWriteUtils
         throw new IllegalArgumentException("unsupported type: " + type);
     }
 
-    public static void checkTableIsWritable(Table table, boolean writesToNonManagedTablesEnabled)
-    {
-        PrestoTableType tableType = table.getTableType();
-        if (!writesToNonManagedTablesEnabled
-                && !tableType.equals(MANAGED_TABLE)
-                && !tableType.equals(MATERIALIZED_VIEW)
-                && !tableType.equals(TEMPORARY_TABLE)) {
-            throw new PrestoException(NOT_SUPPORTED, "Cannot write to non-managed Hive table");
-        }
-
-        checkWritable(
-                table.getSchemaTableName(),
-                Optional.empty(),
-                getProtectMode(table),
-                table.getParameters(),
-                table.getStorage());
-    }
-
     public static void checkPartitionIsWritable(String partitionName, Partition partition)
     {
         checkWritable(
@@ -327,7 +380,7 @@ public final class HiveWriteUtils
                 partition.getStorage());
     }
 
-    private static void checkWritable(
+    public static void checkWritable(
             SchemaTableName tableName,
             Optional<String> partitionName,
             ProtectMode protectMode,
@@ -355,7 +408,17 @@ public final class HiveWriteUtils
 
     public static Path getTableDefaultLocation(ConnectorSession session, SemiTransactionalHiveMetastore metastore, HdfsEnvironment hdfsEnvironment, String schemaName, String tableName)
     {
-        MetastoreContext metastoreContext = new MetastoreContext(session.getIdentity(), session.getQueryId(), session.getClientInfo(), session.getSource(), getMetastoreHeaders(session), isUserDefinedTypeEncodingEnabled(session), metastore.getColumnConverterProvider());
+        MetastoreContext metastoreContext = new MetastoreContext(
+                session.getIdentity(),
+                session.getQueryId(),
+                session.getClientInfo(),
+                session.getClientTags(),
+                session.getSource(),
+                getMetastoreHeaders(session),
+                isUserDefinedTypeEncodingEnabled(session),
+                metastore.getColumnConverterProvider(),
+                session.getWarningCollector(),
+                session.getRuntimeStats());
         Optional<String> location = getDatabase(session.getIdentity(), metastoreContext, metastore, schemaName).getLocation();
         if (!location.isPresent() || location.get().isEmpty()) {
             throw new PrestoException(HIVE_DATABASE_LOCATION_ERROR, format("Database '%s' location is not set", schemaName));
@@ -405,6 +468,9 @@ public final class HiveWriteUtils
         if (fileSystem instanceof HadoopExtendedFileSystem) {
             return getRawFileSystem(((HadoopExtendedFileSystem) fileSystem).getRawFileSystem());
         }
+        if (fileSystem instanceof CachingFileSystem) {
+            return getRawFileSystem(((CachingFileSystem) fileSystem).getDataTier());
+        }
         return fileSystem;
     }
 
@@ -416,6 +482,13 @@ public final class HiveWriteUtils
         catch (IOException e) {
             throw new PrestoException(HIVE_FILESYSTEM_ERROR, "Failed checking path: " + path, e);
         }
+    }
+
+    public static boolean isFileCreatedByQuery(String fileName, String queryId)
+    {
+        // For normal files, the queryId is at the beginning of the file name.
+        // For bucketed files, the queryId is at the end of the file name.
+        return fileName.startsWith(queryId) || fileName.endsWith(queryId);
     }
 
     public static Path createTemporaryPath(ConnectorSession session, HdfsContext context, HdfsEnvironment hdfsEnvironment, Path targetPath)
@@ -848,7 +921,7 @@ public final class HiveWriteUtils
     private static class DateFieldSetter
             extends FieldSetter
     {
-        private final DateWritable value = new DateWritable();
+        private final DateWritableV2 value = new DateWritableV2();
 
         public DateFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
         {
@@ -866,7 +939,7 @@ public final class HiveWriteUtils
     private static class TimestampFieldSetter
             extends FieldSetter
     {
-        private final TimestampWritable value = new TimestampWritable();
+        private final TimestampWritableV2 value = new TimestampWritableV2();
 
         public TimestampFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
         {
@@ -877,7 +950,7 @@ public final class HiveWriteUtils
         public void setField(Block block, int position)
         {
             long millisUtc = TimestampType.TIMESTAMP.getLong(block, position);
-            value.setTime(millisUtc);
+            value.set(Timestamp.ofEpochMilli(millisUtc));
             rowInspector.setStructFieldData(row, field, value);
         }
     }

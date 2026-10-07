@@ -30,6 +30,7 @@ import org.openjdk.jol.info.ClassLayout;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.time.ZoneId;
 
 import static com.facebook.presto.common.type.Chars.byteCountWithoutTrailingSpace;
 import static com.facebook.presto.common.type.Chars.isCharType;
@@ -54,15 +55,17 @@ public class SliceBatchStreamReader
     private final SliceDirectBatchStreamReader directReader;
     private final SliceDictionaryBatchStreamReader dictionaryReader;
     private BatchStreamReader currentReader;
+    private final boolean resetAllReaders;
 
-    public SliceBatchStreamReader(Type type, StreamDescriptor streamDescriptor, OrcAggregatedMemoryContext systemMemoryContext)
+    public SliceBatchStreamReader(Type type, StreamDescriptor streamDescriptor, OrcAggregatedMemoryContext systemMemoryContext, long maxSliceSize, boolean resetAllReaders)
             throws OrcCorruptionException
     {
         requireNonNull(type, "type is null");
         verifyStreamType(streamDescriptor, type, t -> t instanceof VarcharType || t instanceof CharType || t instanceof VarbinaryType);
         this.streamDescriptor = requireNonNull(streamDescriptor, "stream is null");
-        this.directReader = new SliceDirectBatchStreamReader(streamDescriptor, getMaxCodePointCount(type), isCharType(type));
+        this.directReader = new SliceDirectBatchStreamReader(streamDescriptor, getMaxCodePointCount(type), isCharType(type), maxSliceSize);
         this.dictionaryReader = new SliceDictionaryBatchStreamReader(streamDescriptor, getMaxCodePointCount(type), isCharType(type), systemMemoryContext.newOrcLocalMemoryContext(SliceBatchStreamReader.class.getSimpleName()));
+        this.resetAllReaders = resetAllReaders;
     }
 
     @Override
@@ -79,7 +82,7 @@ public class SliceBatchStreamReader
     }
 
     @Override
-    public void startStripe(Stripe stripe)
+    public void startStripe(ZoneId timezone, Stripe stripe)
             throws IOException
     {
         ColumnEncodingKind columnEncodingKind = stripe.getColumnEncodings().get(streamDescriptor.getStreamId())
@@ -87,15 +90,23 @@ public class SliceBatchStreamReader
                 .getColumnEncodingKind();
         if (columnEncodingKind == DIRECT || columnEncodingKind == DIRECT_V2 || columnEncodingKind == DWRF_DIRECT) {
             currentReader = directReader;
+            if (dictionaryReader != null && resetAllReaders) {
+                dictionaryReader.startStripe(timezone, stripe);
+                System.setProperty("RESET_SLICE_BATCH_READER", "RESET_SLICE_BATCH_READER");
+            }
         }
         else if (columnEncodingKind == DICTIONARY || columnEncodingKind == DICTIONARY_V2) {
             currentReader = dictionaryReader;
+            if (directReader != null && resetAllReaders) {
+                directReader.startStripe(timezone, stripe);
+                System.setProperty("RESET_SLICE_BATCH_READER", "RESET_SLICE_BATCH_READER");
+            }
         }
         else {
             throw new IllegalArgumentException("Unsupported encoding " + columnEncodingKind);
         }
 
-        currentReader.startStripe(stripe);
+        currentReader.startStripe(timezone, stripe);
     }
 
     @Override

@@ -17,8 +17,7 @@ import com.facebook.presto.spi.SourceLocation;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import javax.annotation.concurrent.Immutable;
+import com.google.errorprone.annotations.Immutable;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -34,6 +33,7 @@ public final class DistinctLimitNode
 {
     private final PlanNode source;
     private final long limit;
+    private final int timeoutMillis;
     private final boolean partial;
     private final List<VariableReferenceExpression> distinctVariables;
     private final Optional<VariableReferenceExpression> hashVariable;
@@ -46,22 +46,38 @@ public final class DistinctLimitNode
             @JsonProperty("limit") long limit,
             @JsonProperty("partial") boolean partial,
             @JsonProperty("distinctVariables") List<VariableReferenceExpression> distinctVariables,
-            @JsonProperty("hashVariable") Optional<VariableReferenceExpression> hashVariable)
+            @JsonProperty("hashVariable") Optional<VariableReferenceExpression> hashVariable,
+            @JsonProperty("timeoutMillis")int timeoutMillis)
     {
-        super(sourceLocation, id);
+        this(sourceLocation, id, Optional.empty(), source, limit, partial, distinctVariables, hashVariable, timeoutMillis);
+    }
+
+    public DistinctLimitNode(
+            Optional<SourceLocation> sourceLocation,
+            PlanNodeId id,
+            Optional<PlanNode> statsEquivalentPlanNode,
+            PlanNode source,
+            long limit,
+            boolean partial,
+            List<VariableReferenceExpression> distinctVariables,
+            Optional<VariableReferenceExpression> hashVariable,
+            int timeoutMillis)
+    {
+        super(sourceLocation, id, statsEquivalentPlanNode);
         this.source = requireNonNull(source, "source is null");
         checkArgument(limit >= 0, "limit must be greater than or equal to zero");
         this.limit = limit;
         this.partial = partial;
         this.distinctVariables = unmodifiableList(distinctVariables);
         this.hashVariable = requireNonNull(hashVariable, "hashVariable is null");
+        this.timeoutMillis = timeoutMillis;
         checkArgument(!hashVariable.isPresent() || !distinctVariables.contains(hashVariable.get()), "distinctVariables should not contain hash variable");
     }
 
     @Override
     public List<PlanNode> getSources()
     {
-        return unmodifiableList(Collections.singletonList(source));
+        return Collections.singletonList(source);
     }
 
     @JsonProperty
@@ -95,6 +111,13 @@ public final class DistinctLimitNode
     }
 
     @Override
+    public LogicalProperties computeLogicalProperties(LogicalPropertiesProvider logicalPropertiesProvider)
+    {
+        requireNonNull(logicalPropertiesProvider, "logicalPropertiesProvider cannot be null.");
+        return logicalPropertiesProvider.getDistinctLimitProperties(this);
+    }
+
+    @Override
     public List<VariableReferenceExpression> getOutputVariables()
     {
         ArrayList<VariableReferenceExpression> outputVariables = new ArrayList<>(distinctVariables);
@@ -109,10 +132,16 @@ public final class DistinctLimitNode
     }
 
     @Override
+    public PlanNode assignStatsEquivalentPlanNode(Optional<PlanNode> statsEquivalentPlanNode)
+    {
+        return new DistinctLimitNode(getSourceLocation(), getId(), statsEquivalentPlanNode, source, limit, partial, distinctVariables, hashVariable, timeoutMillis);
+    }
+
+    @Override
     public PlanNode replaceChildren(List<PlanNode> newChildren)
     {
         checkArgument(newChildren.size() == 1, "Unexpected number of elements in list newChildren");
-        return new DistinctLimitNode(getSourceLocation(), getId(), newChildren.get(0), limit, partial, distinctVariables, hashVariable);
+        return new DistinctLimitNode(getSourceLocation(), getId(), getStatsEquivalentPlanNode(), newChildren.get(0), limit, partial, distinctVariables, hashVariable, timeoutMillis);
     }
 
     private static void checkArgument(boolean condition, String message)
@@ -120,5 +149,11 @@ public final class DistinctLimitNode
         if (!condition) {
             throw new IllegalArgumentException(message);
         }
+    }
+
+    @JsonProperty
+    public int getTimeoutMillis()
+    {
+        return timeoutMillis;
     }
 }

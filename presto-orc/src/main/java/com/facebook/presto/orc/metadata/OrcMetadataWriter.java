@@ -32,10 +32,12 @@ import io.airlift.slice.SliceOutput;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Optional;
+import java.util.TimeZone;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -192,6 +194,7 @@ public class OrcMetadataWriter
             case DATE:
                 return OrcProto.Type.Kind.DATE;
             case TIMESTAMP:
+            case TIMESTAMP_MICROSECONDS:
                 return OrcProto.Type.Kind.TIMESTAMP;
             case LIST:
                 return OrcProto.Type.Kind.LIST;
@@ -293,6 +296,8 @@ public class OrcMetadataWriter
     public int writeStripeFooter(SliceOutput output, StripeFooter footer)
             throws IOException
     {
+        ZoneId timezone = footer.getTimezone().orElseThrow(() -> new IllegalArgumentException("Timezone not set"));
+
         OrcProto.StripeFooter footerProtobuf = OrcProto.StripeFooter.newBuilder()
                 .addAllStreams(footer.getStreams().stream()
                         .map(OrcMetadataWriter::toStream)
@@ -301,6 +306,7 @@ public class OrcMetadataWriter
                         .sorted(Entry.comparingByKey())
                         .map(entry -> toColumnEncoding(entry.getValue()))
                         .collect(toList()))
+                .setWriterTimezone(TimeZone.getTimeZone(timezone).getID())
                 .build();
 
         return writeProtobufObject(output, footerProtobuf);
@@ -377,12 +383,11 @@ public class OrcMetadataWriter
 
     private static RowIndexEntry toRowGroupIndex(RowGroupIndex rowGroupIndex)
     {
-        return OrcProto.RowIndexEntry.newBuilder()
-                .addAllPositions(rowGroupIndex.getPositions().stream()
-                        .map(Integer::longValue)
-                        .collect(toList()))
-                .setStatistics(toColumnStatistics(rowGroupIndex.getColumnStatistics()))
-                .build();
+        OrcProto.RowIndexEntry.Builder builder = OrcProto.RowIndexEntry.newBuilder();
+        for (int position : rowGroupIndex.getPositions()) {
+            builder.addPositions(position);
+        }
+        return builder.setStatistics(toColumnStatistics(rowGroupIndex.getColumnStatistics())).build();
     }
 
     private static OrcProto.CompressionKind toCompression(CompressionKind compressionKind)

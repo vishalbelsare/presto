@@ -14,9 +14,14 @@
 package com.facebook.presto.dispatcher;
 
 import com.facebook.airlift.node.NodeInfo;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.Session;
+import com.facebook.presto.client.NodeVersion;
+import com.facebook.presto.cost.HistoryBasedOptimizationConfig;
+import com.facebook.presto.cost.HistoryBasedPlanStatisticsManager;
 import com.facebook.presto.event.QueryMonitor;
 import com.facebook.presto.event.QueryMonitorConfig;
+import com.facebook.presto.eventlistener.EventListenerConfig;
 import com.facebook.presto.eventlistener.EventListenerManager;
 import com.facebook.presto.execution.ClusterSizeMonitor;
 import com.facebook.presto.execution.ExecutionFailureInfo;
@@ -27,7 +32,6 @@ import com.facebook.presto.execution.StageInfo;
 import com.facebook.presto.execution.resourceGroups.QueryQueueFullException;
 import com.facebook.presto.metadata.InMemoryNodeManager;
 import com.facebook.presto.metadata.MetadataManager;
-import com.facebook.presto.metadata.SessionPropertyManager;
 import com.facebook.presto.operator.OperatorInfo;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.QueryId;
@@ -36,15 +40,18 @@ import com.facebook.presto.spi.eventlistener.EventListener;
 import com.facebook.presto.spi.eventlistener.EventListenerFactory;
 import com.facebook.presto.spi.eventlistener.QueryCompletedEvent;
 import com.facebook.presto.spi.eventlistener.QueryCreatedEvent;
+import com.facebook.presto.spi.eventlistener.QueryProgressEvent;
+import com.facebook.presto.spi.eventlistener.QueryUpdatedEvent;
 import com.facebook.presto.spi.eventlistener.SplitCompletedEvent;
 import com.facebook.presto.spi.prerequisites.QueryPrerequisites;
 import com.facebook.presto.spi.prerequisites.QueryPrerequisitesContext;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
 import com.facebook.presto.spi.security.AccessDeniedException;
+import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.transaction.TransactionManager;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.SettableFuture;
-import io.airlift.units.Duration;
 import org.testng.annotations.Test;
 
 import java.util.Map;
@@ -60,8 +67,10 @@ import static com.facebook.presto.execution.QueryState.FAILED;
 import static com.facebook.presto.execution.QueryState.QUEUED;
 import static com.facebook.presto.execution.QueryState.WAITING_FOR_PREREQUISITES;
 import static com.facebook.presto.execution.TaskTestUtils.createQueryStateMachine;
+import static com.facebook.presto.metadata.SessionPropertyManager.createTestingSessionPropertyManager;
 import static com.facebook.presto.spi.StandardErrorCode.ABANDONED_QUERY;
 import static com.facebook.presto.spi.StandardErrorCode.ABANDONED_TASK;
+import static com.facebook.presto.spi.StandardErrorCode.EXCEEDED_TIME_LIMIT;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INSUFFICIENT_RESOURCES;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static com.facebook.presto.spi.StandardErrorCode.PERMISSION_DENIED;
@@ -217,7 +226,7 @@ public class TestLocalDispatchQuery
     {
         QueryStateMachine stateMachine = createStateMachine();
         CountingEventListener eventListener = new CountingEventListener();
-        CompletableFuture<?> prequisitesFuture = new CompletableFuture<>();
+        CompletableFuture<?> prerequisitesFuture = new CompletableFuture<>();
         AtomicBoolean queryFinishedCalled = new AtomicBoolean();
 
         LocalDispatchQuery query = new LocalDispatchQuery(
@@ -229,11 +238,12 @@ public class TestLocalDispatchQuery
                 dispatchQuery -> {},
                 execution -> {},
                 false,
-                new QueryPrerequisites() {
+                new QueryPrerequisites()
+                {
                     @Override
                     public CompletableFuture<?> waitForPrerequisites(QueryId queryId, QueryPrerequisitesContext context, WarningCollector warningCollector)
                     {
-                        return prequisitesFuture;
+                        return prerequisitesFuture;
                     }
 
                     @Override
@@ -247,7 +257,7 @@ public class TestLocalDispatchQuery
         assertFalse(eventListener.getQueryCompletedEvent().isPresent());
 
         query.startWaitingForPrerequisites();
-        prequisitesFuture.complete(null);
+        prerequisitesFuture.complete(null);
         query.fail(new PrestoException(ABANDONED_QUERY, "foo"));
 
         assertTrue(queryFinishedCalled.get());
@@ -258,7 +268,7 @@ public class TestLocalDispatchQuery
     {
         QueryStateMachine stateMachine = createStateMachine();
         CountingEventListener eventListener = new CountingEventListener();
-        CompletableFuture<?> prequisitesFuture = new CompletableFuture<>();
+        CompletableFuture<?> prerequisitesFuture = new CompletableFuture<>();
 
         LocalDispatchQuery query = new LocalDispatchQuery(
                 stateMachine,
@@ -269,7 +279,7 @@ public class TestLocalDispatchQuery
                 dispatchQuery -> {},
                 execution -> {},
                 false,
-                (queryId, context, warningCollector) -> prequisitesFuture);
+                (queryId, context, warningCollector) -> prerequisitesFuture);
 
         assertEquals(query.getBasicQueryInfo().getState(), WAITING_FOR_PREREQUISITES);
         assertFalse(eventListener.getQueryCompletedEvent().isPresent());
@@ -277,7 +287,7 @@ public class TestLocalDispatchQuery
         query.startWaitingForPrerequisites();
         query.fail(new PrestoException(ABANDONED_QUERY, "foo"));
 
-        assertTrue(prequisitesFuture.isCancelled());
+        assertTrue(prerequisitesFuture.isCancelled());
     }
 
     @Test
@@ -367,7 +377,7 @@ public class TestLocalDispatchQuery
 
         query.startWaitingForResources();
 
-        Thread.sleep(300); // Sleep long enough to ensure resource exhaustion error
+        Thread.sleep(2000); // Sleep long enough to ensure resource exhaustion error
 
         assertEquals(query.getBasicQueryInfo().getState(), FAILED);
         assertEquals(query.getBasicQueryInfo().getErrorCode(), GENERIC_INSUFFICIENT_RESOURCES.toErrorCode());
@@ -432,9 +442,111 @@ public class TestLocalDispatchQuery
         assertFalse(eventListener.getQueryCompletedEvent().isPresent());
     }
 
+    /**
+     * Verifies that once a query has been successfully submitted to SqlQueryManager,
+     * LocalDispatchQuery.fail() does NOT fire queryImmediateFailureEvent (which emits
+     * all-zero stats). This prevents the bug where DispatchManager's QueryTracker
+     * races with SqlQueryManager's QueryTracker on time limit enforcement, causing
+     * a zeroed-stats event to overwrite real execution statistics.
+     */
+    @Test
+    public void testFailAfterDispatchDoesNotEmitImmediateFailureEvent()
+    {
+        QueryStateMachine stateMachine = createStateMachine();
+        CountingEventListener eventListener = new CountingEventListener();
+
+        LocalDispatchQuery query = new LocalDispatchQuery(
+                stateMachine,
+                createQueryMonitor(eventListener),
+                immediateFuture(new MockQueryExecution()),
+                createClusterSizeMonitor(0),
+                directExecutor(),
+                dispatchQuery -> {},
+                execution -> {},  // querySubmitter succeeds, so sentForExecution = true
+                false,
+                QUERY_PREREQUISITES);
+
+        // Dispatch the query — this calls querySubmitter.accept() and sets sentForExecution
+        query.startWaitingForResources();
+        assertEquals(query.getBasicQueryInfo().getState(), DISPATCHING);
+
+        // Simulate DispatchManager's QueryTracker firing a timeout on this already-dispatched query
+        query.fail(new PrestoException(EXCEEDED_TIME_LIMIT, "Query exceeded maximum time limit"));
+
+        assertEquals(query.getBasicQueryInfo().getState(), FAILED);
+        assertEquals(query.getBasicQueryInfo().getErrorCode(), EXCEEDED_TIME_LIMIT.toErrorCode());
+        // The key assertion: no queryImmediateFailureEvent should have been fired.
+        // SqlQueryManager's finalQueryInfoListener is responsible for emitting the
+        // completion event with real stats for dispatched queries.
+        assertFalse(eventListener.getQueryCompletedEvent().isPresent(),
+                "queryImmediateFailureEvent should not be fired after query has been sent for execution");
+    }
+
+    /**
+     * Verifies that cancellation after dispatch also does NOT fire
+     * queryImmediateFailureEvent, same as fail().
+     */
+    @Test
+    public void testCancelAfterDispatchDoesNotEmitImmediateFailureEvent()
+    {
+        QueryStateMachine stateMachine = createStateMachine();
+        CountingEventListener eventListener = new CountingEventListener();
+
+        LocalDispatchQuery query = new LocalDispatchQuery(
+                stateMachine,
+                createQueryMonitor(eventListener),
+                immediateFuture(new MockQueryExecution()),
+                createClusterSizeMonitor(0),
+                directExecutor(),
+                dispatchQuery -> {},
+                execution -> {},
+                false,
+                QUERY_PREREQUISITES);
+
+        query.startWaitingForResources();
+        assertEquals(query.getBasicQueryInfo().getState(), DISPATCHING);
+
+        query.cancel();
+
+        assertEquals(query.getBasicQueryInfo().getState(), FAILED);
+        assertEquals(query.getBasicQueryInfo().getErrorCode(), USER_CANCELED.toErrorCode());
+        assertFalse(eventListener.getQueryCompletedEvent().isPresent(),
+                "queryImmediateFailureEvent should not be fired after query has been sent for execution");
+    }
+
+    /**
+     * Verifies that fail() before dispatch still correctly fires
+     * queryImmediateFailureEvent — the pre-dispatch path must remain functional.
+     */
+    @Test
+    public void testFailBeforeDispatchStillEmitsImmediateFailureEvent()
+    {
+        QueryStateMachine stateMachine = createStateMachine();
+        CountingEventListener eventListener = new CountingEventListener();
+
+        LocalDispatchQuery query = new LocalDispatchQuery(
+                stateMachine,
+                createQueryMonitor(eventListener),
+                immediateFuture(new MockQueryExecution()),
+                createClusterSizeMonitor(0),
+                directExecutor(),
+                dispatchQuery -> {},
+                execution -> {},
+                false,
+                QUERY_PREREQUISITES);
+
+        // Fail before dispatching — sentForExecution is still false
+        query.fail(new PrestoException(EXCEEDED_TIME_LIMIT, "Query exceeded maximum queued time"));
+
+        assertEquals(query.getBasicQueryInfo().getState(), FAILED);
+        assertTrue(eventListener.getQueryCompletedEvent().isPresent(),
+                "queryImmediateFailureEvent should be fired for pre-dispatch failures");
+        assertEquals(eventListener.getQueryCompletedEvent().get().getFailureInfo().get().getErrorCode(), EXCEEDED_TIME_LIMIT.toErrorCode());
+    }
+
     private ClusterSizeMonitor createClusterSizeMonitor(int minimumNodes)
     {
-        return new ClusterSizeMonitor(new InMemoryNodeManager(), true, minimumNodes, minimumNodes, new Duration(10, MILLISECONDS), 1, 1, new Duration(1, SECONDS), 0);
+        return new ClusterSizeMonitor(new InMemoryNodeManager(), true, minimumNodes, minimumNodes, new Duration(10, MILLISECONDS), 1, 1, new Duration(1, SECONDS), new Duration(1, SECONDS), 0, false);
     }
 
     private QueryMonitor createQueryMonitor(CountingEventListener eventListener)
@@ -447,14 +559,16 @@ public class TestLocalDispatchQuery
                 eventListenerManager,
                 new NodeInfo("test"),
                 UNKNOWN,
-                new SessionPropertyManager(),
+                createTestingSessionPropertyManager(),
                 metadata,
-                new QueryMonitorConfig());
+                new QueryMonitorConfig(),
+                new HistoryBasedPlanStatisticsManager(new ObjectMapper(), createTestingSessionPropertyManager(), metadata, new HistoryBasedOptimizationConfig(), new FeaturesConfig(), new NodeVersion("1")),
+                new FeaturesConfig());
     }
 
     private EventListenerManager createEventListenerManager(CountingEventListener countingEventListener)
     {
-        EventListenerManager eventListenerManager = new EventListenerManager();
+        EventListenerManager eventListenerManager = new EventListenerManager(new EventListenerConfig());
         eventListenerManager.addEventListenerFactory(new TestEventListenerFactory(countingEventListener));
         eventListenerManager.loadConfiguredEventListener(ImmutableMap.of("event-listener.name", TestEventListenerFactory.NAME));
         return eventListenerManager;
@@ -505,6 +619,18 @@ public class TestLocalDispatchQuery
         public void queryCreated(QueryCreatedEvent queryCreatedEvent)
         {
             fail("Query creation events should not be created in this test");
+        }
+
+        @Override
+        public void queryUpdated(QueryUpdatedEvent queryUpdatedEvent)
+        {
+            fail("Query update events should not be created in this test");
+        }
+
+        @Override
+        public void publishQueryProgress(QueryProgressEvent queryProgressEvent)
+        {
+            fail("Query Progress events should not be created in this test");
         }
 
         @Override

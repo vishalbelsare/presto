@@ -30,6 +30,7 @@ class SubfieldTokenizer
     private static final char CLOSE_BRACKET = ']';
     private static final char UNICODE_CARET = '\u2038';
     private static final char WILDCARD = '*';
+    private static final char DOLLAR = '$';
 
     private final String path;
     private State state = State.NOT_READY;
@@ -37,7 +38,7 @@ class SubfieldTokenizer
     private boolean firstSegment = true;
     private Subfield.PathElement next;
 
-    public SubfieldTokenizer(String path)
+    SubfieldTokenizer(String path)
     {
         this.path = requireNonNull(path, "path is null");
 
@@ -99,13 +100,13 @@ class SubfieldTokenizer
         }
 
         if (tryMatch(DOT)) {
-            Subfield.PathElement token = matchPathSegment();
+            Subfield.PathElement token = tryMatch(DOLLAR) ? matchDollarPathElement() : matchPathSegment();
             firstSegment = false;
             return token;
         }
 
         if (tryMatch(OPEN_BRACKET)) {
-            Subfield.PathElement token = tryMatch(QUOTE) ? matchQuotedSubscript() : tryMatch(WILDCARD) ? matchWildcardSubscript() : matchUnquotedSubscript();
+            Subfield.PathElement token = tryMatch(QUOTE) ? matchQuotedSubscript() : tryMatch(WILDCARD) ? matchWildcardSubscript() : tryMatch(DOLLAR) ? matchStructureOnlySubscript() : matchUnquotedSubscript();
 
             match(CLOSE_BRACKET);
             firstSegment = false;
@@ -145,9 +146,19 @@ class SubfieldTokenizer
         return Subfield.allSubscripts();
     }
 
+    private Subfield.PathElement matchDollarPathElement()
+    {
+        return Subfield.noSubfield();
+    }
+
+    private Subfield.PathElement matchStructureOnlySubscript()
+    {
+        return Subfield.structureOnly();
+    }
+
     private static boolean isUnquotedPathCharacter(char c)
     {
-        return c == ':' || c == '$' || c == '-' || c == '/' || c == '@' || c == '|' || c == ' ' || isUnquotedSubscriptCharacter(c);
+        return c == ':' || c == '$' || c == '-' || c == '/' || c == '@' || c == '|' || c == '#' || c == ' ' || c == '<' || c == '>' || isUnquotedSubscriptCharacter(c);
     }
 
     private Subfield.PathElement matchUnquotedSubscript()
@@ -166,15 +177,12 @@ class SubfieldTokenizer
             throw invalidSubfieldPath();
         }
 
-        long index;
         try {
-            index = Long.valueOf(token);
+            return new Subfield.LongSubscript(Long.valueOf(token));
         }
         catch (NumberFormatException e) {
-            throw invalidSubfieldPath();
+            throw invalidSubfieldPath(e);
         }
-
-        return new Subfield.LongSubscript(index);
     }
 
     private static boolean isUnquotedSubscriptCharacter(char c)
@@ -218,11 +226,11 @@ class SubfieldTokenizer
 
         match(QUOTE);
 
-        String index = token.toString();
-        if (index.equals(String.valueOf(WILDCARD))) {
+        String tokenString = token.toString();
+        if (tokenString.equals(String.valueOf(WILDCARD))) {
             return Subfield.allSubscripts();
         }
-        return new Subfield.StringSubscript(index);
+        return new Subfield.StringSubscript(tokenString);
     }
 
     private boolean hasNextCharacter()
@@ -259,6 +267,11 @@ class SubfieldTokenizer
     private InvalidFunctionArgumentException invalidSubfieldPath()
     {
         return new InvalidFunctionArgumentException(format("Invalid subfield path: '%s'", this));
+    }
+
+    private InvalidFunctionArgumentException invalidSubfieldPath(Exception ex)
+    {
+        return new InvalidFunctionArgumentException(format("Invalid subfield path: '%s'", this), ex);
     }
 
     @Override

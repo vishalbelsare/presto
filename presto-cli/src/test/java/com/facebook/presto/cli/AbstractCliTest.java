@@ -14,6 +14,7 @@
 package com.facebook.presto.cli;
 
 import com.facebook.airlift.json.JsonCodec;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.client.ClientSession;
 import com.facebook.presto.client.Column;
 import com.facebook.presto.client.QueryResults;
@@ -22,10 +23,9 @@ import com.facebook.presto.common.type.BigintType;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import io.airlift.units.Duration;
+import mockwebserver3.MockResponse;
+import mockwebserver3.MockWebServer;
 import okhttp3.Headers;
-import okhttp3.mockwebserver.MockResponse;
-import okhttp3.mockwebserver.MockWebServer;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 
@@ -84,7 +84,8 @@ public abstract class AbstractCliTest
                 new Duration(2, MINUTES),
                 true,
                 ImmutableMap.of(),
-                ImmutableMap.of());
+                ImmutableMap.of(),
+                false);
     }
 
     protected QueryResults createMockQueryResults()
@@ -96,6 +97,7 @@ public abstract class AbstractCliTest
                 null,
                 ImmutableList.of(new Column("_col0", BigintType.BIGINT)),
                 ImmutableList.of(ImmutableList.of(123)),
+                null,
                 StatementStats.builder().setState("FINISHED").build(),
                 null,
                 ImmutableList.of(),
@@ -105,24 +107,40 @@ public abstract class AbstractCliTest
 
     protected MockResponse createMockResponse()
     {
-        return new MockResponse()
+        return new MockResponse.Builder()
                 .addHeader(CONTENT_TYPE, "application/json")
-                .setBody(QUERY_RESULTS_JSON_CODEC.toJson(createMockQueryResults()));
+                .body(QUERY_RESULTS_JSON_CODEC.toJson(createMockQueryResults()))
+                .build();
+    }
+
+    protected MockResponse createMockResponseWithHeader(String headerName, String headerValue)
+    {
+        return new MockResponse.Builder()
+                .addHeader(CONTENT_TYPE, "application/json")
+                .addHeader(headerName, headerValue)
+                .body(QUERY_RESULTS_JSON_CODEC.toJson(createMockQueryResults()))
+                .build();
     }
 
     protected void executeQueries(List<String> queries)
     {
-        Console console = new Console();
         QueryRunner queryRunner = createQueryRunner(createMockClientSession());
+        executeQueries(queryRunner, queries);
+    }
+
+    protected void executeQueries(QueryRunner queryRunner, List<String> queries)
+    {
+        Console console = new Console();
         for (String query : queries) {
             console.executeCommand(queryRunner, query, CSV, false);
         }
     }
 
-    protected static QueryRunner createQueryRunner(ClientSession clientSession)
+    protected static QueryRunner createQueryRunner(ClientSession clientSession, boolean insecureSsl)
     {
         return new QueryRunner(
                 clientSession,
+                false,
                 false,
                 Optional.empty(),
                 Optional.empty(),
@@ -133,12 +151,23 @@ public abstract class AbstractCliTest
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
+                insecureSsl,
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
-                false);
+                Optional.empty(),
+                Optional.empty(),
+                false,
+                true,
+                false,
+                ImmutableList.of());
+    }
+
+    protected static QueryRunner createQueryRunner(ClientSession clientSession)
+    {
+        return createQueryRunner(clientSession, false);
     }
 
     protected static void assertHeaders(String headerName, Headers headers, Set<String> expectedSessionHeaderValues)

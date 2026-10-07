@@ -16,8 +16,15 @@ package com.facebook.presto.delta;
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.hive.HdfsContext;
+import com.facebook.presto.hive.HdfsEnvironment;
+import com.facebook.presto.hive.HiveStorageFormat;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
+import com.facebook.presto.hive.metastore.HivePrivilegeInfo;
 import com.facebook.presto.hive.metastore.MetastoreContext;
+import com.facebook.presto.hive.metastore.MetastoreUtil;
+import com.facebook.presto.hive.metastore.PrestoTableType;
+import com.facebook.presto.hive.metastore.PrincipalPrivileges;
 import com.facebook.presto.hive.metastore.Storage;
 import com.facebook.presto.hive.metastore.Table;
 import com.facebook.presto.spi.ColumnHandle;
@@ -29,16 +36,21 @@ import com.facebook.presto.spi.ConnectorTableLayoutHandle;
 import com.facebook.presto.spi.ConnectorTableLayoutResult;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.Constraint;
+import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SchemaTablePrefix;
+import com.facebook.presto.spi.TableNotFoundException;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
+import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-
-import javax.inject.Inject;
+import com.google.common.collect.ImmutableMultimap;
+import jakarta.inject.Inject;
+import org.apache.hadoop.fs.Path;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -48,7 +60,15 @@ import java.util.stream.Collectors;
 import static com.facebook.presto.delta.DeltaColumnHandle.ColumnType.PARTITION;
 import static com.facebook.presto.delta.DeltaColumnHandle.ColumnType.REGULAR;
 import static com.facebook.presto.delta.DeltaExpressionUtils.splitPredicate;
+import static com.facebook.presto.delta.DeltaTableProperties.EXTERNAL_LOCATION_PROPERTY;
+import static com.facebook.presto.delta.DeltaTableProperties.getTableStorageFormat;
+import static com.facebook.presto.delta.DeltaTableProperties.isExternalTable;
 import static com.facebook.presto.hive.HiveColumnConverterProvider.DEFAULT_COLUMN_CONVERTER_PROVIDER;
+import static com.facebook.presto.hive.metastore.PrestoTableType.EXTERNAL_TABLE;
+import static com.facebook.presto.hive.metastore.PrestoTableType.MANAGED_TABLE;
+import static com.facebook.presto.hive.metastore.StorageFormat.fromHiveStorageFormat;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
+import static com.facebook.presto.spi.security.PrincipalType.USER;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Collections.emptyList;
 import static java.util.Locale.US;
@@ -71,6 +91,7 @@ public class DeltaMetadata
     private final ExtendedHiveMetastore metastore;
     private final TypeManager typeManager;
     private final DeltaConfig config;
+    private final HdfsEnvironment hdfsEnvironment;
 
     @Inject
     public DeltaMetadata(
@@ -78,13 +99,15 @@ public class DeltaMetadata
             DeltaClient deltaClient,
             ExtendedHiveMetastore metastore,
             TypeManager typeManager,
-            DeltaConfig config)
+            DeltaConfig config,
+            HdfsEnvironment hdfsEnvironment)
     {
         this.connectorId = requireNonNull(connectorId, "connectorId is null").toString();
         this.deltaClient = requireNonNull(deltaClient, "deltaClient is null");
         this.metastore = requireNonNull(metastore, "metastore is null");
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.config = requireNonNull(config, "config is null");
+        this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
     }
 
     @Override
@@ -94,6 +117,82 @@ public class DeltaMetadata
         schemas.addAll(metastore.getAllDatabases(metastoreContext(session)));
         schemas.add(PATH_SCHEMA.toLowerCase(US));
         return schemas;
+    }
+
+    @Override
+    public void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, boolean ignoreExisting)
+    {
+        PrestoTableType tableType = isExternalTable(tableMetadata.getProperties()) ? EXTERNAL_TABLE : MANAGED_TABLE;
+        Table table = prepareTable(session, tableMetadata, tableType);
+        PrincipalPrivileges principalPrivileges = buildInitialPrivilegeSet(table.getOwner());
+
+        metastore.createTable(
+                metastoreContext(session),
+                table,
+                principalPrivileges,
+                emptyList());
+    }
+
+    @Override
+    public void dropTable(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        DeltaTableHandle handle = (DeltaTableHandle) tableHandle;
+        MetastoreContext metastoreContext = metastoreContext(session);
+
+        Optional<Table> target = metastore.getTable(metastoreContext, handle.getDeltaTable().getSchemaName(), handle.getDeltaTable().getTableName());
+        if (!target.isPresent()) {
+            throw new TableNotFoundException(handle.toSchemaTableName());
+        }
+
+        metastore.dropTable(
+                metastoreContext,
+                handle.getDeltaTable().getSchemaName(),
+                handle.getDeltaTable().getTableName(),
+                false);
+    }
+
+    private static PrincipalPrivileges buildInitialPrivilegeSet(String tableOwner)
+    {
+        PrestoPrincipal owner = new PrestoPrincipal(USER, tableOwner);
+        return new PrincipalPrivileges(
+                ImmutableMultimap.<String, HivePrivilegeInfo>builder()
+                        .put(tableOwner, new HivePrivilegeInfo(HivePrivilegeInfo.HivePrivilege.SELECT, true, owner, owner))
+                        .build(),
+                ImmutableMultimap.of());
+    }
+
+    private Table prepareTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, PrestoTableType tableType)
+    {
+        String schemaName = tableMetadata.getTable().getSchemaName();
+        String tableName = tableMetadata.getTable().getTableName();
+
+        if (!tableType.equals(EXTERNAL_TABLE)) {
+            throw new PrestoException(NOT_SUPPORTED, "Cannot create managed Delta table");
+        }
+
+        Table.Builder tableBuilder = Table.builder()
+                .setDatabaseName(schemaName)
+                .setTableName(tableName)
+                .setOwner(session.getUser())
+                .setTableType(tableType);
+
+        Map<String, Object> tableProperties = tableMetadata.getProperties();
+
+        HiveStorageFormat hiveStorageFormat = getTableStorageFormat(tableMetadata.getProperties());
+        String tableLocation = tableProperties.get(EXTERNAL_LOCATION_PROPERTY).toString();
+
+        // Need to check for path existence to avoid inconsistent metastore
+        // as Delta connector does not support managed tables
+        Path targetPath = MetastoreUtil.getExternalPath(
+                hdfsEnvironment,
+                new HdfsContext(session, schemaName, tableName, tableLocation, true),
+                tableLocation);
+        log.debug("Creating external table with location: '%s'", targetPath.toString());
+
+        tableBuilder.getStorageBuilder()
+                .setStorageFormat(fromHiveStorageFormat(hiveStorageFormat))
+                .setLocation(tableLocation);
+        return tableBuilder.build();
     }
 
     @Override
@@ -135,6 +234,7 @@ public class DeltaMetadata
         }
 
         Optional<DeltaTable> table = deltaClient.getTable(
+                config,
                 session,
                 schemaTableName,
                 tableLocation,
@@ -147,7 +247,7 @@ public class DeltaMetadata
     }
 
     @Override
-    public List<ConnectorTableLayoutResult> getTableLayouts(
+    public ConnectorTableLayoutResult getTableLayoutForConstraint(
             ConnectorSession session,
             ConnectorTableHandle table,
             Constraint<ColumnHandle> constraint,
@@ -175,7 +275,7 @@ public class DeltaMetadata
                 ImmutableList.of(),
                 Optional.empty());
 
-        return ImmutableList.of(new ConnectorTableLayoutResult(newLayout, unenforcedPredicate));
+        return new ConnectorTableLayoutResult(newLayout, unenforcedPredicate);
     }
 
     @Override
@@ -195,7 +295,8 @@ public class DeltaMetadata
     @Override
     public List<SchemaTableName> listTables(ConnectorSession session, Optional<String> schemaName)
     {
-        List<String> schemaNames = schemaName.<List<String>>map(ImmutableList::of).orElse(listSchemaNames(session));
+        List<String> schemaNames = schemaName.<List<String>>map(ImmutableList::of)
+                .orElseGet(() -> listSchemaNames(session));
         ImmutableList.Builder<SchemaTableName> tableNames = ImmutableList.builder();
         for (String schema : schemaNames) {
             for (String tableName : metastore.getAllTables(metastoreContext(session), schema).orElse(emptyList())) {
@@ -214,9 +315,11 @@ public class DeltaMetadata
         ImmutableMap.Builder<String, ColumnHandle> columnHandles = ImmutableMap.builder();
         for (DeltaColumn column : deltaTableHandle.getDeltaTable().getColumns()) {
             columnHandles.put(
-                    column.getName(),
+                    column.getLogicalName(),
                     new DeltaColumnHandle(
-                            column.getName(),
+                            column.getId(),
+                            column.getPhysicalName(),
+                            column.getLogicalName(),
                             column.getType(),
                             column.isPartition() ? PARTITION : REGULAR,
                             Optional.empty()));
@@ -246,11 +349,19 @@ public class DeltaMetadata
             return null;
         }
 
-        List<ColumnMetadata> columnMetadata = tableHandle.getDeltaTable().getColumns().stream()
-                .map(column -> getColumnMetadata(column))
+        DeltaTable deltaTable = tableHandle.getDeltaTable();
+
+        // External location property
+        Map<String, Object> properties = new HashMap<>(1);
+        if (deltaTable.getTableLocation() != null) {
+            properties.put(DeltaTableProperties.EXTERNAL_LOCATION_PROPERTY, deltaTable.getTableLocation());
+        }
+
+        List<ColumnMetadata> columnMetadata = deltaTable.getColumns().stream()
+                .map(column -> getColumnMetadata(session, column))
                 .collect(Collectors.toList());
 
-        return new ConnectorTableMetadata(tableName, columnMetadata);
+        return new ConnectorTableMetadata(tableName, columnMetadata, properties);
     }
 
     @Override
@@ -262,7 +373,10 @@ public class DeltaMetadata
     private ColumnMetadata getColumnMetadata(ColumnHandle columnHandle)
     {
         DeltaColumnHandle deltaColumnHandle = (DeltaColumnHandle) columnHandle;
-        return new ColumnMetadata(deltaColumnHandle.getName(), typeManager.getType(deltaColumnHandle.getDataType()));
+        return ColumnMetadata.builder()
+                .setName(deltaColumnHandle.getLogicalName())
+                .setType(typeManager.getType(deltaColumnHandle.getDataType()))
+                .build();
     }
 
     private List<SchemaTableName> listTables(ConnectorSession session, SchemaTablePrefix prefix)
@@ -273,9 +387,12 @@ public class DeltaMetadata
         return ImmutableList.of(new SchemaTableName(prefix.getSchemaName(), prefix.getTableName()));
     }
 
-    private ColumnMetadata getColumnMetadata(DeltaColumn deltaColumn)
+    private ColumnMetadata getColumnMetadata(ConnectorSession session, DeltaColumn deltaColumn)
     {
-        return new ColumnMetadata(deltaColumn.getName(), typeManager.getType(deltaColumn.getType()));
+        return ColumnMetadata.builder()
+                .setName(normalizeIdentifier(session, deltaColumn.getLogicalName()))
+                .setType(typeManager.getType(deltaColumn.getType()))
+                .build();
     }
 
     private MetastoreContext metastoreContext(ConnectorSession session)
@@ -284,10 +401,13 @@ public class DeltaMetadata
                 session.getIdentity(),
                 session.getQueryId(),
                 session.getClientInfo(),
+                session.getClientTags(),
                 session.getSource(),
                 Optional.empty(),
                 false,
-                DEFAULT_COLUMN_CONVERTER_PROVIDER);
+                DEFAULT_COLUMN_CONVERTER_PROVIDER,
+                session.getWarningCollector(),
+                session.getRuntimeStats());
     }
 
     private void checkConnectorId(DeltaTableHandle tableHandle)

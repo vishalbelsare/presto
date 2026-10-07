@@ -13,7 +13,9 @@
  */
 package com.facebook.presto.cli;
 
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.client.ClientSession;
+import com.facebook.presto.client.auth.external.ExternalRedirectStrategy;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.CharMatcher;
 import com.google.common.base.Splitter;
@@ -21,10 +23,10 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.net.HostAndPort;
 import io.airlift.airline.Option;
-import io.airlift.units.Duration;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -74,14 +76,23 @@ public class ClientOptions
     @Option(name = "--keystore-password", title = "keystore password", description = "Keystore password")
     public String keystorePassword;
 
+    @Option(name = "--keystore-type", title = "keystore type", description = "Keystore type")
+    public String keyStoreType = KeyStore.getDefaultType();
+
     @Option(name = "--truststore-path", title = "truststore path", description = "Truststore path")
     public String truststorePath;
 
     @Option(name = "--truststore-password", title = "truststore password", description = "Truststore password")
     public String truststorePassword;
 
+    @Option(name = "--truststore-type", title = "truststore type", description = "Truststore type")
+    public String trustStoreType = KeyStore.getDefaultType();
+
     @Option(name = "--access-token", title = "access token", description = "Access token")
     public String accessToken;
+
+    @Option(name = "--insecure", title = "trust all certificates", description = "Skip validation of HTTP server certificates (should only be used for debugging)")
+    public boolean insecure;
 
     @Option(name = "--user", title = "user", description = "Username")
     public String user = System.getProperty("user.name");
@@ -110,13 +121,16 @@ public class ClientOptions
     @Option(name = "--debug", title = "debug", description = "Enable debug information")
     public boolean debug;
 
+    @Option(name = "--runtime-stats", title = "runtime stats", description = "Enable runtime stats information. Flag must be used in conjunction with the --debug flag")
+    public boolean runtime;
+
     @Option(name = "--log-levels-file", title = "log levels file", description = "Configure log levels for debugging using this file")
     public String logLevelsFile;
 
     @Option(name = "--execute", title = "execute", description = "Execute specified statements and exit")
     public String execute;
 
-    @Option(name = "--output-format", title = "output-format", description = "Output format for batch mode [ALIGNED, VERTICAL, CSV, TSV, CSV_HEADER, TSV_HEADER, NULL] (default: CSV)")
+    @Option(name = "--output-format", title = "output-format", description = "Output format for batch mode [ALIGNED, VERTICAL, JSON, CSV, TSV, CSV_HEADER, TSV_HEADER, NULL] (default: CSV)")
     public OutputFormat outputFormat = OutputFormat.CSV;
 
     @Option(name = "--resource-estimate", title = "resource-estimate", description = "Resource estimate (property can be used multiple times; format is key=value)")
@@ -143,6 +157,18 @@ public class ClientOptions
     @Option(name = "--disable-compression", title = "disable response compression", description = "Disable compression of query results")
     public boolean disableCompression;
 
+    @Option(name = "--validate-nexturi-source", title = "validate nextUri source", description = "Validate nextUri server host and port does not change during query execution")
+    public boolean validateNextUriSource;
+
+    @Option(name = "--disable-redirects", title = "disable redirects", description = "Disable client following redirects from server")
+    public boolean disableRedirects;
+
+    @Option(name = "--external-authentication", title = "enable external authentication", description = "Enable external authentication")
+    public boolean externalAuthentication;
+
+    @Option(name = "--external-authentication-redirect-handler", title = "external authentication redirect handler", description = "External authentication redirect handlers")
+    public List<ExternalRedirectStrategy> externalAuthenticationRedirectHandler = new ArrayList<>();
+
     public enum OutputFormat
     {
         ALIGNED,
@@ -151,6 +177,7 @@ public class ClientOptions
         TSV,
         CSV_HEADER,
         TSV_HEADER,
+        JSON,
         NULL
     }
 
@@ -176,7 +203,8 @@ public class ClientOptions
                 clientRequestTimeout,
                 disableCompression,
                 emptyMap(),
-                emptyMap());
+                emptyMap(),
+                validateNextUriSource);
     }
 
     public static URI parseServer(String server)

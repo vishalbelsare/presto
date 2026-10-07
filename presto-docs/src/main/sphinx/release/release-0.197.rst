@@ -8,15 +8,15 @@ General Changes
 * Fix query scheduling hang when the ``concurrent_lifespans_per_task`` session property is set.
 * Fix failure when a query contains a ``TIMESTAMP`` literal corresponding to a local time that
   does not occur in the default time zone of the Presto JVM. For example, if Presto was running
-  in a CET zone (e.g., ``Europe/Brussels``) and the client session was in UTC, an expression
+  in a CET zone (such as ``Europe/Brussels``) and the client session was in UTC, an expression
   such as ``TIMESTAMP '2017-03-26 02:10:00'`` would cause a failure.
 * Extend predicate inference and pushdown for queries using a ``<symbol> IN <subquery>`` predicate.
 * Support predicate pushdown for the ``<column> IN <values list>`` predicate
   where values in the ``values list`` require casting to match the type of ``column``.
-* Optimize :func:`min` and :func:`max` to avoid unnecessary object creation in order to reduce GC overhead.
-* Optimize the performance of :func:`ST_XMin`, :func:`ST_XMax`, :func:`ST_YMin`, and :func:`ST_YMax`.
-* Add ``DATE`` variant for :func:`sequence` function.
-* Add :func:`ST_IsSimple` geospatial function.
+* Optimize :func:`!min` and :func:`!max` to avoid unnecessary object creation in order to reduce GC overhead.
+* Optimize the performance of :func:`!ST_XMin`, :func:`!ST_XMax`, :func:`!ST_YMin`, and :func:`!ST_YMax`.
+* Add ``DATE`` variant for :func:`!sequence` function.
+* Add :func:`!ST_IsSimple` geospatial function.
 * Add support for broadcast spatial joins.
 
 Resource Groups Changes

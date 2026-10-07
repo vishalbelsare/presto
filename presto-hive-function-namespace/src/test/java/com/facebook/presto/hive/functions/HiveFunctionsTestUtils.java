@@ -22,6 +22,8 @@ import com.google.inject.Key;
 import java.util.Collections;
 import java.util.Map;
 
+import static com.facebook.presto.common.AuthClientConfigs.defaultAuthClientConfigs;
+
 public final class HiveFunctionsTestUtils
 {
     private HiveFunctionsTestUtils() {}
@@ -37,7 +39,9 @@ public final class HiveFunctionsTestUtils
         functionAndTypeManager.loadFunctionNamespaceManager(
                 "hive-functions",
                 "hive",
-                getNamespaceManagerCreationProperties());
+                getNamespaceManagerCreationProperties(),
+                server.getPluginNodeManager(),
+                defaultAuthClientConfigs(server.getPluginNodeManager().getCurrentNode().getNodeIdentifier()));
         server.refreshNodes();
         return server;
     }

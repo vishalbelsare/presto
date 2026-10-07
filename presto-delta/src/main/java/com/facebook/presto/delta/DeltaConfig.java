@@ -14,13 +14,13 @@
 package com.facebook.presto.delta;
 
 import com.facebook.airlift.configuration.Config;
-
-import javax.validation.constraints.NotNull;
+import jakarta.validation.constraints.NotNull;
 
 public class DeltaConfig
 {
     private int maxSplitsBatchSize = 200;
     private boolean parquetDereferencePushdownEnabled = true;
+    private boolean caseSensitivePartitionsEnabled = true;
 
     @NotNull
     public boolean isParquetDereferencePushdownEnabled()
@@ -44,6 +44,18 @@ public class DeltaConfig
     public DeltaConfig setMaxSplitsBatchSize(int maxSplitsBatchSize)
     {
         this.maxSplitsBatchSize = maxSplitsBatchSize;
+        return this;
+    }
+
+    public boolean isCaseSensitivePartitionsEnabled()
+    {
+        return this.caseSensitivePartitionsEnabled;
+    }
+
+    @Config("delta.case-sensitive-partitions-enabled")
+    public DeltaConfig setCaseSensitivePartitionsEnabled(boolean caseSensitivePartitionsEnabled)
+    {
+        this.caseSensitivePartitionsEnabled = caseSensitivePartitionsEnabled;
         return this;
     }
 }

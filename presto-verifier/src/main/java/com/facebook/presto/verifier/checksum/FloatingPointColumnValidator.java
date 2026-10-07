@@ -23,8 +23,7 @@ import com.facebook.presto.sql.tree.SingleColumn;
 import com.facebook.presto.verifier.framework.Column;
 import com.facebook.presto.verifier.framework.VerifierConfig;
 import com.google.common.collect.ImmutableList;
-
-import javax.inject.Inject;
+import jakarta.inject.Inject;
 
 import java.util.List;
 import java.util.Objects;
@@ -99,6 +98,22 @@ public class FloatingPointColumnValidator
                         Optional.of(delimitedIdentifier(getNegativeInfinityCountColumnAlias(column)))));
     }
 
+    public static FloatingPointColumnChecksum toColumnChecksum(Column column, ChecksumResult checksumResult, long rowCount)
+    {
+        // Case for an empty result table, when some aggregation return nulls.
+        Object nanCount = checksumResult.getChecksum(getNanCountColumnAlias(column));
+        if (Objects.isNull(nanCount)) {
+            return new FloatingPointColumnChecksum(null, 0, 0, 0, 0);
+        }
+
+        return new FloatingPointColumnChecksum(
+                checksumResult.getChecksum(getSumColumnAlias(column)),
+                (long) nanCount,
+                (long) checksumResult.getChecksum(getPositiveInfinityCountColumnAlias(column)),
+                (long) checksumResult.getChecksum(getNegativeInfinityCountColumnAlias(column)),
+                rowCount);
+    }
+
     @Override
     public List<ColumnMatchResult<FloatingPointColumnChecksum>> validate(Column column, ChecksumResult controlResult, ChecksumResult testResult)
     {
@@ -112,24 +127,10 @@ public class FloatingPointColumnValidator
 
         FloatingPointColumnChecksum controlChecksum = toColumnChecksum(column, controlResult, rowCount);
         FloatingPointColumnChecksum testChecksum = toColumnChecksum(column, testResult, rowCount);
-        return ImmutableList.of(validate(column, controlChecksum, testChecksum, rowCount));
+        return ImmutableList.of(validate(column, controlChecksum, testChecksum));
     }
 
-    private static FloatingPointColumnChecksum toColumnChecksum(Column column, ChecksumResult checksumResult, long rowCount)
-    {
-        return new FloatingPointColumnChecksum(
-                checksumResult.getChecksum(getSumColumnAlias(column)),
-                (long) checksumResult.getChecksum(getNanCountColumnAlias(column)),
-                (long) checksumResult.getChecksum(getPositiveInfinityCountColumnAlias(column)),
-                (long) checksumResult.getChecksum(getNegativeInfinityCountColumnAlias(column)),
-                rowCount);
-    }
-
-    private ColumnMatchResult<FloatingPointColumnChecksum> validate(
-            Column column,
-            FloatingPointColumnChecksum controlChecksum,
-            FloatingPointColumnChecksum testChecksum,
-            long rowCount)
+    public ColumnMatchResult<FloatingPointColumnChecksum> validate(Column column, FloatingPointColumnChecksum controlChecksum, FloatingPointColumnChecksum testChecksum)
     {
         if (!Objects.equals(controlChecksum.getNanCount(), testChecksum.getNanCount()) ||
                 !Objects.equals(controlChecksum.getPositiveInfinityCount(), testChecksum.getPositiveInfinityCount()) ||
@@ -152,8 +153,8 @@ public class FloatingPointColumnValidator
 
         // Use absolute error margin if either control sum or test sum is 0.
         // Row count won't be zero since otherwise controlSum and testSum will both be null, and this has already been handled above.
-        double controlMean = controlSum / rowCount;
-        double testMean = testSum / rowCount;
+        double controlMean = controlSum / controlChecksum.getRowCount();
+        double testMean = testSum / testChecksum.getRowCount();
         if (abs(controlMean) < absoluteErrorMargin || abs(testMean) < absoluteErrorMargin) {
             return new ColumnMatchResult<>(abs(controlMean) < absoluteErrorMargin && abs(testMean) < absoluteErrorMargin, column, controlChecksum, testChecksum);
         }
@@ -164,22 +165,22 @@ public class FloatingPointColumnValidator
         return new ColumnMatchResult<>(relativeError < relativeErrorMargin, column, Optional.of("relative error: " + relativeError), controlChecksum, testChecksum);
     }
 
-    private static String getSumColumnAlias(Column column)
+    public static String getSumColumnAlias(Column column)
     {
         return column.getName() + "$sum";
     }
 
-    private static String getNanCountColumnAlias(Column column)
+    public static String getNanCountColumnAlias(Column column)
     {
         return column.getName() + "$nan_count";
     }
 
-    private static String getPositiveInfinityCountColumnAlias(Column column)
+    public static String getPositiveInfinityCountColumnAlias(Column column)
     {
         return column.getName() + "$pos_inf_count";
     }
 
-    private static String getNegativeInfinityCountColumnAlias(Column column)
+    public static String getNegativeInfinityCountColumnAlias(Column column)
     {
         return column.getName() + "$neg_inf_count";
     }

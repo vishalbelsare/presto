@@ -22,9 +22,11 @@ import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.util.Properties;
 
+import static com.facebook.presto.jdbc.ConnectionProperties.CLIENT_TAGS;
 import static com.facebook.presto.jdbc.ConnectionProperties.CUSTOM_HEADERS;
 import static com.facebook.presto.jdbc.ConnectionProperties.DISABLE_COMPRESSION;
 import static com.facebook.presto.jdbc.ConnectionProperties.EXTRA_CREDENTIALS;
+import static com.facebook.presto.jdbc.ConnectionProperties.FOLLOW_REDIRECTS;
 import static com.facebook.presto.jdbc.ConnectionProperties.HTTP_PROTOCOLS;
 import static com.facebook.presto.jdbc.ConnectionProperties.HTTP_PROXY;
 import static com.facebook.presto.jdbc.ConnectionProperties.QUERY_INTERCEPTORS;
@@ -32,8 +34,10 @@ import static com.facebook.presto.jdbc.ConnectionProperties.SESSION_PROPERTIES;
 import static com.facebook.presto.jdbc.ConnectionProperties.SOCKS_PROXY;
 import static com.facebook.presto.jdbc.ConnectionProperties.SSL_TRUST_STORE_PASSWORD;
 import static com.facebook.presto.jdbc.ConnectionProperties.SSL_TRUST_STORE_PATH;
+import static com.facebook.presto.jdbc.ConnectionProperties.VALIDATE_NEXTURI_SOURCE;
 import static java.lang.String.format;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
@@ -179,6 +183,17 @@ public class TestPrestoDriverUri
     }
 
     @Test
+    public void testUriWithoutFollowingRedirects()
+            throws SQLException
+    {
+        PrestoDriverUri parameters = createDriverUri("presto://localhost:8080/blackhole?followRedirects=false");
+        assertFalse(parameters.followRedirects());
+        assertEquals(parameters.getProperties().getProperty(FOLLOW_REDIRECTS.getKey()), "false");
+
+        assertInvalid("presto://localhost:8080/blackhole?followRedirects=ANOTHERVALUE", "Connection property 'followRedirects' value is invalid: ANOTHERVALUE");
+    }
+
+    @Test
     public void testUriWithoutSsl()
             throws SQLException
     {
@@ -269,6 +284,26 @@ public class TestPrestoDriverUri
     }
 
     @Test
+    public void testUriWithClientTags()
+            throws SQLException
+    {
+        String clientTags = "c1,c2";
+        PrestoDriverUri parameters = createDriverUri("presto://localhost:8080?clientTags=" + clientTags);
+        Properties properties = parameters.getProperties();
+        assertEquals(properties.getProperty(CLIENT_TAGS.getKey()), clientTags);
+    }
+
+    @Test(expectedExceptions = SQLException.class)
+    public void assertNonAlphanumericClientTags()
+            throws SQLException
+    {
+        String clientTags = "d1,@d2,d3";
+        PrestoDriverUri parameters = createDriverUri("presto://localhost:8080?clientTags=" + clientTags);
+        Properties properties = parameters.getProperties();
+        assertEquals(properties.getProperty(CLIENT_TAGS.getKey()), clientTags);
+    }
+
+    @Test
     public void testUriWithSessionProperties()
             throws SQLException
     {
@@ -298,8 +333,23 @@ public class TestPrestoDriverUri
         assertEquals(properties.getProperty(QUERY_INTERCEPTORS.getKey()), queryInterceptor);
     }
 
+    @Test
+    public void testValidateNextUriSource()
+            throws SQLException
+    {
+        PrestoDriverUri defaultParams = createDriverUri("presto://localhost:8080/blackhole");
+        assertFalse(defaultParams.validateNextUriSource());
+        assertEquals(defaultParams.getProperties().getProperty(VALIDATE_NEXTURI_SOURCE.getKey()), "false");
+
+        PrestoDriverUri parameters = createDriverUri("presto://localhost:8080/blackhole?validateNextUriSource=true");
+        assertTrue(parameters.validateNextUriSource());
+        assertEquals(parameters.getProperties().getProperty(VALIDATE_NEXTURI_SOURCE.getKey()), "true");
+
+        assertInvalid("presto://localhost:8080/blackhole?validateNextUriSource=ANOTHERVALUE", "Connection property 'validateNextUriSource' value is invalid: ANOTHERVALUE");
+    }
+
     public static class TestForUriQueryInterceptor
-                implements QueryInterceptor
+            implements QueryInterceptor
     {}
 
     private static void assertUriPortScheme(PrestoDriverUri parameters, int port, String scheme)

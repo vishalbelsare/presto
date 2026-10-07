@@ -13,18 +13,21 @@
  */
 package com.facebook.presto.hive.metastore.thrift;
 
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.common.predicate.Domain;
 import com.facebook.presto.common.type.Type;
+import com.facebook.presto.hive.HiveTableHandle;
 import com.facebook.presto.hive.HiveType;
 import com.facebook.presto.hive.PartitionMutator;
+import com.facebook.presto.hive.PartitionNameWithVersion;
 import com.facebook.presto.hive.metastore.Column;
 import com.facebook.presto.hive.metastore.Database;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
 import com.facebook.presto.hive.metastore.HivePrivilegeInfo;
 import com.facebook.presto.hive.metastore.MetastoreContext;
+import com.facebook.presto.hive.metastore.MetastoreOperationResult;
 import com.facebook.presto.hive.metastore.MetastoreUtil;
 import com.facebook.presto.hive.metastore.Partition;
-import com.facebook.presto.hive.metastore.PartitionNameWithVersion;
 import com.facebook.presto.hive.metastore.PartitionStatistics;
 import com.facebook.presto.hive.metastore.PartitionWithStatistics;
 import com.facebook.presto.hive.metastore.PrincipalPrivileges;
@@ -33,22 +36,30 @@ import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaNotFoundException;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.TableNotFoundException;
+import com.facebook.presto.spi.constraints.NotNullConstraint;
+import com.facebook.presto.spi.constraints.PrimaryKeyConstraint;
+import com.facebook.presto.spi.constraints.TableConstraint;
+import com.facebook.presto.spi.constraints.UniqueConstraint;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.RoleGrant;
 import com.facebook.presto.spi.statistics.ColumnStatisticType;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.units.Duration;
+import com.google.common.collect.Maps;
+import jakarta.inject.Inject;
+import org.apache.hadoop.hive.common.StatsSetupConst;
+import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
-
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+import static com.facebook.presto.hive.metastore.MetastoreUtil.getPartitionNamesWithEmptyVersion;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.verifyCanDropColumn;
 import static com.facebook.presto.hive.metastore.PrestoTableType.TEMPORARY_TABLE;
 import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.fromMetastoreApiPartition;
@@ -59,6 +70,7 @@ import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.toMe
 import static com.facebook.presto.hive.metastore.thrift.ThriftMetastoreUtil.toMetastoreApiTable;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Objects.requireNonNull;
 import static java.util.function.UnaryOperator.identity;
 
@@ -90,12 +102,31 @@ public class BridgingHiveMetastore
     @Override
     public Optional<Table> getTable(MetastoreContext metastoreContext, String databaseName, String tableName)
     {
-        return delegate.getTable(metastoreContext, databaseName, tableName).map(table -> {
+        return getTable(metastoreContext, new HiveTableHandle(databaseName, tableName));
+    }
+
+    @Override
+    public Optional<Table> getTable(MetastoreContext metastoreContext, HiveTableHandle hiveTableHandle)
+    {
+        return delegate.getTable(metastoreContext, hiveTableHandle).map(table -> {
             if (isAvroTableWithSchemaSet(table) || isCsvTable(table)) {
-                return fromMetastoreApiTable(table, delegate.getFields(metastoreContext, databaseName, tableName).get(), metastoreContext.getColumnConverter());
+                return fromMetastoreApiTable(table, delegate.getFields(metastoreContext, hiveTableHandle.getSchemaName(), hiveTableHandle.getTableName()).get(), metastoreContext.getColumnConverter());
             }
             return fromMetastoreApiTable(table, metastoreContext.getColumnConverter());
         });
+    }
+
+    @Override
+    public List<TableConstraint<String>> getTableConstraints(MetastoreContext metastoreContext, String databaseName, String tableName)
+    {
+        ImmutableList.Builder<TableConstraint<String>> constraints = ImmutableList.builder();
+        Optional<PrimaryKeyConstraint<String>> primaryKey = delegate.getPrimaryKey(metastoreContext, databaseName, tableName);
+        if (primaryKey.isPresent()) {
+            constraints.add(primaryKey.get());
+        }
+        constraints.addAll(delegate.getUniqueConstraints(metastoreContext, databaseName, tableName));
+        constraints.addAll(delegate.getNotNullConstraints(metastoreContext, databaseName, tableName));
+        return constraints.build();
     }
 
     @Override
@@ -123,9 +154,10 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public void updatePartitionStatistics(MetastoreContext metastoreContext, String databaseName, String tableName, String partitionName, Function<PartitionStatistics, PartitionStatistics> update)
+    public void updatePartitionStatistics(MetastoreContext metastoreContext, String databaseName, String tableName, Map<String, Function<PartitionStatistics, PartitionStatistics>> updates)
     {
-        delegate.updatePartitionStatistics(metastoreContext, databaseName, tableName, partitionName, update);
+        updates.forEach(
+                (partitionName, update) -> delegate.updatePartitionStatistics(metastoreContext, databaseName, tableName, partitionName, update));
     }
 
     @Override
@@ -168,10 +200,10 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public void createTable(MetastoreContext metastoreContext, Table table, PrincipalPrivileges principalPrivileges)
+    public MetastoreOperationResult createTable(MetastoreContext metastoreContext, Table table, PrincipalPrivileges principalPrivileges, List<TableConstraint<String>> constraints)
     {
         checkArgument(!table.getTableType().equals(TEMPORARY_TABLE), "temporary tables must never be stored in the metastore");
-        delegate.createTable(metastoreContext, toMetastoreApiTable(table, principalPrivileges, metastoreContext.getColumnConverter()));
+        return delegate.createTable(metastoreContext, toMetastoreApiTable(table, principalPrivileges, metastoreContext.getColumnConverter()), constraints);
     }
 
     @Override
@@ -181,14 +213,14 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public void replaceTable(MetastoreContext metastoreContext, String databaseName, String tableName, Table newTable, PrincipalPrivileges principalPrivileges)
+    public MetastoreOperationResult replaceTable(MetastoreContext metastoreContext, String databaseName, String tableName, Table newTable, PrincipalPrivileges principalPrivileges)
     {
         checkArgument(!newTable.getTableType().equals(TEMPORARY_TABLE), "temporary tables must never be stored in the metastore");
-        alterTable(metastoreContext, databaseName, tableName, toMetastoreApiTable(newTable, principalPrivileges, metastoreContext.getColumnConverter()));
+        return alterTable(metastoreContext, databaseName, tableName, toMetastoreApiTable(newTable, principalPrivileges, metastoreContext.getColumnConverter()));
     }
 
     @Override
-    public void renameTable(MetastoreContext metastoreContext, String databaseName, String tableName, String newDatabaseName, String newTableName)
+    public MetastoreOperationResult renameTable(MetastoreContext metastoreContext, String databaseName, String tableName, String newDatabaseName, String newTableName)
     {
         Optional<org.apache.hadoop.hive.metastore.api.Table> source = delegate.getTable(metastoreContext, databaseName, tableName);
         if (!source.isPresent()) {
@@ -197,11 +229,11 @@ public class BridgingHiveMetastore
         org.apache.hadoop.hive.metastore.api.Table table = source.get();
         table.setDbName(newDatabaseName);
         table.setTableName(newTableName);
-        alterTable(metastoreContext, databaseName, tableName, table);
+        return alterTable(metastoreContext, databaseName, tableName, table);
     }
 
     @Override
-    public void addColumn(MetastoreContext metastoreContext, String databaseName, String tableName, String columnName, HiveType columnType, String columnComment)
+    public MetastoreOperationResult addColumn(MetastoreContext metastoreContext, String databaseName, String tableName, String columnName, HiveType columnType, String columnComment)
     {
         Optional<org.apache.hadoop.hive.metastore.api.Table> source = delegate.getTable(metastoreContext, databaseName, tableName);
         if (!source.isPresent()) {
@@ -210,11 +242,11 @@ public class BridgingHiveMetastore
         org.apache.hadoop.hive.metastore.api.Table table = source.get();
         Column column = new Column(columnName, columnType, Optional.ofNullable(columnComment), Optional.empty());
         table.getSd().getCols().add(metastoreContext.getColumnConverter().fromColumn(column));
-        alterTable(metastoreContext, databaseName, tableName, table);
+        return alterTable(metastoreContext, databaseName, tableName, table);
     }
 
     @Override
-    public void renameColumn(MetastoreContext metastoreContext, String databaseName, String tableName, String oldColumnName, String newColumnName)
+    public MetastoreOperationResult renameColumn(MetastoreContext metastoreContext, String databaseName, String tableName, String oldColumnName, String newColumnName)
     {
         Optional<org.apache.hadoop.hive.metastore.api.Table> source = delegate.getTable(metastoreContext, databaseName, tableName);
         if (!source.isPresent()) {
@@ -231,22 +263,37 @@ public class BridgingHiveMetastore
                 fieldSchema.setName(newColumnName);
             }
         }
-        alterTable(metastoreContext, databaseName, tableName, table);
+        return alterTable(metastoreContext, databaseName, tableName, table);
     }
 
     @Override
-    public void dropColumn(MetastoreContext metastoreContext, String databaseName, String tableName, String columnName)
+    public MetastoreOperationResult dropColumn(MetastoreContext metastoreContext, String databaseName, String tableName, String columnName)
     {
         verifyCanDropColumn(this, metastoreContext, databaseName, tableName, columnName);
         org.apache.hadoop.hive.metastore.api.Table table = delegate.getTable(metastoreContext, databaseName, tableName)
                 .orElseThrow(() -> new TableNotFoundException(new SchemaTableName(databaseName, tableName)));
         table.getSd().getCols().removeIf(fieldSchema -> fieldSchema.getName().equals(columnName));
-        alterTable(metastoreContext, databaseName, tableName, table);
+        return alterTable(metastoreContext, databaseName, tableName, table);
     }
 
-    private void alterTable(MetastoreContext metastoreContext, String databaseName, String tableName, org.apache.hadoop.hive.metastore.api.Table table)
+    private MetastoreOperationResult alterTable(MetastoreContext metastoreContext, String databaseName, String tableName, org.apache.hadoop.hive.metastore.api.Table table)
     {
-        delegate.alterTable(metastoreContext, databaseName, tableName, table);
+        return delegate.alterTable(metastoreContext, databaseName, tableName, table);
+    }
+
+    private MetastoreOperationResult alterTableWithEnvironmentContext(MetastoreContext metastoreContext, String databaseName, String tableName, org.apache.hadoop.hive.metastore.api.Table table, EnvironmentContext environmentContext)
+    {
+        return delegate.alterTableWithEnvironmentContext(metastoreContext, databaseName, tableName, table, environmentContext);
+    }
+
+    @Override
+    public MetastoreOperationResult persistTable(MetastoreContext metastoreContext, String databaseName, String tableName, Table newTable, PrincipalPrivileges principalPrivileges, Supplier<PartitionStatistics> update, Map<String, String> additionalParameters)
+    {
+        checkArgument(!newTable.getTableType().equals(TEMPORARY_TABLE), "temporary tables must never be stored in the metastore");
+        Map<String, String> env = Maps.newHashMapWithExpectedSize(additionalParameters.size() + 1);
+        env.putAll(additionalParameters);
+        env.put(StatsSetupConst.DO_NOT_UPDATE_STATS, StatsSetupConst.TRUE);
+        return alterTableWithEnvironmentContext(metastoreContext, databaseName, tableName, toMetastoreApiTable(newTable, principalPrivileges, metastoreContext.getColumnConverter()), new EnvironmentContext(env));
     }
 
     @Override
@@ -256,19 +303,19 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public Optional<List<String>> getPartitionNames(MetastoreContext metastoreContext, String databaseName, String tableName)
+    public Optional<List<PartitionNameWithVersion>> getPartitionNames(MetastoreContext metastoreContext, String databaseName, String tableName)
     {
-        return delegate.getPartitionNames(metastoreContext, databaseName, tableName);
+        return delegate.getPartitionNames(metastoreContext, databaseName, tableName).map(MetastoreUtil::getPartitionNamesWithEmptyVersion);
     }
 
     @Override
-    public List<String> getPartitionNamesByFilter(
+    public List<PartitionNameWithVersion> getPartitionNamesByFilter(
             MetastoreContext metastoreContext,
             String databaseName,
             String tableName,
             Map<Column, Domain> partitionPredicates)
     {
-        return delegate.getPartitionNamesByFilter(metastoreContext, databaseName, tableName, partitionPredicates);
+        return getPartitionNamesWithEmptyVersion(delegate.getPartitionNamesByFilter(metastoreContext, databaseName, tableName, partitionPredicates));
     }
 
     @Override
@@ -282,12 +329,16 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public Map<String, Optional<Partition>> getPartitionsByNames(MetastoreContext metastoreContext, String databaseName, String tableName, List<String> partitionNames)
+    public Map<String, Optional<Partition>> getPartitionsByNames(MetastoreContext metastoreContext, String databaseName, String tableName, List<PartitionNameWithVersion> partitionNamesWithVersion)
     {
-        requireNonNull(partitionNames, "partitionNames is null");
-        if (partitionNames.isEmpty()) {
+        requireNonNull(partitionNamesWithVersion, "partitionNames is null");
+        if (partitionNamesWithVersion.isEmpty()) {
             return ImmutableMap.of();
         }
+
+        List<String> partitionNames = partitionNamesWithVersion.stream()
+                .map(PartitionNameWithVersion::getPartitionName)
+                .collect(toImmutableList());
         Map<String, List<String>> partitionNameToPartitionValuesMap = partitionNames.stream()
                 .collect(Collectors.toMap(identity(), MetastoreUtil::toPartitionValues));
         Map<List<String>, Partition> partitionValuesToPartitionMap = delegate.getPartitionsByNames(metastoreContext, databaseName, tableName, partitionNames).stream()
@@ -302,9 +353,9 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public void addPartitions(MetastoreContext metastoreContext, String databaseName, String tableName, List<PartitionWithStatistics> partitions)
+    public MetastoreOperationResult addPartitions(MetastoreContext metastoreContext, String databaseName, String tableName, List<PartitionWithStatistics> partitions)
     {
-        delegate.addPartitions(metastoreContext, databaseName, tableName, partitions);
+        return delegate.addPartitions(metastoreContext, databaseName, tableName, partitions);
     }
 
     @Override
@@ -314,9 +365,9 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public void alterPartition(MetastoreContext metastoreContext, String databaseName, String tableName, PartitionWithStatistics partition)
+    public MetastoreOperationResult alterPartition(MetastoreContext metastoreContext, String databaseName, String tableName, PartitionWithStatistics partition)
     {
-        delegate.alterPartition(metastoreContext, databaseName, tableName, partition);
+        return delegate.alterPartition(metastoreContext, databaseName, tableName, partition);
     }
 
     @Override
@@ -377,5 +428,36 @@ public class BridgingHiveMetastore
     public void setPartitionLeases(MetastoreContext metastoreContext, String databaseName, String tableName, Map<String, String> partitionNameToLocation, Duration leaseDuration)
     {
         delegate.setPartitionLeases(metastoreContext, databaseName, tableName, partitionNameToLocation, leaseDuration);
+    }
+
+    @Override
+    public MetastoreOperationResult dropConstraint(MetastoreContext metastoreContext, String databaseName, String tableName, String constraintName)
+    {
+        return delegate.dropConstraint(metastoreContext, databaseName, tableName, constraintName);
+    }
+
+    @Override
+    public MetastoreOperationResult addConstraint(MetastoreContext metastoreContext, String databaseName, String tableName, TableConstraint<String> tableConstraint)
+    {
+        MetastoreOperationResult result;
+        if (tableConstraint instanceof UniqueConstraint || tableConstraint instanceof PrimaryKeyConstraint || tableConstraint instanceof NotNullConstraint) {
+            result = delegate.addConstraint(metastoreContext, databaseName, tableName, tableConstraint);
+        }
+        else {
+            throw new PrestoException(NOT_SUPPORTED, "Hive metastore supports only unique/primary key/not null constraints");
+        }
+        return result;
+    }
+
+    @Override
+    public Optional<Long> lock(MetastoreContext metastoreContext, String databaseName, String tableName)
+    {
+        return Optional.of(delegate.lock(metastoreContext, databaseName, tableName));
+    }
+
+    @Override
+    public void unlock(MetastoreContext metastoreContext, long lockId)
+    {
+        delegate.unlock(metastoreContext, lockId);
     }
 }

@@ -13,23 +13,82 @@
  */
 package com.facebook.presto.spi.security;
 
+import com.facebook.presto.common.RuntimeStats;
+import com.facebook.presto.common.resourceGroups.QueryType;
 import com.facebook.presto.spi.QueryId;
+import com.facebook.presto.spi.WarningCollector;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
+import static java.util.Collections.unmodifiableMap;
 import static java.util.Objects.requireNonNull;
 
 public class AccessControlContext
 {
     private final QueryId queryId;
     private final Optional<String> clientInfo;
+    private final Set<String> clientTags;
     private final Optional<String> source;
+    private final WarningCollector warningCollector;
+    private final RuntimeStats runtimeStats;
+    private final Optional<QueryType> queryType;
+    private final Optional<String> catalog;
+    private final Optional<String> schema;
+    private final Optional<String> sqlText;
+    private final Map<String, String> preparedStatements;
 
-    public AccessControlContext(QueryId queryId, Optional<String> clientInfo, Optional<String> source)
+    public AccessControlContext(
+            QueryId queryId,
+            Optional<String> clientInfo,
+            Set<String> clientTags,
+            Optional<String> source,
+            WarningCollector warningCollector,
+            RuntimeStats runtimeStats,
+            Optional<QueryType> queryType,
+            Optional<String> catalog,
+            Optional<String> schema)
+    {
+        this(queryId,
+                clientInfo,
+                clientTags,
+                source,
+                warningCollector,
+                runtimeStats,
+                queryType,
+                catalog,
+                schema,
+                Optional.empty(),
+                new LinkedHashMap<>());
+    }
+
+    public AccessControlContext(
+            QueryId queryId,
+            Optional<String> clientInfo,
+            Set<String> clientTags,
+            Optional<String> source,
+            WarningCollector warningCollector,
+            RuntimeStats runtimeStats,
+            Optional<QueryType> queryType,
+            Optional<String> catalog,
+            Optional<String> schema,
+            Optional<String> sqlText,
+            Map<String, String> preparedStatements)
     {
         this.queryId = requireNonNull(queryId, "queryId is null");
         this.clientInfo = requireNonNull(clientInfo, "clientInfo is null");
+        this.clientTags = requireNonNull(clientTags, "clientTags is null");
         this.source = requireNonNull(source, "source is null");
+        this.warningCollector = requireNonNull(warningCollector, "warningCollector is null");
+        this.runtimeStats = requireNonNull(runtimeStats, "runtimeStats is null");
+        this.queryType = requireNonNull(queryType, "queryType is null");
+        this.catalog = requireNonNull(catalog, "catalog is null");
+        this.schema = requireNonNull(schema, "schema is null");
+        this.sqlText = requireNonNull(sqlText, "sqlText is null");
+        this.preparedStatements = unmodifiableMap(new LinkedHashMap<>(requireNonNull(preparedStatements, "preparedStatements is null")));
     }
 
     public QueryId getQueryId()
@@ -42,8 +101,74 @@ public class AccessControlContext
         return clientInfo;
     }
 
+    public Set<String> getClientTags()
+    {
+        return clientTags;
+    }
+
     public Optional<String> getSource()
     {
         return source;
+    }
+
+    public WarningCollector getWarningCollector()
+    {
+        return warningCollector;
+    }
+
+    public RuntimeStats getRuntimeStats()
+    {
+        return runtimeStats;
+    }
+
+    public Optional<QueryType> getQueryType()
+    {
+        return queryType;
+    }
+
+    public Optional<String> getCatalog()
+    {
+        return catalog;
+    }
+
+    public Optional<String> getSchema()
+    {
+        return schema;
+    }
+
+    public Optional<String> getSqlText()
+    {
+        return sqlText;
+    }
+
+    public Map<String, String> getPreparedStatements()
+    {
+        return preparedStatements;
+    }
+
+    @Override
+    public int hashCode()
+    {
+        return Objects.hash(queryId, clientInfo, clientTags, source, queryType, catalog, schema, sqlText);
+    }
+
+    @Override
+    public boolean equals(Object obj)
+    {
+        if (this == obj) {
+            return true;
+        }
+        if (obj == null || getClass() != obj.getClass()) {
+            return false;
+        }
+        AccessControlContext other = (AccessControlContext) obj;
+        return Objects.equals(this.queryId, other.queryId) &&
+                Objects.equals(this.clientInfo, other.clientInfo) &&
+                Objects.equals(this.clientTags, other.clientTags) &&
+                Objects.equals(this.source, other.source) &&
+                Objects.equals(this.queryType, other.queryType) &&
+                Objects.equals(this.catalog, other.catalog) &&
+                Objects.equals(this.schema, other.schema) &&
+                Objects.equals(this.sqlText, other.sqlText);
     }
 }

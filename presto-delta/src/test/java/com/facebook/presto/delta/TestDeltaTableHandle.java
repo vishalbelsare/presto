@@ -16,25 +16,22 @@ package com.facebook.presto.delta;
 import com.facebook.airlift.bootstrap.Bootstrap;
 import com.facebook.airlift.json.JsonCodec;
 import com.facebook.airlift.json.JsonModule;
+import com.facebook.drift.codec.guice.ThriftCodecModule;
 import com.facebook.presto.block.BlockJsonSerde;
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.block.BlockEncoding;
 import com.facebook.presto.common.block.BlockEncodingManager;
 import com.facebook.presto.common.block.BlockEncodingSerde;
-import com.facebook.presto.common.predicate.Domain;
-import com.facebook.presto.common.predicate.Range;
-import com.facebook.presto.common.predicate.SortedRangeSet;
-import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.connector.ConnectorManager;
 import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.HandleJsonModule;
 import com.facebook.presto.metadata.HandleResolver;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.type.TypeDeserializer;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.inject.Injector;
 import com.google.inject.Key;
 import com.google.inject.Module;
@@ -47,7 +44,6 @@ import java.util.Optional;
 import static com.facebook.airlift.configuration.ConfigBinder.configBinder;
 import static com.facebook.airlift.json.JsonBinder.jsonBinder;
 import static com.facebook.airlift.json.JsonCodecBinder.jsonCodecBinder;
-import static com.facebook.presto.common.type.RealType.REAL;
 import static com.facebook.presto.common.type.StandardTypes.DATE;
 import static com.facebook.presto.common.type.StandardTypes.DOUBLE;
 import static com.facebook.presto.common.type.StandardTypes.INTEGER;
@@ -56,7 +52,6 @@ import static com.facebook.presto.delta.DeltaColumnHandle.ColumnType.PARTITION;
 import static com.facebook.presto.delta.DeltaColumnHandle.ColumnType.REGULAR;
 import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
 import static com.google.inject.multibindings.Multibinder.newSetBinder;
-import static java.lang.Float.floatToRawIntBits;
 import static org.testng.Assert.assertEquals;
 
 /**
@@ -68,10 +63,10 @@ public class TestDeltaTableHandle
     public void testJsonRoundTrip()
     {
         List<DeltaColumn> columns = ImmutableList.of(
-                new DeltaColumn("c1", parseTypeSignature(StandardTypes.REAL), true, true),
-                new DeltaColumn("c2", parseTypeSignature(INTEGER), false, true),
-                new DeltaColumn("c3", parseTypeSignature(DOUBLE), false, false),
-                new DeltaColumn("c4", parseTypeSignature(DATE), true, false));
+                new DeltaColumn(null, null, "c1", parseTypeSignature(StandardTypes.REAL), true, true),
+                new DeltaColumn(null, null, "c2", parseTypeSignature(INTEGER), false, true),
+                new DeltaColumn(null, null, "c3", parseTypeSignature(DOUBLE), false, false),
+                new DeltaColumn(null, null, "c4", parseTypeSignature(DATE), true, false));
 
         DeltaTable deltaTable = new DeltaTable(
                 "schema",
@@ -81,18 +76,44 @@ public class TestDeltaTableHandle
                 columns);
 
         DeltaColumnHandle c1ColumnHandle = new DeltaColumnHandle(
-                columns.get(0).getName(),
+                columns.get(0).getId(),
+                columns.get(0).getPhysicalName(),
+                columns.get(0).getLogicalName(),
                 columns.get(0).getType(),
                 columns.get(0).isPartition() ? PARTITION : REGULAR,
                 Optional.empty());
 
-        TupleDomain<DeltaColumnHandle> predicate = TupleDomain.withColumnDomains(ImmutableMap.of(
-                c1ColumnHandle, Domain.create(SortedRangeSet.copyOf(REAL,
-                                ImmutableList.of(
-                                        Range.equal(REAL, (long) floatToRawIntBits(100.0f + 0)),
-                                        Range.equal(REAL, (long) floatToRawIntBits(100.008f + 0)),
-                                        Range.equal(REAL, (long) floatToRawIntBits(100.0f + 14)))),
-                        false)));
+        DeltaTableHandle expected = new DeltaTableHandle("delta", deltaTable);
+
+        String json = getJsonCodec().toJson(expected);
+        DeltaTableHandle actual = getJsonCodec().fromJson(json);
+
+        assertEquals(actual.getDeltaTable(), expected.getDeltaTable());
+    }
+
+    @Test
+    public void testJsonRoundTripWithColumnMapping()
+    {
+        List<DeltaColumn> columns = ImmutableList.of(
+                new DeltaColumn(0L, "c1", "c1", parseTypeSignature(StandardTypes.REAL), true, true),
+                new DeltaColumn(1L, "c2", "c2", parseTypeSignature(INTEGER), false, true),
+                new DeltaColumn(2L, "c3", "c3", parseTypeSignature(DOUBLE), false, false),
+                new DeltaColumn(3L, "c4", "c4", parseTypeSignature(DATE), true, false));
+
+        DeltaTable deltaTable = new DeltaTable(
+                "schema",
+                "table",
+                "s3:/bucket/table/location",
+                Optional.of(1L),
+                columns);
+
+        DeltaColumnHandle c1ColumnHandle = new DeltaColumnHandle(
+                columns.get(0).getId(),
+                columns.get(0).getPhysicalName(),
+                columns.get(0).getLogicalName(),
+                columns.get(0).getType(),
+                columns.get(0).isPartition() ? PARTITION : REGULAR,
+                Optional.empty());
 
         DeltaTableHandle expected = new DeltaTableHandle("delta", deltaTable);
 
@@ -107,6 +128,8 @@ public class TestDeltaTableHandle
         Module module = binder -> {
             binder.install(new JsonModule());
             binder.install(new HandleJsonModule());
+            binder.bind(ConnectorManager.class).toProvider(() -> null).in(Scopes.SINGLETON);
+            binder.install(new ThriftCodecModule());
             configBinder(binder).bindConfig(FeaturesConfig.class);
             FunctionAndTypeManager functionAndTypeManager = createTestFunctionAndTypeManager();
             binder.bind(TypeManager.class).toInstance(functionAndTypeManager);

@@ -14,15 +14,24 @@
 package com.facebook.presto.plugin.base.security;
 
 import com.facebook.presto.common.CatalogSchemaName;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.spi.CatalogSchemaTableName;
+import com.facebook.presto.spi.ColumnMetadata;
+import com.facebook.presto.spi.MaterializedViewDefinition;
 import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.analyzer.ViewDefinition;
 import com.facebook.presto.spi.security.AccessControlContext;
+import com.facebook.presto.spi.security.AuthorizedIdentity;
 import com.facebook.presto.spi.security.Identity;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.Privilege;
 import com.facebook.presto.spi.security.SystemAccessControl;
+import com.facebook.presto.spi.security.ViewExpression;
 
 import java.security.Principal;
+import java.security.cert.X509Certificate;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -54,9 +63,15 @@ public abstract class ForwardingSystemAccessControl
     }
 
     @Override
-    public void checkQueryIntegrity(Identity identity, AccessControlContext context, String query)
+    public AuthorizedIdentity selectAuthorizedIdentity(Identity identity, AccessControlContext context, String userName, List<X509Certificate> certificates)
     {
-        delegate().checkQueryIntegrity(identity, context, query);
+        return delegate().selectAuthorizedIdentity(identity, context, userName, certificates);
+    }
+
+    @Override
+    public void checkQueryIntegrity(Identity identity, AccessControlContext context, String query, Map<String, String> preparedStatements, Map<QualifiedObjectName, ViewDefinition> viewDefinitions, Map<QualifiedObjectName, MaterializedViewDefinition> materializedViewDefinitions)
+    {
+        delegate().checkQueryIntegrity(identity, context, query, preparedStatements, viewDefinitions, materializedViewDefinitions);
     }
 
     @Override
@@ -90,6 +105,12 @@ public abstract class ForwardingSystemAccessControl
     }
 
     @Override
+    public void checkCanAlterColumn(Identity identity, AccessControlContext context, CatalogSchemaTableName table)
+    {
+        delegate().checkCanAlterColumn(identity, context, table);
+    }
+
+    @Override
     public void checkCanRenameSchema(Identity identity, AccessControlContext context, CatalogSchemaName schema, String newSchemaName)
     {
         delegate().checkCanRenameSchema(identity, context, schema, newSchemaName);
@@ -108,9 +129,21 @@ public abstract class ForwardingSystemAccessControl
     }
 
     @Override
+    public void checkCanShowCreateTable(Identity identity, AccessControlContext context, CatalogSchemaTableName table)
+    {
+        delegate().checkCanShowCreateTable(identity, context, table);
+    }
+
+    @Override
     public void checkCanCreateTable(Identity identity, AccessControlContext context, CatalogSchemaTableName table)
     {
         delegate().checkCanCreateTable(identity, context, table);
+    }
+
+    @Override
+    public void checkCanSetTableProperties(Identity identity, AccessControlContext context, CatalogSchemaTableName table)
+    {
+        delegate().checkCanSetTableProperties(identity, context, table);
     }
 
     @Override
@@ -138,6 +171,18 @@ public abstract class ForwardingSystemAccessControl
     }
 
     @Override
+    public void checkCanShowColumnsMetadata(Identity identity, AccessControlContext context, CatalogSchemaTableName table)
+    {
+        delegate().checkCanShowColumnsMetadata(identity, context, table);
+    }
+
+    @Override
+    public List<ColumnMetadata> filterColumns(Identity identity, AccessControlContext context, CatalogSchemaTableName table, List<ColumnMetadata> columns)
+    {
+        return delegate().filterColumns(identity, context, table, columns);
+    }
+
+    @Override
     public void checkCanAddColumn(Identity identity, AccessControlContext context, CatalogSchemaTableName table)
     {
         delegate().checkCanAddColumn(identity, context, table);
@@ -162,6 +207,12 @@ public abstract class ForwardingSystemAccessControl
     }
 
     @Override
+    public void checkCanCallProcedure(Identity identity, AccessControlContext context, CatalogSchemaTableName procedure)
+    {
+        delegate().checkCanCallProcedure(identity, context, procedure);
+    }
+
+    @Override
     public void checkCanInsertIntoTable(Identity identity, AccessControlContext context, CatalogSchemaTableName table)
     {
         delegate().checkCanInsertIntoTable(identity, context, table);
@@ -174,9 +225,27 @@ public abstract class ForwardingSystemAccessControl
     }
 
     @Override
+    public void checkCanTruncateTable(Identity identity, AccessControlContext context, CatalogSchemaTableName table)
+    {
+        delegate().checkCanTruncateTable(identity, context, table);
+    }
+
+    @Override
+    public void checkCanUpdateTableColumns(Identity identity, AccessControlContext context, CatalogSchemaTableName table, Set<String> updatedColumnNames)
+    {
+        delegate().checkCanUpdateTableColumns(identity, context, table, updatedColumnNames);
+    }
+
+    @Override
     public void checkCanCreateView(Identity identity, AccessControlContext context, CatalogSchemaTableName view)
     {
         delegate().checkCanCreateView(identity, context, view);
+    }
+
+    @Override
+    public void checkCanRenameView(Identity identity, AccessControlContext context, CatalogSchemaTableName view, CatalogSchemaTableName newView)
+    {
+        delegate().checkCanRenameView(identity, context, view, newView);
     }
 
     @Override
@@ -207,5 +276,53 @@ public abstract class ForwardingSystemAccessControl
     public void checkCanRevokeTablePrivilege(Identity identity, AccessControlContext context, Privilege privilege, CatalogSchemaTableName table, PrestoPrincipal revokee, boolean grantOptionFor)
     {
         delegate().checkCanRevokeTablePrivilege(identity, context, privilege, table, revokee, grantOptionFor);
+    }
+
+    @Override
+    public void checkCanCreateBranch(Identity identity, AccessControlContext context, CatalogSchemaTableName table)
+    {
+        delegate().checkCanCreateBranch(identity, context, table);
+    }
+
+    @Override
+    public void checkCanCreateTag(Identity identity, AccessControlContext context, CatalogSchemaTableName table)
+    {
+        delegate().checkCanCreateTag(identity, context, table);
+    }
+
+    @Override
+    public void checkCanDropBranch(Identity identity, AccessControlContext context, CatalogSchemaTableName table)
+    {
+        delegate().checkCanDropBranch(identity, context, table);
+    }
+
+    @Override
+    public void checkCanDropTag(Identity identity, AccessControlContext context, CatalogSchemaTableName table)
+    {
+        delegate().checkCanDropTag(identity, context, table);
+    }
+
+    @Override
+    public void checkCanDropConstraint(Identity identity, AccessControlContext context, CatalogSchemaTableName table)
+    {
+        delegate().checkCanDropConstraint(identity, context, table);
+    }
+
+    @Override
+    public void checkCanAddConstraint(Identity identity, AccessControlContext context, CatalogSchemaTableName table)
+    {
+        delegate().checkCanAddConstraint(identity, context, table);
+    }
+
+    @Override
+    public List<ViewExpression> getRowFilters(Identity identity, AccessControlContext context, CatalogSchemaTableName tableName)
+    {
+        return delegate().getRowFilters(identity, context, tableName);
+    }
+
+    @Override
+    public Map<ColumnMetadata, ViewExpression> getColumnMasks(Identity identity, AccessControlContext context, CatalogSchemaTableName tableName, List<ColumnMetadata> columns)
+    {
+        return delegate().getColumnMasks(identity, context, tableName, columns);
     }
 }

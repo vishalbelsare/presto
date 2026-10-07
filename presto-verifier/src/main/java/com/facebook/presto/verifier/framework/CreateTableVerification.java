@@ -22,8 +22,11 @@ import com.facebook.presto.verifier.prestoaction.PrestoAction.ResultSetConverter
 import com.facebook.presto.verifier.prestoaction.QueryActions;
 import com.facebook.presto.verifier.prestoaction.SqlExceptionClassifier;
 import com.facebook.presto.verifier.rewrite.QueryRewriter;
+import com.facebook.presto.verifier.source.SnapshotQueryConsumer;
+import com.google.common.util.concurrent.ListeningExecutorService;
 
 import java.sql.SQLException;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -52,16 +55,19 @@ public class CreateTableVerification
             QueryRewriter queryRewriter,
             SqlExceptionClassifier exceptionClassifier,
             VerificationContext verificationContext,
-            VerifierConfig verifierConfig)
+            VerifierConfig verifierConfig,
+            ListeningExecutorService executor,
+            SnapshotQueryConsumer snapshotQueryConsumer,
+            Map<String, SnapshotQuery> snapshotQueries)
     {
-        super(sqlParser, queryActions, sourceQuery, exceptionClassifier, verificationContext, verifierConfig, SHOW_CREATE_TABLE_CONVERTER);
+        super(sqlParser, queryActions, sourceQuery, exceptionClassifier, verificationContext, verifierConfig, SHOW_CREATE_TABLE_CONVERTER, executor, snapshotQueryConsumer, snapshotQueries);
         this.queryRewriter = requireNonNull(queryRewriter, "queryRewriter is null");
     }
 
     @Override
     protected QueryObjectBundle getQueryRewrite(ClusterType clusterType)
     {
-        return queryRewriter.rewriteQuery(getSourceQuery().getQuery(clusterType), clusterType);
+        return queryRewriter.rewriteQuery(getSourceQuery().getQuery(clusterType), getSourceQuery().getQueryConfiguration(clusterType), clusterType);
     }
 
     @Override

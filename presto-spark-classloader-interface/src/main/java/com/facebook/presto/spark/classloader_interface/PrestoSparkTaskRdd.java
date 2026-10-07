@@ -21,7 +21,7 @@ import org.apache.spark.rdd.ZippedPartitionsBaseRDD;
 import org.apache.spark.rdd.ZippedPartitionsPartition;
 import scala.Tuple2;
 import scala.collection.Iterator;
-import scala.collection.Seq;
+import scala.collection.immutable.Seq;
 import scala.reflect.ClassTag;
 
 import java.util.ArrayList;
@@ -30,12 +30,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.facebook.presto.spark.classloader_interface.PrestoSparkUtils.asScalaBuffer;
+import static com.facebook.presto.spark.classloader_interface.PrestoSparkUtils.seqAsJavaList;
+import static com.facebook.presto.spark.classloader_interface.PrestoSparkUtils.toImmutableSeq;
 import static com.facebook.presto.spark.classloader_interface.ScalaUtils.emptyScalaIterator;
 import static java.lang.String.format;
 import static java.util.Collections.unmodifiableMap;
 import static java.util.Objects.requireNonNull;
-import static scala.collection.JavaConversions.asScalaBuffer;
-import static scala.collection.JavaConversions.seqAsJavaList;
 
 /**
  * PrestoSparkTaskRdd represents execution of Presto stage, it contains:
@@ -57,8 +58,8 @@ import static scala.collection.JavaConversions.seqAsJavaList;
 public class PrestoSparkTaskRdd<T extends PrestoSparkTaskOutput>
         extends ZippedPartitionsBaseRDD<Tuple2<MutablePartitionId, T>>
 {
-    private List<String> shuffleInputFragmentIds;
     private List<RDD<Tuple2<MutablePartitionId, PrestoSparkMutableRow>>> shuffleInputRdds;
+    private List<String> shuffleInputFragmentIds;
     private PrestoSparkTaskSourceRdd taskSourceRdd;
     private PrestoSparkTaskProcessor<T> taskProcessor;
 
@@ -82,7 +83,7 @@ public class PrestoSparkTaskRdd<T extends PrestoSparkTaskOutput>
         return new PrestoSparkTaskRdd<>(context, taskSourceRdd, shuffleInputFragmentIds, shuffleInputRdds, taskProcessor);
     }
 
-    private PrestoSparkTaskRdd(
+    protected PrestoSparkTaskRdd(
             SparkContext context,
             Optional<PrestoSparkTaskSourceRdd> taskSourceRdd,
             List<String> shuffleInputFragmentIds,
@@ -101,7 +102,7 @@ public class PrestoSparkTaskRdd<T extends PrestoSparkTaskOutput>
     {
         List<RDD<?>> list = new ArrayList<>(shuffleInputRdds);
         taskSourceRdd.ifPresent(list::add);
-        return asScalaBuffer(list).toSeq();
+        return toImmutableSeq(asScalaBuffer(list).toSeq());
     }
 
     private static <T> ClassTag<T> fakeClassTag()
@@ -144,5 +145,25 @@ public class PrestoSparkTaskRdd<T extends PrestoSparkTaskOutput>
         shuffleInputRdds = null;
         taskSourceRdd = null;
         taskProcessor = null;
+    }
+
+    public List<RDD<Tuple2<MutablePartitionId, PrestoSparkMutableRow>>> getShuffleInputRdds()
+    {
+        return shuffleInputRdds;
+    }
+
+    public PrestoSparkTaskSourceRdd getTaskSourceRdd()
+    {
+        return taskSourceRdd;
+    }
+
+    public List<String> getShuffleInputFragmentIds()
+    {
+        return shuffleInputFragmentIds;
+    }
+
+    public PrestoSparkTaskProcessor<T> getTaskProcessor()
+    {
+        return taskProcessor;
     }
 }

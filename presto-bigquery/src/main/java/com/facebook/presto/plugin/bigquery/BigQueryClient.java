@@ -50,6 +50,7 @@ public class BigQueryClient
     private final Optional<String> viewMaterializationProject;
     private final Optional<String> viewMaterializationDataset;
     private final String tablePrefix = "_pbc_";
+    private final boolean caseSensitiveNameMatching;
 
     // presto converts the dataset and table names to lower case, while BigQuery is case sensitive
     private final ConcurrentMap<TableId, TableId> tableIds = new ConcurrentHashMap<>();
@@ -60,12 +61,12 @@ public class BigQueryClient
         this.bigQuery = requireNonNull(bigQuery, "bigQuery is null");
         this.viewMaterializationProject = requireNonNull(config.getViewMaterializationProject(), "viewMaterializationProject is null");
         this.viewMaterializationDataset = requireNonNull(config.getViewMaterializationDataset(), "viewMaterializationDataset is null");
+        this.caseSensitiveNameMatching = config.isCaseSensitiveNameMatching();
     }
 
     public TableInfo getTable(TableId tableId)
     {
-        TableId bigQueryTableId = tableIds.get(tableId);
-        Table table = bigQuery.getTable(bigQueryTableId != null ? bigQueryTableId : tableId);
+        Table table = bigQuery.getTable(tableId);
         if (table != null) {
             tableIds.putIfAbsent(tableId, table.getTableId());
             datasetIds.putIfAbsent(toDatasetId(tableId), toDatasetId(table.getTableId()));
@@ -109,7 +110,7 @@ public class BigQueryClient
     private Dataset addDataSetMappingIfNeeded(Dataset dataset)
     {
         DatasetId bigQueryDatasetId = dataset.getDatasetId();
-        DatasetId prestoDatasetId = DatasetId.of(bigQueryDatasetId.getProject(), bigQueryDatasetId.getDataset().toLowerCase(ENGLISH));
+        DatasetId prestoDatasetId = DatasetId.of(bigQueryDatasetId.getProject(), bigQueryDatasetId.getDataset());
         datasetIds.putIfAbsent(prestoDatasetId, bigQueryDatasetId);
         return dataset;
     }
@@ -124,7 +125,8 @@ public class BigQueryClient
 
     private String createTableName()
     {
-        return format(tablePrefix + "%s", randomUUID().toString().toLowerCase(ENGLISH).replace("-", ""));
+        String uuid = randomUUID().toString().replace("-", "");
+        return caseSensitiveNameMatching ? format("%s%s", tablePrefix, uuid) : format("%s%s", tablePrefix, uuid).toLowerCase(ENGLISH);
     }
 
     private DatasetId mapIfNeeded(String project, String dataset)

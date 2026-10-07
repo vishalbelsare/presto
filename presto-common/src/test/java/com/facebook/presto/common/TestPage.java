@@ -17,17 +17,23 @@ import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.block.BlockBuilder;
 import com.facebook.presto.common.block.DictionaryBlock;
 import com.facebook.presto.common.block.DictionaryId;
+import com.facebook.presto.common.block.VariableWidthBlock;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.Slice;
 import org.testng.annotations.Test;
 
+import java.util.UUID;
+import java.util.stream.LongStream;
+
 import static com.facebook.presto.common.block.DictionaryId.randomDictionaryId;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotEquals;
+import static org.testng.Assert.assertSame;
 import static org.testng.Assert.assertTrue;
 
 public class TestPage
@@ -35,14 +41,19 @@ public class TestPage
     @Test
     public void testGetRegion()
     {
-        assertEquals(new Page(10).getRegion(5, 5).getPositionCount(), 5);
+        Page page = new Page(10);
+        Page region = page.getRegion(0, 10);
+        assertEquals(page.getRegion(5, 5).getPositionCount(), 5);
+        assertEquals(region.getPositionCount(), 10);
+        assertSame(page, region);
     }
 
     @Test
     public void testGetEmptyRegion()
     {
+        Page page = new Page(10);
         assertEquals(new Page(0).getRegion(0, 0).getPositionCount(), 0);
-        assertEquals(new Page(10).getRegion(5, 0).getPositionCount(), 0);
+        assertEquals(page.getRegion(5, 0).getPositionCount(), 0);
     }
 
     @Test(expectedExceptions = IndexOutOfBoundsException.class, expectedExceptionsMessageRegExp = "Invalid position 1 and length 1 in page with 0 positions")
@@ -129,6 +140,169 @@ public class TestPage
             assertEquals(page.getBlock(i).getLong(3), 2);
             assertEquals(page.getBlock(i).getLong(4), 5);
         }
+    }
+
+    @Test
+    public void testDropColumn()
+    {
+        int entries = 10;
+        BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, entries);
+        for (int i = 0; i < entries; i++) {
+            BIGINT.writeLong(blockBuilder, i);
+        }
+        Block block = blockBuilder.build();
+
+        Page page = new Page(block, block, block);
+        assertEquals(page.getChannelCount(), 3);
+        Page newPage = page.dropColumn(1);
+        assertEquals(page.getChannelCount(), 3, "Page was modified");
+        assertEquals(newPage.getChannelCount(), 2);
+
+        assertEquals(newPage.getBlock(0).getLong(0), 0);
+        assertEquals(newPage.getBlock(1).getLong(1), 1);
+    }
+
+    @Test
+    public void testReplaceColumn()
+    {
+        int entries = 10;
+        BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, entries);
+        for (int i = 0; i < entries; i++) {
+            BIGINT.writeLong(blockBuilder, i);
+        }
+        Block block = blockBuilder.build();
+        Page page = new Page(block, block, block);
+        assertEquals(page.getBlock(1).getLong(0), 0);
+
+        BlockBuilder newBlockBuilder = BIGINT.createBlockBuilder(null, entries);
+        for (int i = 0; i < entries; i++) {
+            BIGINT.writeLong(newBlockBuilder, -i);
+        }
+        Block newBlock = newBlockBuilder.build();
+        Page newPage = page.replaceColumn(1, newBlock);
+
+        assertEquals(newPage.getChannelCount(), 3);
+        assertEquals(newPage.getPositionCount(), entries);
+        assertEquals(newPage.getBlock(1).getLong(0), 0);
+        assertEquals(newPage.getBlock(1).getLong(1), -1);
+    }
+
+    @Test(expectedExceptions = IndexOutOfBoundsException.class)
+    public void testReplaceColumn_channelTooLow()
+    {
+        int entries = 10;
+        BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, entries);
+        for (int i = 0; i < entries; i++) {
+            BIGINT.writeLong(blockBuilder, i);
+        }
+        Block block = blockBuilder.build();
+        Page page = new Page(block, block, block);
+        assertEquals(page.getBlock(1).getLong(0), 0);
+
+        BlockBuilder newBlockBuilder = BIGINT.createBlockBuilder(null, entries);
+        for (int i = 0; i < entries; i++) {
+            BIGINT.writeLong(newBlockBuilder, -i);
+        }
+        Block newBlock = newBlockBuilder.build();
+        page.replaceColumn(-1, newBlock);
+    }
+
+    @Test(expectedExceptions = IndexOutOfBoundsException.class)
+    public void testReplaceColumn_channelTooHigh()
+    {
+        int entries = 10;
+        BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, entries);
+        for (int i = 0; i < entries; i++) {
+            BIGINT.writeLong(blockBuilder, i);
+        }
+        Block block = blockBuilder.build();
+        Page page = new Page(block, block, block);
+        assertEquals(page.getBlock(1).getLong(0), 0);
+
+        BlockBuilder newBlockBuilder = BIGINT.createBlockBuilder(null, entries);
+        for (int i = 0; i < entries; i++) {
+            BIGINT.writeLong(newBlockBuilder, -i);
+        }
+        Block newBlock = newBlockBuilder.build();
+        page.replaceColumn(page.getChannelCount(), newBlock);
+    }
+
+    @Test(expectedExceptions = IllegalArgumentException.class)
+    public void testReplaceColumn_WrongNumberOfRows()
+    {
+        int entries = 10;
+        BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, entries);
+        for (int i = 0; i < entries; i++) {
+            BIGINT.writeLong(blockBuilder, i);
+        }
+        Block block = blockBuilder.build();
+        Page page = new Page(block, block, block);
+        assertEquals(page.getBlock(1).getLong(0), 0);
+
+        BlockBuilder newBlockBuilder = BIGINT.createBlockBuilder(null, entries);
+        for (int i = 0; i < entries - 5; i++) {
+            BIGINT.writeLong(newBlockBuilder, -i);
+        }
+        Block newBlock = newBlockBuilder.build();
+        page.replaceColumn(1, newBlock);
+    }
+
+    @Test(expectedExceptions = IllegalArgumentException.class)
+    public void testPrependColumnWrongNumberOfRows()
+    {
+        int entries = 10;
+        BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, entries);
+        for (int i = 0; i < entries; i++) {
+            BIGINT.writeLong(blockBuilder, i);
+        }
+        Block block = blockBuilder.build();
+        Page page = new Page(block, block);
+
+        BlockBuilder newBlockBuilder = BIGINT.createBlockBuilder(null, entries - 5);
+        for (int i = 0; i < entries - 5; i++) {
+            BIGINT.writeLong(newBlockBuilder, -i);
+        }
+        Block newBlock = newBlockBuilder.build();
+
+        page.prependColumn(newBlock);
+    }
+
+    @Test(expectedExceptions = IllegalArgumentException.class)
+    public void testAppendColumnsWrongNumberOfRows()
+    {
+        int entries = 10;
+        BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, entries);
+        for (int i = 0; i < entries; i++) {
+            BIGINT.writeLong(blockBuilder, i);
+        }
+        Block block = blockBuilder.build();
+        Page page = new Page(block, block);
+
+        BlockBuilder newBlockBuilder = BIGINT.createBlockBuilder(null, entries - 5);
+        for (int i = 0; i < entries - 5; i++) {
+            BIGINT.writeLong(newBlockBuilder, -i);
+        }
+        Block newBlock = newBlockBuilder.build();
+
+        page.appendColumn(newBlock);
+    }
+
+    @Test
+    public void testRetainedSizeIsCorrect()
+    {
+        BlockBuilder variableWidthBlockBuilder = VARCHAR.createBlockBuilder(null, 256);
+
+        LongStream.range(0, 100).forEach(value -> VARCHAR.writeString(variableWidthBlockBuilder, UUID.randomUUID().toString()));
+        VariableWidthBlock variableWidthBlock = (VariableWidthBlock) variableWidthBlockBuilder.build();
+        Page page = new Page(
+                variableWidthBlock, // Original block
+                variableWidthBlock, // Same block twice
+                variableWidthBlock.getRegion(0, 50), // Block with same underlying slice
+                variableWidthBlockBuilder.getRegion(51, 25)); // Block with slice having same underlying base object/byte array
+        // Account for extra overhead of objects to be around 20%.
+        // Close attention should be paid when this needs to be updated to 2x or higher as that case may introduce double counting
+        double expectedMaximumSizeOfPage = variableWidthBlock.getRawSlice(0).getRetainedSize() * 1.2;
+        assertTrue(page.getRetainedSizeInBytes() < expectedMaximumSizeOfPage, "Expected slice & underlying object to be counted once");
     }
 
     private static Slice[] createExpectedValues(int positionCount)

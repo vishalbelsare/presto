@@ -14,6 +14,7 @@
 package com.facebook.presto.client;
 
 import com.facebook.airlift.json.JsonCodec;
+import jakarta.annotation.Nullable;
 import okhttp3.Headers;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -21,10 +22,7 @@ import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
-import java.io.InterruptedIOException;
 import java.io.UncheckedIOException;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
@@ -67,7 +65,7 @@ public final class JsonResponse<T>
             value = jsonCodec.fromJson(responseBody);
         }
         catch (IllegalArgumentException e) {
-            exception = new IllegalArgumentException(format("Unable to create %s from JSON response:\n[%s]", jsonCodec.getType(), responseBody), e);
+            exception = new IllegalArgumentException(format("Unable to create %s from JSON response:%n[%s]", jsonCodec.getType(), responseBody), e);
         }
         this.hasValue = (exception == null);
         this.value = value;
@@ -130,7 +128,7 @@ public final class JsonResponse<T>
     {
         try (Response response = client.newCall(request).execute()) {
             // TODO: fix in OkHttp: https://github.com/square/okhttp/issues/3111
-            if ((response.code() == 307) || (response.code() == 308)) {
+            if (((response.code() == 307) || (response.code() == 308)) && client.followRedirects()) {
                 String location = response.header(LOCATION);
                 if (location != null) {
                     request = request.newBuilder().url(location).build();
@@ -146,11 +144,6 @@ public final class JsonResponse<T>
             return new JsonResponse<>(response.code(), response.message(), response.headers(), body);
         }
         catch (IOException e) {
-            // OkHttp throws this after clearing the interrupt status
-            // TODO: remove after updating to Okio 1.15.0+
-            if ((e instanceof InterruptedIOException) && "thread interrupted".equals(e.getMessage())) {
-                Thread.currentThread().interrupt();
-            }
             throw new UncheckedIOException(e);
         }
     }

@@ -20,8 +20,7 @@ import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import javax.annotation.concurrent.Immutable;
+import com.google.errorprone.annotations.Immutable;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -52,7 +51,9 @@ public final class AggregationNode
     private final Step step;
     private final Optional<VariableReferenceExpression> hashVariable;
     private final Optional<VariableReferenceExpression> groupIdVariable;
+    private final Optional<Integer> aggregationId;
     private final List<VariableReferenceExpression> outputs;
+    private final List<VariableReferenceExpression> aggregationOutputs;
 
     @JsonCreator
     public AggregationNode(
@@ -64,9 +65,26 @@ public final class AggregationNode
             @JsonProperty("preGroupedVariables") List<VariableReferenceExpression> preGroupedVariables,
             @JsonProperty("step") Step step,
             @JsonProperty("hashVariable") Optional<VariableReferenceExpression> hashVariable,
-            @JsonProperty("groupIdVariable") Optional<VariableReferenceExpression> groupIdVariable)
+            @JsonProperty("groupIdVariable") Optional<VariableReferenceExpression> groupIdVariable,
+            @JsonProperty("aggregationId")Optional<Integer> aggregationId)
     {
-        super(sourceLocation, id);
+        this(sourceLocation, id, Optional.empty(), source, aggregations, groupingSets, preGroupedVariables, step, hashVariable, groupIdVariable, aggregationId);
+    }
+
+    public AggregationNode(
+            Optional<SourceLocation> sourceLocation,
+            PlanNodeId id,
+            Optional<PlanNode> statsEquivalentPlanNode,
+            PlanNode source,
+            Map<VariableReferenceExpression, Aggregation> aggregations,
+            GroupingSetDescriptor groupingSets,
+            List<VariableReferenceExpression> preGroupedVariables,
+            Step step,
+            Optional<VariableReferenceExpression> hashVariable,
+            Optional<VariableReferenceExpression> groupIdVariable,
+            Optional<Integer> aggregationId)
+    {
+        super(sourceLocation, id, statsEquivalentPlanNode);
 
         this.source = source;
         this.aggregations = unmodifiableMap(new LinkedHashMap<>(requireNonNull(aggregations, "aggregations is null")));
@@ -76,6 +94,7 @@ public final class AggregationNode
         this.groupingSets = groupingSets;
 
         this.groupIdVariable = requireNonNull(groupIdVariable);
+        this.aggregationId = requireNonNull(aggregationId);
 
         boolean noOrderBy = aggregations.values().stream()
                 .map(Aggregation::getOrderBy)
@@ -89,11 +108,23 @@ public final class AggregationNode
         checkArgument(preGroupedVariables.isEmpty() || groupingSets.getGroupingKeys().containsAll(preGroupedVariables), "Pre-grouped variables must be a subset of the grouping keys");
         this.preGroupedVariables = unmodifiableList(new ArrayList<>(preGroupedVariables));
 
-        ArrayList<VariableReferenceExpression> outputs = new ArrayList<>(groupingSets.getGroupingKeys());
-        hashVariable.ifPresent(outputs::add);
-        outputs.addAll(new ArrayList<>(aggregations.keySet()));
+        this.aggregationOutputs = unmodifiableList(new ArrayList<>(this.aggregations.keySet()));
 
-        this.outputs = unmodifiableList(outputs);
+        ArrayList<VariableReferenceExpression> keys = new ArrayList<>(groupingSets.getGroupingKeys());
+        hashVariable.ifPresent(keys::add);
+        keys.addAll(aggregationOutputs);
+
+        this.outputs = unmodifiableList(keys);
+    }
+
+    /**
+     * Whether this node corresponds to a DISTINCT operation in SQL
+     */
+    public static boolean isDistinct(AggregationNode node)
+    {
+        return node.getAggregations().isEmpty() &&
+                node.getOutputVariables().size() == node.getGroupingKeys().size() &&
+                node.getOutputVariables().containsAll(node.getGroupingKeys());
     }
 
     public List<VariableReferenceExpression> getGroupingKeys()
@@ -133,7 +164,14 @@ public final class AggregationNode
     @Override
     public List<PlanNode> getSources()
     {
-        return unmodifiableList(Collections.singletonList(source));
+        return Collections.singletonList(source);
+    }
+
+    @Override
+    public LogicalProperties computeLogicalProperties(LogicalPropertiesProvider logicalPropertiesProvider)
+    {
+        requireNonNull(logicalPropertiesProvider, "logicalPropertiesProvider cannot be null.");
+        return logicalPropertiesProvider.getAggregationProperties(this);
     }
 
     @Override
@@ -146,6 +184,20 @@ public final class AggregationNode
     public Map<VariableReferenceExpression, Aggregation> getAggregations()
     {
         return aggregations;
+    }
+
+    // Serializes the aggregation output variables in deterministic Java-side
+    // (LinkedHashMap) iteration order so native workers (Prestissimo) can build
+    // the AggregationNode output schema in the same order. Without this, the
+    // C++ protocol deserializes `aggregations` into std::map<VRE> (sorted by
+    // name), which can diverge from Java's order and cause type mismatches at
+    // exchange operators (see #27902). Marked READ_ONLY because it is derived
+    // from `aggregations` — the JsonCreator constructor reconstructs the same
+    // order from the LinkedHashMap copy of `aggregations`.
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    public List<VariableReferenceExpression> getAggregationOutputs()
+    {
+        return aggregationOutputs;
     }
 
     @JsonProperty
@@ -188,6 +240,12 @@ public final class AggregationNode
         return groupIdVariable;
     }
 
+    @JsonProperty
+    public Optional<Integer> getAggregationId()
+    {
+        return aggregationId;
+    }
+
     public boolean hasOrderings()
     {
         return aggregations.values().stream()
@@ -202,15 +260,32 @@ public final class AggregationNode
     }
 
     @Override
+    public PlanNode assignStatsEquivalentPlanNode(Optional<PlanNode> statsEquivalentPlanNode)
+    {
+        return new AggregationNode(getSourceLocation(), getId(), statsEquivalentPlanNode, source, aggregations, groupingSets, preGroupedVariables, step, hashVariable, groupIdVariable, aggregationId);
+    }
+
+    @Override
     public PlanNode replaceChildren(List<PlanNode> newChildren)
     {
         checkArgument(newChildren.size() == 1, "Unexpected number of elements in list newChildren");
-        return new AggregationNode(getSourceLocation(), getId(), newChildren.get(0), aggregations, groupingSets, preGroupedVariables, step, hashVariable, groupIdVariable);
+        return new AggregationNode(getSourceLocation(), getId(), getStatsEquivalentPlanNode(), newChildren.get(0), aggregations, groupingSets, preGroupedVariables, step, hashVariable, groupIdVariable, aggregationId);
     }
 
     public boolean isStreamable()
     {
-        return !preGroupedVariables.isEmpty() && groupingSets.getGroupingSetCount() == 1 && groupingSets.getGlobalGroupingSets().isEmpty();
+        return !preGroupedVariables.isEmpty()
+                && groupingSets.getGroupingSetCount() == 1
+                && groupingSets.getGlobalGroupingSets().isEmpty()
+                && preGroupedVariables.size() == groupingSets.groupingKeys.size();
+    }
+
+    public boolean isSegmentedAggregationEligible()
+    {
+        return !preGroupedVariables.isEmpty()
+                && groupingSets.getGroupingSetCount() == 1
+                && groupingSets.getGlobalGroupingSets().isEmpty()
+                && preGroupedVariables.size() < groupingSets.groupingKeys.size();
     }
 
     @Override
@@ -241,17 +316,17 @@ public final class AggregationNode
 
     public static GroupingSetDescriptor globalAggregation()
     {
-        return singleGroupingSet(unmodifiableList(emptyList()));
+        return singleGroupingSet(emptyList());
     }
 
     public static GroupingSetDescriptor singleGroupingSet(List<VariableReferenceExpression> groupingKeys)
     {
         Set<Integer> globalGroupingSets;
         if (groupingKeys.isEmpty()) {
-            globalGroupingSets = unmodifiableSet(Collections.singleton(0));
+            globalGroupingSets = Collections.singleton(0);
         }
         else {
-            globalGroupingSets = unmodifiableSet(emptySet());
+            globalGroupingSets = emptySet();
         }
 
         return new GroupingSetDescriptor(groupingKeys, 1, globalGroupingSets);
@@ -394,6 +469,17 @@ public final class AggregationNode
             this.orderingScheme = requireNonNull(orderingScheme, "orderingScheme is null");
             this.isDistinct = isDistinct;
             this.mask = requireNonNull(mask, "mask is null");
+        }
+
+        public static AggregationNode.Aggregation removeDistinct(AggregationNode.Aggregation aggregation)
+        {
+            checkArgument(aggregation.isDistinct(), "Expected aggregation to have DISTINCT input");
+            return new AggregationNode.Aggregation(
+                    aggregation.getCall(),
+                    aggregation.getFilter(),
+                    aggregation.getOrderBy(),
+                    false,
+                    aggregation.getMask());
         }
 
         @JsonProperty

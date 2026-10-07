@@ -23,7 +23,6 @@ import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
 import com.facebook.presto.hive.metastore.HivePageSinkMetadata;
 import com.facebook.presto.hive.metastore.HivePartitionMutator;
 import com.facebook.presto.hive.metastore.HivePrivilegeInfo;
-import com.facebook.presto.hive.metastore.HiveTableName;
 import com.facebook.presto.hive.metastore.MetastoreContext;
 import com.facebook.presto.hive.metastore.Partition;
 import com.facebook.presto.hive.metastore.PartitionStatistics;
@@ -34,8 +33,11 @@ import com.facebook.presto.hive.metastore.thrift.BridgingHiveMetastore;
 import com.facebook.presto.hive.metastore.thrift.HiveCluster;
 import com.facebook.presto.hive.metastore.thrift.TestingHiveCluster;
 import com.facebook.presto.hive.metastore.thrift.ThriftHiveMetastore;
+import com.facebook.presto.hive.metastore.thrift.ThriftHiveMetastoreConfig;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.connector.ConnectorCommitHandle;
+import com.facebook.presto.spi.constraints.TableConstraint;
 import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.RoleGrant;
 import com.facebook.presto.spi.statistics.ColumnStatisticType;
@@ -51,6 +53,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 
 import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.getPartitionNamesWithEmptyVersion;
 import static com.google.common.util.concurrent.MoreExecutors.listeningDecorator;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 
@@ -60,8 +63,8 @@ public class TestingSemiTransactionalHiveMetastore
     private static final String HOST = "dummy";
     private static final int PORT = 1111;
 
-    private final Map<HiveTableName, Table> tablesMap = new HashMap<>();
-    private final Map<HiveTableName, List<String>> partitionsMap = new HashMap<>();
+    private final Map<HiveTableHandle, Table> tablesMap = new HashMap<>();
+    private final Map<HiveTableHandle, List<String>> partitionsMap = new HashMap<>();
 
     private List<String> partitionNames;
 
@@ -75,11 +78,12 @@ public class TestingSemiTransactionalHiveMetastore
         // none of these values matter, as we never use them
         HiveClientConfig config = new HiveClientConfig();
         MetastoreClientConfig metastoreClientConfig = new MetastoreClientConfig();
-        HdfsConfiguration hdfsConfiguration = new HiveHdfsConfiguration(new HdfsConfigurationInitializer(config, metastoreClientConfig), ImmutableSet.of());
+        ThriftHiveMetastoreConfig thriftHiveMetastoreConfig = new ThriftHiveMetastoreConfig();
+        HdfsConfiguration hdfsConfiguration = new HiveHdfsConfiguration(new HdfsConfigurationInitializer(config, metastoreClientConfig), ImmutableSet.of(), config);
         HdfsEnvironment hdfsEnvironment = new HdfsEnvironment(hdfsConfiguration, metastoreClientConfig, new NoHdfsAuthentication());
-        HiveCluster hiveCluster = new TestingHiveCluster(metastoreClientConfig, HOST, PORT);
+        HiveCluster hiveCluster = new TestingHiveCluster(metastoreClientConfig, thriftHiveMetastoreConfig, HOST, PORT, new HiveCommonClientConfig());
         ColumnConverterProvider columnConverterProvider = HiveColumnConverterProvider.DEFAULT_COLUMN_CONVERTER_PROVIDER;
-        ExtendedHiveMetastore delegate = new BridgingHiveMetastore(new ThriftHiveMetastore(hiveCluster, metastoreClientConfig), new HivePartitionMutator());
+        ExtendedHiveMetastore delegate = new BridgingHiveMetastore(new ThriftHiveMetastore(hiveCluster, metastoreClientConfig, hdfsEnvironment), new HivePartitionMutator());
         ExecutorService executor = newCachedThreadPool(daemonThreadsNamed("hive-%s"));
         ListeningExecutorService renameExecutor = listeningDecorator(executor);
 
@@ -88,9 +92,10 @@ public class TestingSemiTransactionalHiveMetastore
 
     public void addTable(String database, String tableName, Table table, List<String> partitions)
     {
-        HiveTableName hiveTableName = new HiveTableName(database, tableName);
-        tablesMap.put(hiveTableName, table);
-        partitionsMap.put(hiveTableName, partitions);
+        HiveTableHandle hiveTableHandle = new HiveTableHandle(database, tableName);
+        tablesMap.put(hiveTableHandle, table);
+        partitionsMap.put(hiveTableHandle, partitions);
+        partitionNames = partitions;
     }
 
     @Override
@@ -114,7 +119,13 @@ public class TestingSemiTransactionalHiveMetastore
     @Override
     public synchronized Optional<Table> getTable(MetastoreContext metastoreContext, String databaseName, String tableName)
     {
-        return Optional.ofNullable(tablesMap.get(new HiveTableName(databaseName, tableName)));
+        return getTable(metastoreContext, new HiveTableHandle(databaseName, tableName));
+    }
+
+    @Override
+    public Optional<Table> getTable(MetastoreContext metastoreContext, HiveTableHandle hiveTableHandle)
+    {
+        return Optional.ofNullable(tablesMap.get(hiveTableHandle));
     }
 
     @Override
@@ -178,7 +189,7 @@ public class TestingSemiTransactionalHiveMetastore
     }
 
     @Override
-    public synchronized void createTable(ConnectorSession session, Table table, PrincipalPrivileges principalPrivileges, Optional<Path> currentPath, boolean ignoreExisting, PartitionStatistics statistics)
+    public synchronized void createTable(ConnectorSession session, Table table, PrincipalPrivileges principalPrivileges, Optional<Path> currentPath, boolean ignoreExisting, PartitionStatistics statistics, List<TableConstraint<String>> constraints)
     {
         throw new UnsupportedOperationException("method not implemented");
     }
@@ -237,15 +248,15 @@ public class TestingSemiTransactionalHiveMetastore
     }
 
     @Override
-    public synchronized Optional<List<String>> getPartitionNames(MetastoreContext metastoreContext, String databaseName, String tableName)
+    public synchronized Optional<List<PartitionNameWithVersion>> getPartitionNames(MetastoreContext metastoreContext, String databaseName, String tableName)
     {
-        return Optional.ofNullable(partitionNames);
+        return Optional.ofNullable(getPartitionNamesWithEmptyVersion(partitionNames));
     }
 
     @Override
-    public synchronized Optional<List<String>> getPartitionNamesByFilter(MetastoreContext metastoreContext, String databaseName, String tableName, Map<Column, Domain> effectivePredicate)
+    public synchronized Optional<List<PartitionNameWithVersion>> getPartitionNamesByFilter(MetastoreContext metastoreContext, HiveTableHandle hiveTableHandle, Map<Column, Domain> effectivePredicate)
     {
-        return Optional.ofNullable(partitionsMap.get(new HiveTableName(databaseName, tableName)));
+        return Optional.ofNullable(getPartitionNamesWithEmptyVersion(partitionsMap.get(hiveTableHandle)));
     }
 
     @Override
@@ -255,7 +266,7 @@ public class TestingSemiTransactionalHiveMetastore
     }
 
     @Override
-    public synchronized Map<String, Optional<Partition>> getPartitionsByNames(MetastoreContext metastoreContext, String databaseName, String tableName, List<String> partitionNames)
+    public synchronized Map<String, Optional<Partition>> getPartitionsByNames(MetastoreContext metastoreContext, String databaseName, String tableName, List<PartitionNameWithVersion> partitionNames)
     {
         throw new UnsupportedOperationException("method not implemented");
     }
@@ -339,7 +350,7 @@ public class TestingSemiTransactionalHiveMetastore
     }
 
     @Override
-    public synchronized void commit()
+    public synchronized ConnectorCommitHandle commit()
     {
         throw new UnsupportedOperationException("method not implemented");
     }

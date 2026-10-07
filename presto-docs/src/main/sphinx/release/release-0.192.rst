@@ -8,7 +8,7 @@ General Changes
 * Fix performance regression in split scheduling introduced in 0.191. If a query
   scans a non-trivial number of splits (~1M splits in an hour), the coordinator
   CPU utilization can be very high, leading to elevated communication failures.
-* Fix correctness issue in the :func:`geometry_to_bing_tiles` function that causes
+* Fix correctness issue in the :func:`!geometry_to_bing_tiles` function that causes
   it to return irrelevant tiles when bottom or right side of the bounding box of the
   geometry is aligned with the tile border.
 * Fix handling of invalid WKT (well-known text) input in geospatial functions.
@@ -19,7 +19,7 @@ General Changes
 * Fix bug in validation of resource groups that prevented use of the ``WEIGHTED_FAIR`` policy.
 * Fail queries properly when the coordinator fails to fetch data from workers.
   Previously, it would return an HTTP 500 error to the client.
-* Improve memory tracking for queries involving ``DISTINCT`` or :func:`row_number` that could cause
+* Improve memory tracking for queries involving ``DISTINCT`` or :func:`!row_number` that could cause
   over-committing memory resources for short time periods.
 * Improve performance for queries involving ``grouping()``.
 * Improve buffer utilization calculation for writer scaling.
@@ -48,8 +48,8 @@ Hive Changes
 * Do not treat file system errors as corruptions for ORC.
 * Prevent reads from tables or partitions with ``object_not_readable`` attribute set.
 * Add support for validating ORC files after they have been written. This behavior can
-  be turned on via the ``hive.orc.writer.validate`` configuration property.
-* Expose ORC writer statistics via JMX.
+  be turned on with the ``hive.orc.writer.validate`` configuration property.
+* Expose ORC writer statistics through JMX.
 * Add configuration options to control ORC writer min/max rows per stripe and row group,
   maximum stripe size, and memory limit for dictionaries.
 * Allow reading empty ORC files.

@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.common.type;
 
+import com.facebook.drift.annotations.ThriftConstructor;
+import com.facebook.drift.annotations.ThriftField;
+import com.facebook.drift.annotations.ThriftStruct;
 import com.facebook.presto.common.type.encoding.Base32;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -67,12 +70,14 @@ public class VarcharEnumType
         return enumMap.getTypeName();
     }
 
+    @ThriftStruct
     public static class VarcharEnumMap
     {
         private final String typeName;
         private final Map<String, String> enumMap;
         private final Map<String, String> flippedEnumMap;
 
+        @ThriftConstructor
         @JsonCreator
         public VarcharEnumMap(@JsonProperty("typeName") String typeName, @JsonProperty("enumMap") Map<String, String> enumMap)
         {
@@ -83,12 +88,14 @@ public class VarcharEnumType
                     .collect(toMap(Map.Entry::getValue, Map.Entry::getKey));
         }
 
+        @ThriftField(1)
         @JsonProperty
         public String getTypeName()
         {
             return typeName;
         }
 
+        @ThriftField(2)
         @JsonProperty
         public Map<String, String> getEnumMap()
         {
@@ -118,7 +125,7 @@ public class VarcharEnumType
         @Override
         public String toString()
         {
-            // Varchar enum values are base32-encoded so that they are case-insensitive, which is expected of TypeSigntures
+            // Varchar enum values are base32-encoded so that they are case-insensitive, which is expected of TypeSignatures
             Base32 base32 = new Base32();
             return format("%s{%s}", typeName, enumMap.entrySet().stream()
                     .sorted(Comparator.comparing(Map.Entry::getKey))

@@ -15,6 +15,7 @@ package com.facebook.presto.spi.eventlistener;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.List;
 import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
@@ -28,13 +29,25 @@ public class QueryOutputMetadata
     private final Optional<String> connectorOutputMetadata;
     private final Optional<Boolean> jsonLengthLimitExceeded;
 
-    public QueryOutputMetadata(String catalogName, String schema, String table, Optional<String> connectorOutputMetadata, Optional<Boolean> jsonLengthLimitExceeded)
+    private final Optional<List<OutputColumnMetadata>> columns;
+    private final Optional<Object> commitOutput;
+
+    public QueryOutputMetadata(
+            String catalogName,
+            String schema,
+            String table,
+            Optional<String> connectorOutputMetadata,
+            Optional<Boolean> jsonLengthLimitExceeded,
+            Optional<List<OutputColumnMetadata>> columns,
+            Optional<Object> commitOutput)
     {
         this.catalogName = requireNonNull(catalogName, "catalogName is null");
         this.schema = requireNonNull(schema, "schema is null");
         this.table = requireNonNull(table, "table is null");
         this.connectorOutputMetadata = requireNonNull(connectorOutputMetadata, "connectorOutputMetadata is null");
         this.jsonLengthLimitExceeded = requireNonNull(jsonLengthLimitExceeded, "jsonLengthLimitExceeded is null");
+        this.columns = requireNonNull(columns, "columns is null");
+        this.commitOutput = requireNonNull(commitOutput, "commitOutput is null");
     }
 
     @JsonProperty
@@ -65,5 +78,25 @@ public class QueryOutputMetadata
     public Optional<Boolean> getJsonLengthLimitExceeded()
     {
         return jsonLengthLimitExceeded;
+    }
+
+    /**
+     * Provides a {@code String} representation of the commit metadata.  For richer type support use {@link #getCommitOutput()}
+     */
+    public String getSerializedCommitOutput()
+    {
+        return commitOutput.map(Object::toString).orElse("");
+    }
+
+    @JsonProperty
+    public Optional<List<OutputColumnMetadata>> getColumns()
+    {
+        return columns;
+    }
+
+    @JsonProperty
+    public Optional<Object> getCommitOutput()
+    {
+        return commitOutput;
     }
 }

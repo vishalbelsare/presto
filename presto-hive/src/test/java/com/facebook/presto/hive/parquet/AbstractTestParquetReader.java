@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.hive.parquet;
 
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.common.type.ArrayType;
 import com.facebook.presto.common.type.RowType;
 import com.facebook.presto.common.type.SqlDate;
@@ -25,6 +27,7 @@ import com.facebook.presto.parquet.cache.CachingParquetMetadataSource;
 import com.facebook.presto.parquet.cache.MetadataReader;
 import com.facebook.presto.parquet.cache.ParquetFileMetadata;
 import com.facebook.presto.parquet.cache.ParquetMetadataSource;
+import com.facebook.presto.parquet.writer.ParquetWriterOptions;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.AbstractIterator;
@@ -34,26 +37,24 @@ import com.google.common.collect.DiscreteDomain;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Range;
 import com.google.common.primitives.Shorts;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
+import org.apache.hadoop.hive.common.type.Date;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
+import org.apache.hadoop.hive.common.type.Timestamp;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.JavaHiveDecimalObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.DecimalTypeInfo;
 import org.apache.parquet.format.Statistics;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
+import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
-import org.apache.parquet.schema.MessageTypeParser;
 import org.apache.parquet.schema.PrimitiveType;
+import org.apache.parquet.schema.Types;
 import org.joda.time.DateTimeZone;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.sql.Date;
-import java.sql.Timestamp;
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -70,17 +71,18 @@ import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.common.type.DateType.DATE;
 import static com.facebook.presto.common.type.DecimalType.createDecimalType;
 import static com.facebook.presto.common.type.Decimals.MAX_PRECISION;
+import static com.facebook.presto.common.type.Decimals.MAX_SHORT_PRECISION;
 import static com.facebook.presto.common.type.DoubleType.DOUBLE;
 import static com.facebook.presto.common.type.IntegerType.INTEGER;
 import static com.facebook.presto.common.type.RealType.REAL;
 import static com.facebook.presto.common.type.RowType.field;
 import static com.facebook.presto.common.type.SmallintType.SMALLINT;
-import static com.facebook.presto.common.type.TimeZoneKey.UTC_KEY;
 import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.common.type.VarcharType.VARCHAR;
@@ -94,15 +96,14 @@ import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
 import static com.facebook.presto.tests.StructuralTestUtil.mapType;
 import static com.google.common.base.Functions.compose;
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.concat;
 import static com.google.common.collect.Iterables.cycle;
 import static com.google.common.collect.Iterables.limit;
 import static com.google.common.collect.Iterables.transform;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Arrays.asList;
-import static java.util.Arrays.stream;
 import static java.util.Collections.singletonList;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.MINUTES;
@@ -130,8 +131,6 @@ public abstract class AbstractTestParquetReader
     private static final int MAX_PRECISION_INT32 = (int) maxPrecision(4);
     private static final int MAX_PRECISION_INT64 = (int) maxPrecision(8);
 
-    private Logger parquetLogger;
-
     private final ParquetTester tester;
 
     public AbstractTestParquetReader(ParquetTester tester)
@@ -145,7 +144,7 @@ public abstract class AbstractTestParquetReader
         assertEquals(DateTimeZone.getDefault(), HIVE_STORAGE_TIME_ZONE);
 
         // Parquet has excessive logging at INFO level
-        parquetLogger = Logger.getLogger("org.apache.parquet.hadoop");
+        Logger parquetLogger = Logger.getLogger("org.apache.parquet.hadoop");
         parquetLogger.setLevel(Level.WARNING);
     }
 
@@ -169,7 +168,7 @@ public abstract class AbstractTestParquetReader
     public void testNestedArrays()
             throws Exception
     {
-        int nestingLevel = ThreadLocalRandom.current().nextInt(1, 15);
+        int nestingLevel = 8;
         ObjectInspector objectInspector = getStandardListObjectInspector(javaIntObjectInspector);
         Type type = new ArrayType(INTEGER);
         Iterable values = limit(cycle(asList(1, null, 3, null, 5, null, 7, null, null, null, 11, null, 13)), 3_210);
@@ -183,10 +182,109 @@ public abstract class AbstractTestParquetReader
     }
 
     @Test
+    public void testNestedArraysDecimalBackedByINT32()
+            throws Exception
+    {
+        int precision = 1;
+        int scale = 0;
+        ObjectInspector objectInspector = getStandardListObjectInspector(javaIntObjectInspector);
+        Type type = new ArrayType(createDecimalType(precision, scale));
+        Iterable<List<Integer>> values = createTestArrays(intsBetween(1, 1_000));
+
+        ImmutableList.Builder<List<SqlDecimal>> expectedValues = new ImmutableList.Builder<>();
+        for (List<Integer> value : values) {
+            expectedValues.add(value.stream()
+                    .map(valueInt -> SqlDecimal.of(valueInt, precision, scale))
+                    .collect(toImmutableList()));
+        }
+
+        MessageType hiveSchema = parseMessageType(format("message hive_list_decimal {" +
+                "  optional group my_list (LIST){" +
+                "    repeated group list {" +
+                "        optional INT32 element (DECIMAL(%d, %d));" +
+                "    }" +
+                "  }" +
+                "} ", precision, scale));
+
+        tester.testRoundTrip(objectInspector, values, expectedValues.build(), "my_list", type, Optional.of(hiveSchema));
+    }
+
+    @Test
+    public void testNestedArraysDecimalBackedByINT64()
+            throws Exception
+    {
+        int precision = 10;
+        int scale = 2;
+        ObjectInspector objectInspector = getStandardListObjectInspector(javaLongObjectInspector);
+        Type type = new ArrayType(createDecimalType(precision, scale));
+        Iterable<List<Long>> values = createTestArrays(longsBetween(1, 1_000));
+
+        ImmutableList.Builder<List<SqlDecimal>> expectedValues = new ImmutableList.Builder<>();
+        for (List<Long> value : values) {
+            expectedValues.add(value.stream()
+                    .map(valueLong -> SqlDecimal.of(valueLong, precision, scale))
+                    .collect(toImmutableList()));
+        }
+
+        MessageType hiveSchema = parseMessageType(format("message hive_list_decimal {" +
+                "  optional group my_list (LIST){" +
+                "    repeated group list {" +
+                "        optional INT64 element (DECIMAL(%d, %d));" +
+                "    }" +
+                "  }" +
+                "} ", precision, scale));
+        tester.testRoundTrip(objectInspector, values, expectedValues.build(), "my_list", type, Optional.of(hiveSchema));
+    }
+
+    @Test
+    public void testNestedArraysShortDecimalBackedByBinary()
+            throws Exception
+    {
+        int precision = 1;
+        int scale = 0;
+        ObjectInspector objectInspector = getStandardListObjectInspector(new JavaHiveDecimalObjectInspector(new DecimalTypeInfo(precision, scale)));
+        Type type = new ArrayType(createDecimalType(precision, scale));
+        Iterable<List<HiveDecimal>> values = getNestedDecimalArrayInputValues(precision, scale);
+        List<List<SqlDecimal>> expectedValues = getNestedDecimalArrayExpectedValues(values, precision, scale);
+
+        MessageType hiveSchema = parseMessageType(format("message hive_list_decimal {" +
+                "  optional group my_list (LIST){" +
+                "    repeated group list {" +
+                "        optional BINARY element (DECIMAL(%d, %d));" +
+                "    }" +
+                "  }" +
+                "} ", precision, scale));
+
+        tester.testRoundTrip(objectInspector, values, expectedValues, "my_list", type, Optional.of(hiveSchema));
+    }
+
+    private Iterable<List<HiveDecimal>> getNestedDecimalArrayInputValues(int precision, int scale)
+    {
+        ContiguousSet<BigInteger> bigIntegerValues = bigIntegersBetween(BigDecimal.valueOf(Math.pow(10, precision - 1)).toBigInteger(),
+                BigDecimal.valueOf(Math.pow(10, precision)).toBigInteger());
+        List<HiveDecimal> writeValues = bigIntegerValues.stream()
+                .map(value -> HiveDecimal.create((BigInteger) value, scale))
+                .collect(toImmutableList());
+
+        return createTestArrays(writeValues);
+    }
+
+    private static List<List<SqlDecimal>> getNestedDecimalArrayExpectedValues(Iterable<List<HiveDecimal>> values, int precision, int scale)
+    {
+        ImmutableList.Builder<List<SqlDecimal>> expectedValues = new ImmutableList.Builder<>();
+        for (List<HiveDecimal> value : values) {
+            expectedValues.add(value.stream()
+                    .map(valueHiveDecimal -> new SqlDecimal(valueHiveDecimal.unscaledValue(), precision, scale))
+                    .collect(toImmutableList()));
+        }
+        return expectedValues.build();
+    }
+
+    @Test
     public void testSingleLevelSchemaNestedArrays()
             throws Exception
     {
-        int nestingLevel = ThreadLocalRandom.current().nextInt(1, 15);
+        int nestingLevel = 5;
         ObjectInspector objectInspector = getStandardListObjectInspector(javaIntObjectInspector);
         Type type = new ArrayType(INTEGER);
         Iterable values = intsBetween(0, 31_234);
@@ -213,10 +311,10 @@ public abstract class AbstractTestParquetReader
     }
 
     @Test
-    public void testCustomSchemaArrayOfStucts()
+    public void testCustomSchemaArrayOfStructs()
             throws Exception
     {
-        MessageType customSchemaArrayOfStucts = parseMessageType("message ParquetSchema { " +
+        MessageType customSchemaArrayOfStructs = parseMessageType("message ParquetSchema { " +
                 "  optional group self (LIST) { " +
                 "    repeated group self_tuple { " +
                 "      optional int64 a; " +
@@ -235,11 +333,11 @@ public abstract class AbstractTestParquetReader
         Type structType = RowType.from(asList(field("a", BIGINT), field("b", BOOLEAN), field("c", VARCHAR)));
         tester.testSingleLevelArrayRoundTrip(
                 getStandardListObjectInspector(getStandardStructObjectInspector(structFieldNames, asList(javaLongObjectInspector, javaBooleanObjectInspector, javaStringObjectInspector))),
-                values, values, "self", new ArrayType(structType), Optional.of(customSchemaArrayOfStucts));
+                values, values, "self", new ArrayType(structType), Optional.of(customSchemaArrayOfStructs));
     }
 
     @Test
-    public void testSingleLevelSchemaArrayOfStucts()
+    public void testSingleLevelSchemaArrayOfStructs()
             throws Exception
     {
         Iterable<Long> aValues = limit(cycle(asList(1L, null, 3L, 5L, null, null, null, 7L, 11L, null, 13L, 17L)), 30_000);
@@ -338,7 +436,7 @@ public abstract class AbstractTestParquetReader
     public void testNestedMaps()
             throws Exception
     {
-        int nestingLevel = ThreadLocalRandom.current().nextInt(1, 15);
+        int nestingLevel = 12;
         Iterable<Integer> keys = intsBetween(0, 3_210);
         Iterable maps = limit(cycle(asList(null, "value2", "value3", null, null, "value6", "value7")), 3_210);
         ObjectInspector objectInspector = getStandardMapObjectInspector(javaIntObjectInspector, javaStringObjectInspector);
@@ -475,7 +573,7 @@ public abstract class AbstractTestParquetReader
     }
 
     @Test
-    public void testMapOfArray()
+    public void testMapOfArrayValues()
             throws Exception
     {
         Iterable<List<Integer>> arrays = createNullableTestArrays(limit(cycle(asList(1, null, 3, 5, null, null, null, 7, 11, null, 13, 17)), 30_000));
@@ -485,6 +583,22 @@ public abstract class AbstractTestParquetReader
                 javaIntObjectInspector,
                 getStandardListObjectInspector(javaIntObjectInspector)),
                 values, values, mapType(INTEGER, new ArrayType(INTEGER)));
+    }
+
+    @Test
+    public void testMapOfArrayKeys()
+            throws Exception
+    {
+        Iterable<List<Integer>> mapKeys = createTestArrays(limit(cycle(asList(1, null, 3, 5, null, null, null, 7, 11, null, 13, 17)), 30_000));
+        Iterable<Integer> mapValues = intsBetween(0, 30_000);
+        Iterable<Map<List<Integer>, Integer>> testMaps = createTestMaps(mapKeys, mapValues);
+        tester.testRoundTrip(
+                getStandardMapObjectInspector(
+                        getStandardListObjectInspector(javaIntObjectInspector),
+                        javaIntObjectInspector),
+                testMaps,
+                testMaps,
+                mapType(new ArrayType(INTEGER), INTEGER));
     }
 
     @Test
@@ -539,7 +653,7 @@ public abstract class AbstractTestParquetReader
     public void testNestedStructs()
             throws Exception
     {
-        int nestingLevel = ThreadLocalRandom.current().nextInt(1, 15);
+        int nestingLevel = 14;
         Optional<List<String>> structFieldNames = Optional.of(singletonList("structField"));
         Iterable<?> values = limit(cycle(asList(1, null, 3, null, 5, null, 7, null, null, null, 11, null, 13)), 3_210);
         ObjectInspector objectInspector = getStandardStructObjectInspector(structFieldNames.get(), singletonList(javaIntObjectInspector));
@@ -828,7 +942,7 @@ public abstract class AbstractTestParquetReader
     public void testLongDirect()
             throws Exception
     {
-        testRoundTripNumeric(limit(cycle(ImmutableList.of(1, 3, 5, 7, 11, 13, 17)), 30_000));
+        testRoundTripNumeric(limit(cycle(ImmutableList.of(1, 3, 5, 7, 11, 13, 17)), 7));
     }
 
     @Test
@@ -867,8 +981,9 @@ public abstract class AbstractTestParquetReader
     public void testDecimalBackedByINT32()
             throws Exception
     {
+        int[] scales = {0, 0, 2, 0, 0, 2, 5, 5, 7, 4};
         for (int precision = 1; precision <= MAX_PRECISION_INT32; precision++) {
-            int scale = ThreadLocalRandom.current().nextInt(precision);
+            int scale = scales[precision];
             MessageType parquetSchema = parseMessageType(format("message hive_decimal { optional INT32 test (DECIMAL(%d, %d)); }", precision, scale));
             ContiguousSet<Integer> intValues = intsBetween(1, 1_000);
             ImmutableList.Builder<SqlDecimal> expectedValues = new ImmutableList.Builder<>();
@@ -883,12 +998,16 @@ public abstract class AbstractTestParquetReader
     public void testTimestampMicrosBackedByINT64()
             throws Exception
     {
-        org.apache.parquet.schema.MessageType parquetSchema =
-                MessageTypeParser.parseMessageType("message ts_micros { optional INT64 test (TIMESTAMP_MICROS); }");
+        LogicalTypeAnnotation annotation = LogicalTypeAnnotation.timestampType(false, LogicalTypeAnnotation.TimeUnit.MICROS);
+        MessageType parquetSchema = Types.buildMessage()
+                .primitive(PrimitiveType.PrimitiveTypeName.INT64, OPTIONAL)
+                .as(annotation)
+                .named("test")
+                .named("ts_micros");
         ContiguousSet<Long> longValues = longsBetween(1_000_000, 1_001_000);
         ImmutableList.Builder<SqlTimestamp> expectedValues = new ImmutableList.Builder<>();
         for (Long value : longValues) {
-            expectedValues.add(new SqlTimestamp(value / 1000L, UTC_KEY));
+            expectedValues.add(new SqlTimestamp(value / 1000L, MILLISECONDS));
         }
         tester.testRoundTrip(javaTimestampObjectInspector, longValues, expectedValues.build(), TIMESTAMP, parquetSchema);
     }
@@ -901,7 +1020,7 @@ public abstract class AbstractTestParquetReader
         ContiguousSet<Long> longValues = longsBetween(1_000_000, 1_001_000);
         ImmutableList.Builder<SqlTimestamp> expectedValues = new ImmutableList.Builder<>();
         for (Long value : longValues) {
-            expectedValues.add(new SqlTimestamp(value, UTC_KEY));
+            expectedValues.add(new SqlTimestamp(value, MILLISECONDS));
         }
         tester.testRoundTrip(javaLongObjectInspector, longValues, expectedValues.build(), TIMESTAMP, Optional.of(parquetSchema));
     }
@@ -910,8 +1029,9 @@ public abstract class AbstractTestParquetReader
     public void testDecimalBackedByINT64()
             throws Exception
     {
+        int[] scales = {9, 2, 4, 1, 6, 3, 7, 1, 7, 12};
         for (int precision = MAX_PRECISION_INT32 + 1; precision <= MAX_PRECISION_INT64; precision++) {
-            int scale = ThreadLocalRandom.current().nextInt(precision);
+            int scale = scales[precision - MAX_PRECISION_INT32 - 1];
             MessageType parquetSchema = parseMessageType(format("message hive_decimal { optional INT64 test (DECIMAL(%d, %d)); }", precision, scale));
             ContiguousSet<Long> longValues = longsBetween(1, 1_000);
             ImmutableList.Builder<SqlDecimal> expectedValues = new ImmutableList.Builder<>();
@@ -923,23 +1043,135 @@ public abstract class AbstractTestParquetReader
     }
 
     @Test
-    public void testDecimalBackedByFixedLenByteArray()
+    public void testRLEDecimalBackedByINT64()
             throws Exception
     {
-        for (int precision = MAX_PRECISION_INT64 + 1; precision < MAX_PRECISION; precision++) {
-            int scale = ThreadLocalRandom.current().nextInt(precision);
-            ContiguousSet<BigInteger> values = bigIntegersBetween(BigDecimal.valueOf(Math.pow(10, precision - 1)).toBigInteger(), BigDecimal.valueOf(Math.pow(10, precision)).toBigInteger());
+        int[] scales = {9, 9, 9, 9, 9, 9, 9, 9, 9};
+        for (int precision = MAX_PRECISION_INT32 + 1; precision <= MAX_PRECISION_INT64; precision++) {
+            int scale = scales[precision - MAX_PRECISION_INT32 - 1];
+            MessageType parquetSchema = parseMessageType(format("message hive_decimal { optional INT64 test (DECIMAL(%d, %d)); }", precision, scale));
+            ContiguousSet<Long> longValues = longsBetween(1, 1_000);
             ImmutableList.Builder<SqlDecimal> expectedValues = new ImmutableList.Builder<>();
-            ImmutableList.Builder<HiveDecimal> writeValues = new ImmutableList.Builder<>();
-            for (BigInteger value : limit(values, 1_000)) {
-                writeValues.add(HiveDecimal.create(value, scale));
-                expectedValues.add(new SqlDecimal(value, precision, scale));
+            for (Long value : longValues) {
+                expectedValues.add(SqlDecimal.of(value, precision, scale));
             }
-            tester.testRoundTrip(new JavaHiveDecimalObjectInspector(new DecimalTypeInfo(precision, scale)),
-                    writeValues.build(),
-                    expectedValues.build(),
-                    createDecimalType(precision, scale));
+            tester.testRoundTrip(javaLongObjectInspector, longValues, expectedValues.build(), createDecimalType(precision, scale), Optional.of(parquetSchema));
         }
+    }
+
+    private void testDecimal(int precision, int scale, Optional<MessageType> parquetSchema)
+            throws Exception
+    {
+        ContiguousSet<BigInteger> values = bigIntegersBetween(BigDecimal.valueOf(Math.pow(10, precision - 1)).toBigInteger(), BigDecimal.valueOf(Math.pow(10, precision)).toBigInteger());
+        ImmutableList.Builder<SqlDecimal> expectedValues = new ImmutableList.Builder<>();
+        ImmutableList.Builder<HiveDecimal> writeValues = new ImmutableList.Builder<>();
+        for (BigInteger value : limit(values, 1_000)) {
+            writeValues.add(HiveDecimal.create(value, scale));
+            expectedValues.add(new SqlDecimal(value, precision, scale));
+        }
+        tester.testRoundTrip(new JavaHiveDecimalObjectInspector(new DecimalTypeInfo(precision, scale)),
+                writeValues.build(),
+                expectedValues.build(),
+                createDecimalType(precision, scale),
+                parquetSchema);
+    }
+
+    @Test
+    public void testShortDecimalBackedByFixedLenByteArray()
+            throws Exception
+    {
+        int[] scales = {0, 0, 2, 2, 4, 5, 0, 1, 5, 7, 4, 8, 4, 4, 13, 11, 16, 15};
+        for (int precision = 1; precision <= MAX_SHORT_PRECISION; precision++) {
+            int scale = scales[precision - 1];
+            testDecimal(precision, scale, Optional.empty());
+        }
+    }
+
+    @Test
+    public void testLongDecimalBackedByFixedLenByteArray()
+            throws Exception
+    {
+        int[] scales = {7, 13, 14, 8, 16, 20, 8, 4, 19, 25, 15, 23, 17, 2, 23, 0, 33, 8, 3, 12};
+        for (int precision = MAX_PRECISION_INT64 + 1; precision < MAX_PRECISION; precision++) {
+            int scale = scales[precision - MAX_PRECISION_INT64 - 1];
+            testDecimal(precision, scale, Optional.empty());
+        }
+    }
+
+    @Test
+    public void testShortDecimalBackedByBinary()
+            throws Exception
+    {
+        int[] scales = {0, 0, 1, 2, 5, 4, 3, 4, 7, 6, 8, 9, 10, 1, 13, 11, 16, 15};
+        for (int precision = 1; precision <= MAX_SHORT_PRECISION; precision++) {
+            int scale = scales[precision - 1];
+            MessageType parquetSchema = parseMessageType(format("message hive_decimal { optional BINARY test (DECIMAL(%d, %d)); }", precision, scale));
+            testDecimal(precision, scale, Optional.of(parquetSchema));
+        }
+    }
+
+    @Test
+    public void testLongDecimalBackedByBinary()
+            throws Exception
+    {
+        int[] scales = {1, 1, 7, 8, 22, 3, 15, 14, 7, 21, 6, 12, 1, 15, 14, 29, 17, 7, 26};
+        for (int precision = MAX_PRECISION_INT64 + 1; precision < MAX_PRECISION; precision++) {
+            int scale = scales[precision - MAX_PRECISION_INT64 - 1];
+            MessageType parquetSchema = parseMessageType(format("message hive_decimal { optional BINARY test (DECIMAL(%d, %d)); }", precision, scale));
+            testDecimal(precision, scale, Optional.of(parquetSchema));
+        }
+    }
+
+    @Test
+    public void testRLELongDecimalBackedByBinary()
+            throws Exception
+    {
+        int precision = 38;
+        int scale = 4;
+        MessageType parquetSchema = parseMessageType(
+                format("message hive_decimal { optional BINARY test (DECIMAL(%d, %d)); }", precision, scale));
+
+        List<HiveDecimal> writeValues = new ArrayList<>();
+        List<SqlDecimal> expectedValues = new ArrayList<>();
+        BigInteger base = BigInteger.TEN.pow(precision - 1);
+        for (int i = 0; i < 2000; i++) {
+            BigInteger v = base.add(BigInteger.valueOf(i % 50));
+            writeValues.add(HiveDecimal.create(v, scale));
+            expectedValues.add(new SqlDecimal(v, precision, scale));
+        }
+
+        tester.testRoundTrip(
+                new JavaHiveDecimalObjectInspector(new DecimalTypeInfo(precision, scale)),
+                writeValues,
+                expectedValues,
+                createDecimalType(precision, scale),
+                Optional.of(parquetSchema));
+    }
+
+    @Test
+    public void testRLEShortDecimalBackedByBinary()
+            throws Exception
+    {
+        int precision = 3;
+        int scale = 2;
+        MessageType parquetSchema = parseMessageType(
+                format("message hive_decimal { optional BINARY test (DECIMAL(%d, %d)); }", precision, scale));
+
+        List<HiveDecimal> writeValues = new ArrayList<>();
+        List<SqlDecimal> expectedValues = new ArrayList<>();
+        BigInteger base = BigInteger.TEN.pow(precision - 1);
+        for (int i = 0; i < 2000; i++) {
+            BigInteger v = base.add(BigInteger.valueOf(i % 50));
+            writeValues.add(HiveDecimal.create(v, scale));
+            expectedValues.add(new SqlDecimal(v, precision, scale));
+        }
+
+        tester.testRoundTrip(
+                new JavaHiveDecimalObjectInspector(new DecimalTypeInfo(precision, scale)),
+                writeValues,
+                expectedValues,
+                createDecimalType(precision, scale),
+                Optional.of(parquetSchema));
     }
 
     @Test
@@ -1605,22 +1837,24 @@ public abstract class AbstractTestParquetReader
 
         try (ParquetTester.TempFile tempFile = new ParquetTester.TempFile("test", "parquet")) {
             Iterable<Integer> values = intsBetween(0, 10);
-            Iterator<?>[] readValues = stream(new Iterable<?>[] {values}).map(Iterable::iterator).toArray(size -> new Iterator<?>[size]);
 
             List<String> columnNames = singletonList("column1");
             List<Type> columnTypes = singletonList(INTEGER);
             writeParquetFileFromPresto(tempFile.getFile(),
                     columnTypes,
                     columnNames,
-                    readValues,
+                    new Iterable<?>[] {values},
                     10,
-                    CompressionCodecName.GZIP);
+                    CompressionCodecName.GZIP,
+                    ParquetWriterOptions.DEFAULT_WRITER_VERSION);
+            long tempFileCreationTime = System.currentTimeMillis();
 
             testSingleRead(new Iterable<?>[] {values},
                     columnNames,
                     columnTypes,
                     parquetMetadataSource,
-                    tempFile.getFile());
+                    tempFile.getFile(),
+                    tempFileCreationTime);
             assertEquals(parquetFileMetadataCache.stats().missCount(), 1);
             assertEquals(parquetFileMetadataCache.stats().hitCount(), 0);
 
@@ -1628,7 +1862,8 @@ public abstract class AbstractTestParquetReader
                     columnNames,
                     columnTypes,
                     parquetMetadataSource,
-                    tempFile.getFile());
+                    tempFile.getFile(),
+                    tempFileCreationTime);
             assertEquals(parquetFileMetadataCache.stats().missCount(), 1);
             assertEquals(parquetFileMetadataCache.stats().hitCount(), 1);
 
@@ -1636,7 +1871,8 @@ public abstract class AbstractTestParquetReader
                     columnNames,
                     columnTypes,
                     parquetMetadataSource,
-                    tempFile.getFile());
+                    tempFile.getFile(),
+                    tempFileCreationTime);
             assertEquals(parquetFileMetadataCache.stats().missCount(), 1);
             assertEquals(parquetFileMetadataCache.stats().hitCount(), 2);
 
@@ -1646,7 +1882,8 @@ public abstract class AbstractTestParquetReader
                     columnNames,
                     columnTypes,
                     parquetMetadataSource,
-                    tempFile.getFile());
+                    tempFile.getFile(),
+                    tempFileCreationTime);
             assertEquals(parquetFileMetadataCache.stats().missCount(), 2);
             assertEquals(parquetFileMetadataCache.stats().hitCount(), 2);
 
@@ -1654,9 +1891,33 @@ public abstract class AbstractTestParquetReader
                     columnNames,
                     columnTypes,
                     parquetMetadataSource,
-                    tempFile.getFile());
+                    tempFile.getFile(),
+                    tempFileCreationTime);
             assertEquals(parquetFileMetadataCache.stats().missCount(), 2);
             assertEquals(parquetFileMetadataCache.stats().hitCount(), 3);
+
+            // change the modification time, and set it into a new HiveFileContext to invalidate this cache
+            // the cache will hit the first time(with its last modification time), but will be invalidated and not returned
+            // the real metadata result will be gotten from the delegate i.e. MetadataReader
+            long tempFileModificationTime = System.currentTimeMillis();
+            testSingleRead(new Iterable<?>[] {values},
+                    columnNames,
+                    columnTypes,
+                    parquetMetadataSource,
+                    tempFile.getFile(),
+                    tempFileModificationTime);
+            assertEquals(parquetFileMetadataCache.stats().missCount(), 2);
+            assertEquals(parquetFileMetadataCache.stats().hitCount(), 4);
+
+            //because the cache is invalidated above, the miss count will be incremented
+            testSingleRead(new Iterable<?>[] {values},
+                    columnNames,
+                    columnTypes,
+                    parquetMetadataSource,
+                    tempFile.getFile(),
+                    tempFileModificationTime);
+            assertEquals(parquetFileMetadataCache.stats().missCount(), 2);
+            assertEquals(parquetFileMetadataCache.stats().hitCount(), 5);
         }
     }
 
@@ -1909,7 +2170,7 @@ public abstract class AbstractTestParquetReader
         if (input == null) {
             return null;
         }
-        Timestamp timestamp = new Timestamp(0);
+        Timestamp timestamp = new Timestamp();
         long seconds = (input / 1000);
         int nanos = ((input % 1000) * 1_000_000);
 
@@ -1920,11 +2181,7 @@ public abstract class AbstractTestParquetReader
             nanos += 1_000_000_000;
             seconds -= 1;
         }
-        if (nanos > 1_000_000_000) {
-            nanos -= 1_000_000_000;
-            seconds += 1;
-        }
-        timestamp.setTime(seconds * 1000);
+        timestamp.setTimeInMillis(seconds * 1000);
         timestamp.setNanos(nanos);
         return timestamp;
     }
@@ -1942,7 +2199,7 @@ public abstract class AbstractTestParquetReader
         if (input == null) {
             return null;
         }
-        return Date.valueOf(LocalDate.ofEpochDay(input));
+        return Date.ofEpochDay(input);
     }
 
     private static SqlDate intToSqlDate(Integer input)

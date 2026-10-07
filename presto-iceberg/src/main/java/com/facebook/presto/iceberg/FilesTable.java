@@ -14,6 +14,7 @@
 package com.facebook.presto.iceberg;
 
 import com.facebook.presto.common.Page;
+import com.facebook.presto.common.RuntimeStats;
 import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.type.ArrayType;
 import com.facebook.presto.common.type.StandardTypes;
@@ -25,6 +26,7 @@ import com.facebook.presto.spi.ConnectorPageSource;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.FixedPageSource;
+import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SystemTable;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
@@ -32,14 +34,17 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableScan;
+import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.transforms.Transforms;
 import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Map;
@@ -49,9 +54,16 @@ import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.IntegerType.INTEGER;
 import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.iceberg.IcebergErrorCode.ICEBERG_FILESYSTEM_ERROR;
+import static com.facebook.presto.iceberg.IcebergErrorCode.ICEBERG_INCOMPATIBLE_VERSION;
+import static com.facebook.presto.iceberg.IcebergErrorCode.ICEBERG_INVALID_METADATA;
+import static com.facebook.presto.iceberg.IcebergUtil.MAX_FORMAT_VERSION_FOR_METADATA_TABLES;
 import static com.facebook.presto.iceberg.IcebergUtil.getTableScan;
+import static com.facebook.presto.iceberg.IcebergUtil.isAvroException;
+import static com.facebook.presto.iceberg.IcebergUtil.opsFromTable;
 import static com.facebook.presto.iceberg.util.PageListBuilder.forTable;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 public class FilesTable
@@ -67,27 +79,32 @@ public class FilesTable
 
         tableMetadata = new ConnectorTableMetadata(requireNonNull(tableName, "tableName is null"),
                 ImmutableList.<ColumnMetadata>builder()
-                        .add(new ColumnMetadata("file_path", VARCHAR))
-                        .add(new ColumnMetadata("file_format", VARCHAR))
-                        .add(new ColumnMetadata("record_count", BIGINT))
-                        .add(new ColumnMetadata("file_size_in_bytes", BIGINT))
-                        .add(new ColumnMetadata("column_sizes", typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+                        .add(ColumnMetadata.builder().setName("content").setType(INTEGER).build())
+                        .add(ColumnMetadata.builder().setName("file_path").setType(VARCHAR).build())
+                        .add(ColumnMetadata.builder().setName("file_format").setType(VARCHAR).build())
+                        .add(ColumnMetadata.builder().setName("record_count").setType(BIGINT).build())
+                        .add(ColumnMetadata.builder().setName("file_size_in_bytes").setType(BIGINT).build())
+                        .add(ColumnMetadata.builder().setName("column_sizes").setType(typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
                                 TypeSignatureParameter.of(INTEGER.getTypeSignature()),
-                                TypeSignatureParameter.of(BIGINT.getTypeSignature())))))
-                        .add(new ColumnMetadata("value_counts", typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+                                TypeSignatureParameter.of(BIGINT.getTypeSignature())))).build())
+                        .add(ColumnMetadata.builder().setName("value_counts").setType(typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
                                 TypeSignatureParameter.of(INTEGER.getTypeSignature()),
-                                TypeSignatureParameter.of(BIGINT.getTypeSignature())))))
-                        .add(new ColumnMetadata("null_value_counts", typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+                                TypeSignatureParameter.of(BIGINT.getTypeSignature())))).build())
+                        .add(ColumnMetadata.builder().setName("null_value_counts").setType(typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
                                 TypeSignatureParameter.of(INTEGER.getTypeSignature()),
-                                TypeSignatureParameter.of(BIGINT.getTypeSignature())))))
-                        .add(new ColumnMetadata("lower_bounds", typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+                                TypeSignatureParameter.of(BIGINT.getTypeSignature())))).build())
+                        .add(ColumnMetadata.builder().setName("nan_value_counts").setType(typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
                                 TypeSignatureParameter.of(INTEGER.getTypeSignature()),
-                                TypeSignatureParameter.of(VARCHAR.getTypeSignature())))))
-                        .add(new ColumnMetadata("upper_bounds", typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+                                TypeSignatureParameter.of(BIGINT.getTypeSignature())))).build())
+                        .add(ColumnMetadata.builder().setName("lower_bounds").setType(typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
                                 TypeSignatureParameter.of(INTEGER.getTypeSignature()),
-                                TypeSignatureParameter.of(VARCHAR.getTypeSignature())))))
-                        .add(new ColumnMetadata("key_metadata", VARBINARY))
-                        .add(new ColumnMetadata("split_offsets", new ArrayType(BIGINT)))
+                                TypeSignatureParameter.of(VARCHAR.getTypeSignature())))).build())
+                        .add(ColumnMetadata.builder().setName("upper_bounds").setType(typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+                                TypeSignatureParameter.of(INTEGER.getTypeSignature()),
+                                TypeSignatureParameter.of(VARCHAR.getTypeSignature())))).build())
+                        .add(ColumnMetadata.builder().setName("key_metadata").setType(VARBINARY).build())
+                        .add(ColumnMetadata.builder().setName("split_offsets").setType(new ArrayType(BIGINT)).build())
+                        .add(ColumnMetadata.builder().setName("equality_ids").setType(new ArrayType(INTEGER)).build())
                         .build());
         this.snapshotId = requireNonNull(snapshotId, "snapshotId is null");
     }
@@ -107,53 +124,113 @@ public class FilesTable
     @Override
     public ConnectorPageSource pageSource(ConnectorTransactionHandle transactionHandle, ConnectorSession session, TupleDomain<Integer> constraint)
     {
-        return new FixedPageSource(buildPages(tableMetadata, session, icebergTable, snapshotId));
+        return new FixedPageSource(buildPages(tableMetadata, icebergTable, snapshotId, session));
     }
 
-    private static List<Page> buildPages(ConnectorTableMetadata tableMetadata, ConnectorSession session, Table icebergTable, Optional<Long> snapshotId)
+    private static List<Page> buildPages(ConnectorTableMetadata tableMetadata, Table icebergTable, Optional<Long> snapshotId, ConnectorSession session)
     {
         PageListBuilder pagesBuilder = forTable(tableMetadata);
-        TableScan tableScan = getTableScan(TupleDomain.all(), snapshotId, icebergTable).includeColumnStats();
+        RuntimeStats runtimeStats = session.getRuntimeStats();
+        TableScan tableScan = getTableScan(TupleDomain.all(), snapshotId, icebergTable, runtimeStats).includeColumnStats();
         Map<Integer, Type> idToTypeMap = getIdToTypeMap(icebergTable.schema());
 
-        tableScan.planFiles().forEach(fileScanTask -> {
-            DataFile dataFile = fileScanTask.file();
-            pagesBuilder.beginRow();
-            pagesBuilder.appendVarchar(dataFile.path().toString());
-            pagesBuilder.appendVarchar(dataFile.format().name());
-            pagesBuilder.appendBigint(dataFile.recordCount());
-            pagesBuilder.appendBigint(dataFile.fileSizeInBytes());
-            if (checkNonNull(dataFile.columnSizes(), pagesBuilder)) {
-                pagesBuilder.appendIntegerBigintMap(dataFile.columnSizes());
+        // Validate table format version - manifest file reading not supported for v3+
+        int formatVersion = opsFromTable(icebergTable).current().formatVersion();
+        if (formatVersion > MAX_FORMAT_VERSION_FOR_METADATA_TABLES) {
+            throw new PrestoException(ICEBERG_INCOMPATIBLE_VERSION,
+                    format("Cannot read Iceberg manifest files for table format version %d (max supported: %d). Upgrade Presto to read this table.",
+                            formatVersion, MAX_FORMAT_VERSION_FOR_METADATA_TABLES));
+        }
+
+        int fileCount = 0;
+        int manifestCount = 0;
+        if (icebergTable.currentSnapshot() != null) {
+            manifestCount = icebergTable.currentSnapshot().allManifests(icebergTable.io()).size();
+        }
+
+        try (CloseableIterable<FileScanTask> fileScanTasks = tableScan.planFiles()) {
+            for (FileScanTask fileScanTask : fileScanTasks) {
+                DataFile dataFile = fileScanTask.file();
+                fileCount++;
+                pagesBuilder.beginRow();
+                pagesBuilder.appendInteger(dataFile.content().id());
+                pagesBuilder.appendVarchar(dataFile.path().toString());
+                pagesBuilder.appendVarchar(dataFile.format().name());
+                pagesBuilder.appendBigint(dataFile.recordCount());
+                pagesBuilder.appendBigint(dataFile.fileSizeInBytes());
+                if (checkNonNull(dataFile.columnSizes(), pagesBuilder)) {
+                    pagesBuilder.appendIntegerBigintMap(dataFile.columnSizes());
+                }
+                if (checkNonNull(dataFile.valueCounts(), pagesBuilder)) {
+                    pagesBuilder.appendIntegerBigintMap(dataFile.valueCounts());
+                }
+                if (checkNonNull(dataFile.nullValueCounts(), pagesBuilder)) {
+                    pagesBuilder.appendIntegerBigintMap(dataFile.nullValueCounts());
+                }
+                if (checkNonNull(dataFile.nanValueCounts(), pagesBuilder)) {
+                    pagesBuilder.appendIntegerBigintMap(dataFile.nanValueCounts());
+                }
+                if (checkNonNull(dataFile.lowerBounds(), pagesBuilder)) {
+                    pagesBuilder.appendIntegerVarcharMap(dataFile.lowerBounds().entrySet().stream()
+                            .filter(entry -> idToTypeMap.containsKey(entry.getKey()))
+                            .collect(toImmutableMap(
+                                    Map.Entry<Integer, ByteBuffer>::getKey,
+                                    entry -> Transforms.identity().toHumanString(idToTypeMap.get(entry.getKey()),
+                                            Conversions.fromByteBuffer(idToTypeMap.get(entry.getKey()), entry.getValue())))));
+                }
+                if (checkNonNull(dataFile.upperBounds(), pagesBuilder)) {
+                    pagesBuilder.appendIntegerVarcharMap(dataFile.upperBounds().entrySet().stream()
+                            .filter(entry -> idToTypeMap.containsKey(entry.getKey()))
+                            .collect(toImmutableMap(
+                                    Map.Entry<Integer, ByteBuffer>::getKey,
+                                    entry -> Transforms.identity().toHumanString(idToTypeMap.get(entry.getKey()),
+                                            Conversions.fromByteBuffer(idToTypeMap.get(entry.getKey()), entry.getValue())))));
+                }
+                if (checkNonNull(dataFile.keyMetadata(), pagesBuilder)) {
+                    pagesBuilder.appendVarbinary(Slices.wrappedBuffer(dataFile.keyMetadata()));
+                }
+                if (checkNonNull(dataFile.splitOffsets(), pagesBuilder)) {
+                    pagesBuilder.appendBigintArray(dataFile.splitOffsets());
+                }
+                if (checkNonNull(dataFile.equalityFieldIds(), pagesBuilder)) {
+                    pagesBuilder.appendIntegerArray(dataFile.equalityFieldIds());
+                }
+                pagesBuilder.endRow();
             }
-            if (checkNonNull(dataFile.valueCounts(), pagesBuilder)) {
-                pagesBuilder.appendIntegerBigintMap(dataFile.valueCounts());
+        }
+        catch (IOException e) {
+            throw new PrestoException(ICEBERG_FILESYSTEM_ERROR, "Failed to read table files", e);
+        }
+        catch (RuntimeException e) {
+            // Catch Avro-specific exceptions that may occur during manifest deserialization
+            if (isAvroException(e)) {
+                throw new PrestoException(ICEBERG_INVALID_METADATA,
+                        "Cannot read manifest files. Manifests may be written by a newer Iceberg version.", e);
             }
-            if (checkNonNull(dataFile.nullValueCounts(), pagesBuilder)) {
-                pagesBuilder.appendIntegerBigintMap(dataFile.nullValueCounts());
+            throw e;
+        }
+
+        // Validate that we successfully read files if manifests exist
+        // Check snapshot summary to avoid false positives on legitimately empty tables
+        if (manifestCount > 0 && fileCount == 0) {
+            long expectedFileCount = 0;
+            if (icebergTable.currentSnapshot() != null) {
+                Map<String, String> summary = icebergTable.currentSnapshot().summary();
+                try {
+                    expectedFileCount = Long.parseLong(summary.getOrDefault("total-data-files", "0"));
+                }
+                catch (NumberFormatException e) {
+                    throw new PrestoException(ICEBERG_INVALID_METADATA,
+                            format("Invalid total-data-files value in snapshot summary: %s", summary.get("total-data-files")), e);
+                }
             }
-            if (checkNonNull(dataFile.lowerBounds(), pagesBuilder)) {
-                pagesBuilder.appendIntegerVarcharMap(dataFile.lowerBounds().entrySet().stream()
-                        .collect(toImmutableMap(
-                                Map.Entry<Integer, ByteBuffer>::getKey,
-                                entry -> Transforms.identity(idToTypeMap.get(entry.getKey())).toHumanString(
-                                        Conversions.fromByteBuffer(idToTypeMap.get(entry.getKey()), entry.getValue())))));
+
+            // Only throw if snapshot indicates files should exist
+            if (expectedFileCount > 0) {
+                throw new PrestoException(ICEBERG_INVALID_METADATA,
+                        format("Found %d manifest(s) but no data files. Version incompatibility or corrupt manifests.", manifestCount));
             }
-            if (checkNonNull(dataFile.upperBounds(), pagesBuilder)) {
-                pagesBuilder.appendIntegerVarcharMap(dataFile.upperBounds().entrySet().stream()
-                        .collect(toImmutableMap(
-                                Map.Entry<Integer, ByteBuffer>::getKey,
-                                entry -> Transforms.identity(idToTypeMap.get(entry.getKey())).toHumanString(
-                                        Conversions.fromByteBuffer(idToTypeMap.get(entry.getKey()), entry.getValue())))));
-            }
-            if (checkNonNull(dataFile.keyMetadata(), pagesBuilder)) {
-                pagesBuilder.appendVarbinary(Slices.wrappedBuffer(dataFile.keyMetadata()));
-            }
-            if (checkNonNull(dataFile.splitOffsets(), pagesBuilder)) {
-                pagesBuilder.appendBigintArray(dataFile.splitOffsets());
-            }
-            pagesBuilder.endRow();
-        });
+        }
 
         return pagesBuilder.build();
     }

@@ -17,8 +17,7 @@ import com.facebook.presto.spi.SourceLocation;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import javax.annotation.concurrent.Immutable;
+import com.google.errorprone.annotations.Immutable;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -48,7 +47,19 @@ public final class MarkDistinctNode
             @JsonProperty("distinctVariables") List<VariableReferenceExpression> distinctVariables,
             @JsonProperty("hashVariable") Optional<VariableReferenceExpression> hashVariable)
     {
-        super(sourceLocation, id);
+        this(sourceLocation, id, Optional.empty(), source, markerVariable, distinctVariables, hashVariable);
+    }
+
+    public MarkDistinctNode(
+            Optional<SourceLocation> sourceLocation,
+            PlanNodeId id,
+            Optional<PlanNode> statsEquivalentPlanNode,
+            PlanNode source,
+            VariableReferenceExpression markerVariable,
+            List<VariableReferenceExpression> distinctVariables,
+            Optional<VariableReferenceExpression> hashVariable)
+    {
+        super(sourceLocation, id, statsEquivalentPlanNode);
         this.source = source;
         this.markerVariable = markerVariable;
         this.hashVariable = requireNonNull(hashVariable, "hashVariable is null");
@@ -69,7 +80,7 @@ public final class MarkDistinctNode
     @Override
     public List<PlanNode> getSources()
     {
-        return unmodifiableList(Collections.singletonList(source));
+        return Collections.singletonList(source);
     }
 
     @JsonProperty
@@ -103,10 +114,16 @@ public final class MarkDistinctNode
     }
 
     @Override
+    public PlanNode assignStatsEquivalentPlanNode(Optional<PlanNode> statsEquivalentPlanNode)
+    {
+        return new MarkDistinctNode(getSourceLocation(), getId(), statsEquivalentPlanNode, source, markerVariable, distinctVariables, hashVariable);
+    }
+
+    @Override
     public PlanNode replaceChildren(List<PlanNode> newChildren)
     {
         checkArgument(newChildren.size() == 1, "Unexpected number of elements in list newChildren");
-        return new MarkDistinctNode(getSourceLocation(), getId(), newChildren.get(0), markerVariable, distinctVariables, hashVariable);
+        return new MarkDistinctNode(getSourceLocation(), getId(), getStatsEquivalentPlanNode(), newChildren.get(0), markerVariable, distinctVariables, hashVariable);
     }
 
     private static void checkArgument(boolean condition, String message)

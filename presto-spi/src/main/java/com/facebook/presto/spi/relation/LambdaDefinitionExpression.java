@@ -19,10 +19,9 @@ import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.SourceLocation;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.errorprone.annotations.Immutable;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
-
-import javax.annotation.concurrent.Immutable;
 
 import java.util.ArrayList;
 import java.util.Base64;
@@ -34,6 +33,7 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static java.lang.String.format;
+import static java.util.Collections.singletonList;
 import static java.util.Collections.unmodifiableList;
 import static java.util.Objects.requireNonNull;
 
@@ -86,6 +86,12 @@ public final class LambdaDefinitionExpression
     }
 
     @Override
+    public List<RowExpression> getChildren()
+    {
+        return singletonList(body);
+    }
+
+    @Override
     public String toString()
     {
         return "(" + String.join(",", arguments) + ") -> " + body;
@@ -115,6 +121,12 @@ public final class LambdaDefinitionExpression
     public <R, C> R accept(RowExpressionVisitor<R, C> visitor, C context)
     {
         return visitor.visitLambda(this, context);
+    }
+
+    @Override
+    public RowExpression canonicalize()
+    {
+        return getSourceLocation().isPresent() ? new LambdaDefinitionExpression(Optional.empty(), argumentTypes, arguments, body) : this;
     }
 
     private static void checkArgument(boolean condition, String message, Object... messageArgs)

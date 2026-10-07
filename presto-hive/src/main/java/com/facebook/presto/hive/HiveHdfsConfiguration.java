@@ -14,9 +14,8 @@
 package com.facebook.presto.hive;
 
 import com.google.common.collect.ImmutableSet;
+import jakarta.inject.Inject;
 import org.apache.hadoop.conf.Configuration;
-
-import javax.inject.Inject;
 
 import java.net.URI;
 import java.util.Set;
@@ -37,6 +36,13 @@ public class HiveHdfsConfiguration
         protected Configuration initialValue()
         {
             Configuration configuration = new Configuration(false);
+            // Configuration captures Thread.currentThread().getContextClassLoader() in an instance
+            // initializer, so every thread would otherwise bake in its own ClassLoader here. Query
+            // planning threads carry the system ClassLoader, which cannot see plugin classes such as
+            // PrestoS3FileSystem (registered as "fs.s3.impl"), making Configuration.getClassByName()
+            // fail with ClassNotFoundException. Pin the plugin ClassLoader so class resolution does
+            // not depend on which thread happened to populate this ThreadLocal.
+            configuration.setClassLoader(HiveHdfsConfiguration.class.getClassLoader());
             copy(INITIAL_CONFIGURATION, configuration);
             initializer.updateConfiguration(configuration);
             return configuration;
@@ -46,11 +52,22 @@ public class HiveHdfsConfiguration
     private final HdfsConfigurationInitializer initializer;
     private final Set<DynamicConfigurationProvider> dynamicProviders;
 
+    // This is set to TRUE if the configuration providers are empty or they do NOT dependent on the URI
+    private final boolean isConfigReusable;
+    private final boolean isCopyOnFirstWriteConfigurationEnabled;
+    private Configuration uriAgnosticConfiguration;
+
     @Inject
-    public HiveHdfsConfiguration(HdfsConfigurationInitializer initializer, Set<DynamicConfigurationProvider> dynamicProviders)
+    public HiveHdfsConfiguration(HdfsConfigurationInitializer initializer, Set<DynamicConfigurationProvider> dynamicProviders, HiveClientConfig hiveClientConfig)
     {
         this.initializer = requireNonNull(initializer, "initializer is null");
         this.dynamicProviders = ImmutableSet.copyOf(requireNonNull(dynamicProviders, "dynamicProviders is null"));
+        boolean isUriIndependentConfig = true;
+        for (DynamicConfigurationProvider provider : dynamicProviders) {
+            isUriIndependentConfig = isUriIndependentConfig && provider.isUriIndependentConfigurationProvider();
+        }
+        this.isConfigReusable = isUriIndependentConfig;
+        this.isCopyOnFirstWriteConfigurationEnabled = hiveClientConfig.isCopyOnFirstWriteConfigurationEnabled();
     }
 
     @Override
@@ -61,11 +78,22 @@ public class HiveHdfsConfiguration
             return hadoopConfiguration.get();
         }
 
-        Configuration config = new Configuration(false);
-        copy(hadoopConfiguration.get(), config);
+        if (isCopyOnFirstWriteConfigurationEnabled && isConfigReusable && uriAgnosticConfiguration != null) {
+            // use the same configuration for everything
+            return new CopyOnFirstWriteConfiguration(uriAgnosticConfiguration);
+        }
+
+        Configuration config = new Configuration(hadoopConfiguration.get());
         for (DynamicConfigurationProvider provider : dynamicProviders) {
             provider.updateConfiguration(config, context, uri);
         }
+
+        if (isCopyOnFirstWriteConfigurationEnabled && isConfigReusable && uriAgnosticConfiguration == null) {
+            uriAgnosticConfiguration = config;
+            // return a CopyOnFirstWrite configuration so that we make a copy before modifying it down the lane
+            return new CopyOnFirstWriteConfiguration(uriAgnosticConfiguration);
+        }
+
         return config;
     }
 }

@@ -14,11 +14,13 @@
 package com.facebook.presto.hive.parquet.write;
 
 import com.facebook.airlift.log.Logger;
+import org.apache.hadoop.hive.common.type.Date;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
+import org.apache.hadoop.hive.common.type.Timestamp;
 import org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe;
 import org.apache.hadoop.hive.ql.io.parquet.timestamp.NanoTimeUtils;
 import org.apache.hadoop.hive.ql.io.parquet.write.DataWritableWriter;
-import org.apache.hadoop.hive.serde2.io.DateWritable;
+import org.apache.hadoop.hive.serde2.io.DateWritableV2;
 import org.apache.hadoop.hive.serde2.io.ParquetHiveRecord;
 import org.apache.hadoop.hive.serde2.objectinspector.ListObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.MapObjectInspector;
@@ -46,8 +48,7 @@ import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.OriginalType;
 import org.apache.parquet.schema.Type;
 
-import java.sql.Date;
-import java.sql.Timestamp;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 
@@ -86,7 +87,7 @@ public class TestDataWritableWriter
             }
             catch (RuntimeException e) {
                 String errorMessage = "Parquet record is malformed: " + e.getMessage();
-                log.error(errorMessage, e);
+                log.error(e, errorMessage);
                 throw new RuntimeException(errorMessage, e);
             }
             recordConsumer.endMessage();
@@ -278,7 +279,7 @@ public class TestDataWritableWriter
 
         recordConsumer.startGroup();
         Map<?, ?> mapValues = inspector.getMap(value);
-        if (mapValues != null && mapValues.size() > 0) {
+        if (mapValues != null && !mapValues.isEmpty()) {
             recordConsumer.startField(repeatedType.getName(), 0);
 
             Type keyType = repeatedType.getType(0);
@@ -368,7 +369,7 @@ public class TestDataWritableWriter
                 break;
             case TIMESTAMP:
                 Timestamp ts = ((TimestampObjectInspector) inspector).getPrimitiveJavaObject(value);
-                recordConsumer.addBinary(NanoTimeUtils.getNanoTime(ts, false).toBinary());
+                recordConsumer.addBinary(NanoTimeUtils.getNanoTime(ts, ZoneId.of("UTC"), false).toBinary());
                 break;
             case DECIMAL:
                 HiveDecimal vDecimal = ((HiveDecimal) inspector.getPrimitiveJavaObject(value));
@@ -377,7 +378,7 @@ public class TestDataWritableWriter
                 break;
             case DATE:
                 Date vDate = ((DateObjectInspector) inspector).getPrimitiveJavaObject(value);
-                recordConsumer.addInteger(DateWritable.dateToDays(vDate));
+                recordConsumer.addInteger(DateWritableV2.dateToDays(vDate));
                 break;
             default:
                 throw new IllegalArgumentException("Unsupported primitive data type: " + inspector.getPrimitiveCategory());

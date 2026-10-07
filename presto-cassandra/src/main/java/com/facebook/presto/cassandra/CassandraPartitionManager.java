@@ -19,13 +19,13 @@ import com.facebook.presto.common.predicate.Domain;
 import com.facebook.presto.common.predicate.Range;
 import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.spi.ColumnHandle;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableHandle;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
-
-import javax.inject.Inject;
+import jakarta.inject.Inject;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -50,11 +50,11 @@ public class CassandraPartitionManager
         this.cassandraSession = requireNonNull(cassandraSession, "cassandraSession is null");
     }
 
-    public CassandraPartitionResult getPartitions(ConnectorTableHandle tableHandle, TupleDomain<ColumnHandle> tupleDomain)
+    public CassandraPartitionResult getPartitions(ConnectorTableHandle tableHandle, ConnectorSession connectorSession, TupleDomain<ColumnHandle> tupleDomain)
     {
         CassandraTableHandle cassandraTableHandle = (CassandraTableHandle) tableHandle;
 
-        CassandraTable table = cassandraSession.getTable(cassandraTableHandle.getSchemaTableName());
+        CassandraTable table = cassandraSession.getTable(connectorSession, cassandraTableHandle.getSchemaTableName());
         List<CassandraColumnHandle> partitionKeys = table.getPartitionKeyColumns();
 
         // fetch the partitions

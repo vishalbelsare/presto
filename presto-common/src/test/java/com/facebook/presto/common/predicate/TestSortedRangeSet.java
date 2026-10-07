@@ -26,6 +26,9 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import org.testng.annotations.Test;
 
+import java.util.Arrays;
+import java.util.stream.Collectors;
+
 import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.common.type.DoubleType.DOUBLE;
@@ -33,11 +36,26 @@ import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static io.airlift.slice.Slices.utf8Slice;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNotEquals;
 import static org.testng.Assert.assertThrows;
 import static org.testng.Assert.assertTrue;
 
 public class TestSortedRangeSet
 {
+    private final ObjectMapper mapper;
+
+    public TestSortedRangeSet()
+    {
+        TestingTypeManager typeManager = new TestingTypeManager();
+        TestingBlockEncodingSerde blockEncodingSerde = new TestingBlockEncodingSerde();
+
+        this.mapper = new JsonObjectMapperProvider().get()
+                .registerModule(new SimpleModule()
+                        .addDeserializer(Type.class, new TestingTypeDeserializer(typeManager))
+                        .addSerializer(Block.class, new TestingBlockJsonSerde.Serializer(blockEncodingSerde))
+                        .addDeserializer(Block.class, new TestingBlockJsonSerde.Deserializer(blockEncodingSerde)));
+    }
+
     @Test
     public void testEmptySet()
     {
@@ -46,7 +64,7 @@ public class TestSortedRangeSet
         assertTrue(rangeSet.isNone());
         assertFalse(rangeSet.isAll());
         assertFalse(rangeSet.isSingleValue());
-        assertTrue(Iterables.isEmpty(rangeSet.getOrderedRanges()));
+        assertFalse(rangeSet.getOrderedRanges().stream().findAny().isPresent());
         assertEquals(rangeSet.getRangeCount(), 0);
         assertEquals(rangeSet.complement(), SortedRangeSet.all(BIGINT));
         assertFalse(rangeSet.includesMarker(Marker.lowerUnbounded(BIGINT)));
@@ -404,15 +422,6 @@ public class TestSortedRangeSet
     public void testJsonSerialization()
             throws Exception
     {
-        TestingTypeManager typeManager = new TestingTypeManager();
-        TestingBlockEncodingSerde blockEncodingSerde = new TestingBlockEncodingSerde();
-
-        ObjectMapper mapper = new JsonObjectMapperProvider().get()
-                .registerModule(new SimpleModule()
-                        .addDeserializer(Type.class, new TestingTypeDeserializer(typeManager))
-                        .addSerializer(Block.class, new TestingBlockJsonSerde.Serializer(blockEncodingSerde))
-                        .addDeserializer(Block.class, new TestingBlockJsonSerde.Deserializer(blockEncodingSerde)));
-
         SortedRangeSet set = SortedRangeSet.all(BIGINT);
         assertEquals(set, mapper.readValue(mapper.writeValueAsString(set), SortedRangeSet.class));
 
@@ -424,6 +433,145 @@ public class TestSortedRangeSet
 
         set = SortedRangeSet.of(Range.equal(BOOLEAN, true), Range.equal(BOOLEAN, false));
         assertEquals(set, mapper.readValue(mapper.writeValueAsString(set), SortedRangeSet.class));
+    }
+
+    @Test
+    public void testCanonicalize()
+            throws Exception
+    {
+        assertSameSet(SortedRangeSet.all(BIGINT), SortedRangeSet.all(BIGINT), false);
+        assertSameSet(
+                SortedRangeSet.of(
+                        Range.lessThan(BIGINT, 0L),
+                        Range.equal(BIGINT, 1L),
+                        Range.equal(BIGINT, 2L),
+                        Range.range(BIGINT, 5L, false, 9L, false),
+                        Range.greaterThanOrEqual(BIGINT, 11L)),
+                SortedRangeSet.of(
+                        Range.lessThan(BIGINT, 0L),
+                        Range.equal(BIGINT, 1L),
+                        Range.equal(BIGINT, 2L),
+                        Range.range(BIGINT, 5L, false, 9L, false),
+                        Range.greaterThanOrEqual(BIGINT, 11L)),
+                false);
+
+        assertDifferentSet(
+                SortedRangeSet.of(
+                        Range.lessThan(BIGINT, 0L),
+                        Range.equal(BIGINT, 1L),
+                        Range.equal(BIGINT, 2L),
+                        Range.range(BIGINT, 5L, false, 9L, false),
+                        Range.greaterThanOrEqual(BIGINT, 11L)),
+                SortedRangeSet.of(
+                        Range.lessThan(BIGINT, 0L),
+                        Range.equal(BIGINT, 1L),
+                        Range.equal(BIGINT, 3L),
+                        Range.range(BIGINT, 5L, false, 9L, false),
+                        Range.greaterThanOrEqual(BIGINT, 11L)),
+                false);
+        assertDifferentSet(SortedRangeSet.all(BIGINT), SortedRangeSet.none(BIGINT), false);
+        assertDifferentSet(SortedRangeSet.all(BIGINT), SortedRangeSet.all(VARCHAR), false);
+
+        assertSameSet(
+                SortedRangeSet.of(
+                        Range.lessThan(BIGINT, 0L),
+                        Range.equal(BIGINT, 1L),
+                        Range.equal(BIGINT, 2L),
+                        Range.range(BIGINT, 5L, false, 9L, false),
+                        Range.greaterThanOrEqual(BIGINT, 11L)),
+                SortedRangeSet.of(
+                        Range.lessThan(BIGINT, 0L),
+                        Range.equal(BIGINT, 3L),
+                        Range.equal(BIGINT, 4L),
+                        Range.range(BIGINT, 5L, false, 9L, false),
+                        Range.greaterThanOrEqual(BIGINT, 11L)),
+                true);
+        assertSameSet(SortedRangeSet.all(BIGINT), SortedRangeSet.all(BIGINT), true);
+
+        assertDifferentSet(
+                SortedRangeSet.of(
+                        Range.lessThan(BIGINT, 0L),
+                        Range.range(BIGINT, 0L, false, 2L, false),
+                        Range.range(BIGINT, 5L, false, 9L, false),
+                        Range.greaterThanOrEqual(BIGINT, 11L)),
+                SortedRangeSet.of(
+                        Range.lessThan(BIGINT, 0L),
+                        Range.range(BIGINT, 0L, false, 3L, false),
+                        Range.range(BIGINT, 5L, true, 9L, false),
+                        Range.greaterThanOrEqual(BIGINT, 11L)),
+                true);
+        assertDifferentSet(SortedRangeSet.all(BIGINT), SortedRangeSet.all(BOOLEAN), true);
+    }
+
+    @Test
+    public void testSubRangeSet()
+    {
+        // test subrange no overlap below and above
+        assertEquals(SortedRangeSet.of(Range.lessThan(BIGINT, 10L))
+                        .subRangeSet(Range.greaterThan(BIGINT, 10L))
+                        .getOrderedRanges()
+                        .size(),
+                0);
+        assertEquals(SortedRangeSet.of(Range.greaterThan(BIGINT, 10L))
+                        .subRangeSet(Range.lessThan(BIGINT, 10L))
+                        .getOrderedRanges()
+                        .size(),
+                0);
+        assertEquals(SortedRangeSet.of(Range.greaterThanOrEqual(BIGINT, 10L))
+                        .subRangeSet(Range.lessThan(BIGINT, 10L))
+                        .getOrderedRanges()
+                        .size(),
+                0);
+        assertEquals(SortedRangeSet.of(Range.lessThanOrEqual(BIGINT, 10L))
+                        .subRangeSet(Range.greaterThan(BIGINT, 10L))
+                        .getOrderedRanges()
+                        .size(),
+                0);
+
+        // test with equal bounds
+        assertEquals(SortedRangeSet.of(Range.lessThanOrEqual(BIGINT, 10L))
+                        .subRangeSet(Range.greaterThanOrEqual(BIGINT, 10L))
+                        .getOrderedRanges()
+                        .size(),
+                1);
+        assertEquals(SortedRangeSet.of(Range.greaterThanOrEqual(BIGINT, 10L))
+                        .subRangeSet(Range.lessThanOrEqual(BIGINT, 10L))
+                        .getOrderedRanges()
+                        .size(),
+                1);
+        assertEquals(SortedRangeSet.of(Range.lessThanOrEqual(BIGINT, 10L))
+                .subRangeSet(Range.greaterThanOrEqual(BIGINT, 10L))
+                .getOrderedRanges().get(0), Range.range(BIGINT, 10L, true, 10L, true));
+        // two ranges
+        assertEquals(SortedRangeSet.of(Range.lessThan(BIGINT, -10L), Range.greaterThan(BIGINT, 10L))
+                        .subRangeSet(Range.range(BIGINT, -20L, true, 20L, true)).getOrderedRanges(),
+                Arrays.stream(new Range[] {
+                                Range.range(BIGINT, -20L, true, -10L, false),
+                                Range.range(BIGINT, 10L, false, 20L, true)})
+                        .collect(Collectors.toList()));
+        // range entirely contained
+        assertEquals(SortedRangeSet.of(
+                                Range.lessThan(BIGINT, -10L),
+                                Range.greaterThan(BIGINT, 10L),
+                                Range.range(BIGINT, -5L, true, 5L, true))
+                        .subRangeSet(Range.range(BIGINT, -20L, true, 20L, true)).getOrderedRanges(),
+                Arrays.stream(new Range[] {
+                                Range.range(BIGINT, -20L, true, -10L, false),
+                                Range.range(BIGINT, -5L, true, 5L, true),
+                                Range.range(BIGINT, 10L, false, 20L, true)})
+                        .collect(Collectors.toList()));
+    }
+
+    private void assertSameSet(SortedRangeSet set1, SortedRangeSet set2, boolean removeSafeConstants)
+            throws Exception
+    {
+        assertEquals(mapper.writeValueAsString(set1.canonicalize(removeSafeConstants)), mapper.writeValueAsString(set2.canonicalize(removeSafeConstants)));
+    }
+
+    private void assertDifferentSet(SortedRangeSet set1, SortedRangeSet set2, boolean removeSafeConstants)
+            throws Exception
+    {
+        assertNotEquals(mapper.writeValueAsString(set1.canonicalize(removeSafeConstants)), mapper.writeValueAsString(set2.canonicalize(removeSafeConstants)));
     }
 
     private void assertUnion(SortedRangeSet first, SortedRangeSet second, SortedRangeSet expected)

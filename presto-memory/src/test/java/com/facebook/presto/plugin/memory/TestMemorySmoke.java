@@ -143,8 +143,8 @@ public class TestMemorySmoke
         int tablesBeforeCreate = listMemoryTables().size();
 
         assertQueryFails("CREATE TABLE schema3.test_table3 (x date)", "Schema schema3 not found");
-        assertQueryFails("CREATE VIEW schema4.test_view4 AS SELECT 123 x", "Schema schema4 not found");
-        assertQueryFails("CREATE OR REPLACE VIEW schema5.test_view5 AS SELECT 123 x", "Schema schema5 not found");
+        assertQueryFails("CREATE VIEW schema4.test_view4 AS SELECT 123 x", ".*Schema 'schema4' does not exist");
+        assertQueryFails("CREATE OR REPLACE VIEW schema5.test_view5 AS SELECT 123 x", ".*Schema 'schema5' does not exist");
 
         int tablesAfterCreate = listMemoryTables().size();
         assertEquals(tablesBeforeCreate, tablesAfterCreate);
@@ -183,6 +183,28 @@ public class TestMemorySmoke
 
         assertUpdate("DROP VIEW test_view");
         assertQueryFails("DROP VIEW test_view", "line 1:1: View 'memory.default.test_view' does not exist");
+    }
+
+    @Test
+    public void testRenameView()
+    {
+        @Language("SQL") String query = "SELECT orderkey, orderstatus, totalprice / 2 half FROM orders";
+
+        assertUpdate("CREATE VIEW test_view_to_be_renamed AS " + query);
+        assertUpdate("ALTER VIEW test_view_to_be_renamed RENAME TO test_view_renamed");
+        assertQuery("SELECT * FROM test_view_renamed", query);
+
+        assertUpdate("CREATE SCHEMA test_different_schema");
+        assertQueryFails("ALTER VIEW test_view_renamed RENAME TO test_different_schema.test_view_renamed", "line 1:1: View rename across schemas is not supported");
+        assertUpdate("DROP VIEW test_view_renamed");
+        assertUpdate("DROP SCHEMA test_different_schema");
+    }
+
+    @Test
+    public void testRenameViewIfNotExists()
+    {
+        assertQueryFails("ALTER VIEW test_rename_view_not_exist RENAME TO test_renamed_view_not_exist", "line 1:1: View 'memory.default.test_rename_view_not_exist' does not exist");
+        assertQuerySucceeds("ALTER VIEW IF EXISTS test_rename_view_not_exist RENAME TO test_renamed_view_not_exist");
     }
 
     private List<QualifiedObjectName> listMemoryTables()

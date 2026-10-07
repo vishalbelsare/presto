@@ -42,6 +42,11 @@ public class TestStatementBuilder
         printStatement("explain (type distributed, format graphviz) select * from foo");
 
         printStatement("select * from foo /* end */");
+
+        printStatement("select row(1 as a, 2 as b)");
+        printStatement("select row(1 a, 2)");
+        printStatement("select row(1 as \"Mixed Case\")");
+        printStatement("values row(1 as a, 'x' as b)");
         printStatement("/* start */ select * from foo");
         printStatement("/* start */ select * /* middle */ from foo /* end */");
         printStatement("-- start\nselect * -- junk\n-- hi\nfrom foo -- done");
@@ -130,6 +135,15 @@ public class TestStatementBuilder
         printStatement("select * from foo tablesample system (10) join bar tablesample bernoulli (30) on a.id = b.id");
         printStatement("select * from foo tablesample system (10) join bar tablesample bernoulli (30) on not(a.id > b.id)");
 
+        printStatement("select * from foo for version as of 8772871542276440693");
+        printStatement("select * from foo for system_version as of 8772871542276440693");
+        printStatement("select * from foo for timestamp as of timestamp '2023-08-17 13:29:46.822 America/Los_Angeles'");
+        printStatement("select * from foo for system_time as of timestamp '2023-08-17 13:29:46.822 America/Los_Angeles'");
+        printStatement("select * from foo for version before 8772871542276440693");
+        printStatement("select * from foo for system_version before 8772871542276440693");
+        printStatement("select * from foo for timestamp before timestamp '2023-08-17 13:29:46.822 America/Los_Angeles'");
+        printStatement("select * from foo for system_time before timestamp '2023-08-17 13:29:46.822 America/Los_Angeles'");
+
         printStatement("create table foo as (select * from abc)");
         printStatement("create table if not exists foo as (select * from abc)");
         printStatement("create table foo with (a = 'apple', b = 'banana') as select * from abc");
@@ -155,6 +169,8 @@ public class TestStatementBuilder
 
         printStatement("delete from foo");
         printStatement("delete from foo where a = b");
+
+        printStatement("truncate table foo");
 
         printStatement("values ('a', 1, 2.2), ('b', 2, 3.3)");
 
@@ -183,6 +199,10 @@ public class TestStatementBuilder
         printStatement("alter table foo rename to bar");
         printStatement("alter table a.b.c rename to d.e.f");
 
+        printStatement("alter table foo set properties (a='1')");
+        printStatement("alter table a.b.c set properties (a=true, b=123, c='x')");
+        printStatement("alter table if exists bar set properties (b='1')");
+
         printStatement("alter table a.b.c rename column x to y");
 
         printStatement("alter table a.b.c add column x bigint");
@@ -192,6 +212,36 @@ public class TestStatementBuilder
         printStatement("alter table a.b.c add column x bigint comment 'xtra' with (compression = 'LZ4', special = true)");
 
         printStatement("alter table a.b.c drop column x");
+
+        printStatement("alter table a.b.c drop branch 'x'");
+        printStatement("alter table a.b.c create branch 'test_branch'");
+        printStatement("alter table a.b.c create branch if not exists 'test_branch'");
+        printStatement("alter table a.b.c create or replace branch 'test_branch'");
+        printStatement("alter table a.b.c create branch 'test_branch' for system_version as of 123");
+        printStatement("alter table a.b.c create branch if not exists 'test_branch' for system_version as of 123");
+        printStatement("alter table a.b.c create or replace branch 'test_branch' for system_version as of 123");
+        printStatement("alter table a.b.c create branch 'test_branch' for system_time as of timestamp '2024-01-01 00:00:00'");
+        printStatement("alter table a.b.c create branch if not exists 'test_branch' for system_time as of timestamp '2024-01-01 00:00:00'");
+        printStatement("alter table a.b.c create or replace branch 'test_branch' for system_time as of timestamp '2024-01-01 00:00:00'");
+        printStatement("alter table a.b.c create branch 'test_branch' for system_version as of 123 retain 7 days");
+        printStatement("alter table a.b.c create branch if not exists 'test_branch' for system_version as of 123 retain 7 days");
+        printStatement("alter table a.b.c create or replace branch 'test_branch' for system_version as of 123 retain 7 days");
+        printStatement("alter table a.b.c create branch 'test_branch' for system_version as of 123 retain 7 days with snapshot retention 2 snapshots 3 days");
+        printStatement("alter table a.b.c create branch if not exists 'test_branch' for system_version as of 123 retain 7 days with snapshot retention 2 snapshots 3 days");
+        printStatement("alter table a.b.c create tag 'test_tag'");
+        printStatement("alter table a.b.c create tag if not exists 'test_tag'");
+        printStatement("alter table a.b.c create or replace tag 'test_tag'");
+        printStatement("alter table a.b.c create tag 'test_tag' for system_version as of 123");
+        printStatement("alter table a.b.c create tag if not exists 'test_tag' for system_version as of 123");
+        printStatement("alter table a.b.c create or replace tag 'test_tag' for system_version as of 123");
+        printStatement("alter table a.b.c create tag 'test_tag' for system_time as of timestamp '2024-01-01 00:00:00'");
+        printStatement("alter table a.b.c create tag if not exists 'test_tag' for system_time as of timestamp '2024-01-01 00:00:00'");
+        printStatement("alter table a.b.c create or replace tag 'test_tag' for system_time as of timestamp '2024-01-01 00:00:00'");
+        printStatement("alter table a.b.c create tag 'test_tag' for system_version as of 123 retain 7 days");
+        printStatement("alter table a.b.c create tag if not exists 'test_tag' for system_version as of 123 retain 7 days");
+        printStatement("alter table a.b.c create or replace tag 'test_tag' for system_version as of 123 retain 7 days");
+        printStatement("alter table a.b.c create or replace branch 'test_branch' for system_version as of 123 retain 7 days with snapshot retention 2 snapshots 3 days");
+        printStatement("alter table a.b.c drop tag 'testTag'");
 
         printStatement("create schema test");
         printStatement("create schema if not exists test");
@@ -217,6 +267,9 @@ public class TestStatementBuilder
         printStatement("create or replace view foo as select 123 from t");
 
         printStatement("drop view foo");
+
+        printStatement("alter table foo alter column x set data type bigint");
+        printStatement("alter table a.b.c alter column x set data type bigint");
 
         printStatement("insert into t select * from t");
         printStatement("insert into t (c1, c2) select * from t");
@@ -260,6 +313,39 @@ public class TestStatementBuilder
         printStatement("SELECT * FROM table1 WHERE a >= ALL (VALUES 2, 3, 4)");
         printStatement("SELECT * FROM table1 WHERE a <> ANY (SELECT 2, 3, 4)");
         printStatement("SELECT * FROM table1 WHERE a = SOME (SELECT id FROM table2)");
+
+        // Table Constraints
+        printStatement("alter table foo add constraint bar unique (col1, col2, col3)");
+        printStatement("alter table foo add constraint bar primary key (col1, col2)");
+        printStatement("alter table foo add constraint bar primary key (col1, col2) disabled not rely not enforced");
+        printStatement("alter table foo add constraint bar primary key (col1, col2) enforced");
+        printStatement("alter table foo add constraint bar primary key (col1, col2) disabled not rely");
+        printStatement("alter table foo add constraint bar unique (col1, col2, col3) disabled");
+        printStatement("alter table foo add constraint bar unique (col1, col2, col3) not rely not enforced");
+        printStatement("alter table a.b.c add constraint bar unique (col1, col2, col3)");
+        printStatement("create table t1 (c1 int, c2 varchar, c3 double, c4 int, primary key (c1, c2))");
+        printStatement("create table t1 (c1 int, c2 varchar, c3 double, c4 int, primary key (c1, c2), unique (c4), unique (c3))");
+        printStatement("create table t1 (c1 int, c2 varchar, c3 double, c4 int, constraint pk1 primary key (c1, c2))");
+        printStatement("create table t1 (c1 int, c2 varchar, c3 double, c4 int, constraint pk1 primary key (c1, c2), constraint uq1 unique (c4), unique (c3))");
+        printStatement("create table t1 (c1 int, c2 varchar, c3 double, c4 int, constraint pk1 primary key (c1, c2) disabled not rely enforced , constraint uq1 unique (c4) not rely enforced, unique (c3) disabled)");
+
+        printStatement("alter table foo alter column bar set not null");
+        printStatement("alter table foo alter column bar drop not null");
+        printStatement("alter table if exists foo alter bar set not null");
+        printStatement("alter table if exists foo alter bar drop not null");
+
+        printStatement("" +
+                "merge into product_sales as s\n" +
+                "  using monthly_sales as ms\n" +
+                "  on s.product_id = ms.product_id\n" +
+                "when matched then\n" +
+                "  update set\n" +
+                "      sales = sales + ms.sales\n" +
+                "    , last_sale = ms.sale_date\n" +
+                "    , current_price = ms.price\n" +
+                "when not matched then\n" +
+                "  insert (product_id, sales, last_sale, current_price)\n" +
+                "  values (ms.product_id, ms.sales, ms.sale_date, ms.price)");
     }
 
     @Test

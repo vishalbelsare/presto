@@ -129,6 +129,11 @@ public final class Marker
         return Utils.blockToNativeValue(type, valueBlock.get());
     }
 
+    public Optional<Object> getObjectValue()
+    {
+        return valueBlock.map(block -> Utils.blockToNativeValue(type, block));
+    }
+
     public Object getPrintableValue(SqlFunctionProperties properties)
     {
         if (!valueBlock.isPresent()) {
@@ -299,5 +304,14 @@ public final class Marker
         buffer.append(", bound=").append(bound);
         buffer.append("}");
         return buffer.toString();
+    }
+
+    public Marker canonicalize(boolean removeConstants)
+    {
+        if (valueBlock.isPresent() && removeConstants) {
+            // For REMOVE_CONSTANTS, we replace this with null
+            return new Marker(type, Optional.of(Utils.nativeValueToBlock(type, null)), bound);
+        }
+        return this;
     }
 }

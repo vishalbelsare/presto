@@ -13,10 +13,13 @@
  */
 package com.facebook.presto.common;
 
+import com.facebook.drift.annotations.ThriftConstructor;
+import com.facebook.drift.annotations.ThriftField;
+import com.facebook.drift.annotations.ThriftStruct;
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonValue;
-
-import javax.annotation.concurrent.Immutable;
+import com.google.errorprone.annotations.Immutable;
 
 import java.util.Objects;
 
@@ -25,6 +28,7 @@ import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 
 @Immutable
+@ThriftStruct
 public class QualifiedObjectName
 {
     private final String catalogName;
@@ -34,13 +38,13 @@ public class QualifiedObjectName
     @JsonCreator
     public static QualifiedObjectName valueOf(String name)
     {
-        if (name == null) {
-            throw new NullPointerException("name is null");
-        }
+        requireNonNull(name, "name is null");
+
         String[] parts = name.split("\\.");
         if (parts.length != 3) {
-            throw new IllegalArgumentException("QualifiedObjectName should have exactly 3 parts");
+            throw new IllegalArgumentException(format("QualifiedObjectName should have exactly 3 parts, found %s: %s", parts.length, name));
         }
+
         return new QualifiedObjectName(parts[0], parts[1], parts[2]);
     }
 
@@ -54,11 +58,14 @@ public class QualifiedObjectName
         return new QualifiedObjectName(catalogName, schemaName, objectName.toLowerCase(ENGLISH));
     }
 
-    public QualifiedObjectName(String catalogName, String schemaName, String objectName)
+    @JsonCreator
+    @ThriftConstructor
+    public QualifiedObjectName(
+            @JsonProperty("catalogName") String catalogName,
+            @JsonProperty("schemaName") String schemaName,
+            @JsonProperty("objectName") String objectName)
     {
         checkLowerCase(catalogName, "catalogName");
-        checkLowerCase(schemaName, "schemaName");
-        checkLowerCase(objectName, "objectName");
         this.catalogName = catalogName;
         this.schemaName = schemaName;
         this.objectName = objectName;
@@ -69,16 +76,22 @@ public class QualifiedObjectName
         return new CatalogSchemaName(catalogName, schemaName);
     }
 
+    @ThriftField(1)
+    @JsonProperty("catalogName")
     public String getCatalogName()
     {
         return catalogName;
     }
 
+    @ThriftField(2)
+    @JsonProperty("schemaName")
     public String getSchemaName()
     {
         return schemaName;
     }
 
+    @ThriftField(3)
+    @JsonProperty("objectName")
     public String getObjectName()
     {
         return objectName;

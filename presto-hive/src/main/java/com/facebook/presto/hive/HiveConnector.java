@@ -20,8 +20,8 @@ import com.facebook.presto.spi.classloader.ThreadContextClassLoader;
 import com.facebook.presto.spi.connector.Connector;
 import com.facebook.presto.spi.connector.ConnectorAccessControl;
 import com.facebook.presto.spi.connector.ConnectorCapabilities;
+import com.facebook.presto.spi.connector.ConnectorCommitHandle;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
-import com.facebook.presto.spi.connector.ConnectorMetadataUpdaterProvider;
 import com.facebook.presto.spi.connector.ConnectorNodePartitioningProvider;
 import com.facebook.presto.spi.connector.ConnectorPageSinkProvider;
 import com.facebook.presto.spi.connector.ConnectorPageSourceProvider;
@@ -39,8 +39,12 @@ import java.util.List;
 import java.util.Set;
 import java.util.function.Supplier;
 
+import static com.facebook.presto.spi.connector.ConnectorCapabilities.ALTER_COLUMN;
+import static com.facebook.presto.spi.connector.ConnectorCapabilities.NOT_NULL_COLUMN_CONSTRAINT;
+import static com.facebook.presto.spi.connector.ConnectorCapabilities.PRIMARY_KEY_CONSTRAINT;
 import static com.facebook.presto.spi.connector.ConnectorCapabilities.SUPPORTS_PAGE_SINK_COMMIT;
 import static com.facebook.presto.spi.connector.ConnectorCapabilities.SUPPORTS_REWINDABLE_SPLIT_SOURCE;
+import static com.facebook.presto.spi.connector.ConnectorCapabilities.UNIQUE_CONSTRAINT;
 import static com.facebook.presto.spi.transaction.IsolationLevel.READ_UNCOMMITTED;
 import static com.facebook.presto.spi.transaction.IsolationLevel.checkConnectorSupports;
 import static com.google.common.base.Preconditions.checkArgument;
@@ -67,7 +71,6 @@ public class HiveConnector
     private final ConnectorAccessControl accessControl;
     private final ClassLoader classLoader;
     private final ConnectorPlanOptimizerProvider planOptimizerProvider;
-    private final ConnectorMetadataUpdaterProvider metadataUpdaterProvider;
 
     private final HiveTransactionManager transactionManager;
 
@@ -87,7 +90,6 @@ public class HiveConnector
             List<PropertyMetadata<?>> analyzeProperties,
             ConnectorAccessControl accessControl,
             ConnectorPlanOptimizerProvider planOptimizerProvider,
-            ConnectorMetadataUpdaterProvider metadataUpdaterProvider,
             ClassLoader classLoader)
     {
         this.lifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null");
@@ -106,7 +108,6 @@ public class HiveConnector
         this.accessControl = requireNonNull(accessControl, "accessControl is null");
         this.classLoader = requireNonNull(classLoader, "classLoader is null");
         this.planOptimizerProvider = requireNonNull(planOptimizerProvider, "planOptimizerProvider is null");
-        this.metadataUpdaterProvider = requireNonNull(metadataUpdaterProvider, "metadataUpdaterProvider is null");
     }
 
     @Override
@@ -148,12 +149,6 @@ public class HiveConnector
     }
 
     @Override
-    public ConnectorMetadataUpdaterProvider getConnectorMetadataUpdaterProvider()
-    {
-        return metadataUpdaterProvider;
-    }
-
-    @Override
     public Set<SystemTable> getSystemTables()
     {
         return systemTables;
@@ -190,15 +185,15 @@ public class HiveConnector
     }
 
     @Override
-    public ConnectorAccessControl getAccessControl()
+    public List<PropertyMetadata<?>> getMaterializedViewProperties()
     {
-        return accessControl;
+        return tableProperties;
     }
 
     @Override
-    public boolean isSingleStatementWritesOnly()
+    public ConnectorAccessControl getAccessControl()
     {
-        return false;
+        return accessControl;
     }
 
     @Override
@@ -213,12 +208,12 @@ public class HiveConnector
     }
 
     @Override
-    public void commit(ConnectorTransactionHandle transaction)
+    public ConnectorCommitHandle commit(ConnectorTransactionHandle transaction)
     {
         TransactionalMetadata metadata = transactionManager.remove(transaction);
         checkArgument(metadata != null, "no such transaction: %s", transaction);
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            metadata.commit();
+            return metadata.commit();
         }
     }
 
@@ -246,6 +241,11 @@ public class HiveConnector
     @Override
     public Set<ConnectorCapabilities> getCapabilities()
     {
-        return ImmutableSet.of(SUPPORTS_REWINDABLE_SPLIT_SOURCE, SUPPORTS_PAGE_SINK_COMMIT);
+        return ImmutableSet.of(SUPPORTS_REWINDABLE_SPLIT_SOURCE,
+                SUPPORTS_PAGE_SINK_COMMIT,
+                PRIMARY_KEY_CONSTRAINT,
+                UNIQUE_CONSTRAINT,
+                NOT_NULL_COLUMN_CONSTRAINT,
+                ALTER_COLUMN);
     }
 }

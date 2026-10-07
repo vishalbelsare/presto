@@ -18,10 +18,12 @@ import com.facebook.presto.metadata.AllNodes;
 import com.facebook.presto.metadata.InternalNode;
 import com.facebook.presto.metadata.InternalNodeManager;
 import com.facebook.presto.spi.ConnectorId;
+import com.facebook.presto.spi.NodeLoadMetrics;
 import com.facebook.presto.spi.NodeState;
 import com.google.common.collect.ImmutableSet;
 
 import java.net.URI;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -37,6 +39,8 @@ public class PrestoSparkInternalNodeManager
             new InternalNode("presto-spark-other-3", URI.create("http://127.0.0.1:60043"), NodeVersion.UNKNOWN, false));
     private static final AllNodes ALL_NODES = new AllNodes(
             union(ImmutableSet.of(CURRENT_NODE), OTHER_NODES),
+            ImmutableSet.of(),
+            ImmutableSet.of(),
             ImmutableSet.of(),
             ImmutableSet.of(),
             ImmutableSet.of(),
@@ -88,6 +92,18 @@ public class PrestoSparkInternalNodeManager
     }
 
     @Override
+    public Set<InternalNode> getCatalogServers()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Set<InternalNode> getCoordinatorSidecars()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public AllNodes getAllNodes()
     {
         // TODO: Hack to make System connector work
@@ -110,5 +126,11 @@ public class PrestoSparkInternalNodeManager
     public void removeNodeChangeListener(Consumer<AllNodes> listener)
     {
         throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Optional<NodeLoadMetrics> getNodeLoadMetrics(String nodeIdentifier)
+    {
+        return Optional.empty();
     }
 }

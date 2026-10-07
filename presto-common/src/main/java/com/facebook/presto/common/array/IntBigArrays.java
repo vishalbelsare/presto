@@ -113,7 +113,7 @@ public class IntBigArrays
         if (len > SMALL) {
             long l = from;
             long n = to - 1;
-            if (len > MEDIUM) { // Big arrays, pseudomedian of 9
+            if (len > MEDIUM) { // Big arrays, pseudo-median of 9
                 long s = len / 8;
                 l = med3(x, l, l + s, l + 2 * s, comp);
                 m = med3(x, m - s, m, m + s, comp);
@@ -147,18 +147,16 @@ public class IntBigArrays
             swap(x, b++, c--);
         }
         // Swap partition elements back to middle
-        long s;
-        long n = to;
-        s = Math.min(a - from, b - a);
+        long s = Math.min(a - from, b - a);
         vecSwap(x, from, b - s, s);
-        s = Math.min(d - c, n - d - 1);
-        vecSwap(x, b, n - s, s);
+        s = Math.min(d - c, to - d - 1);
+        vecSwap(x, b, to - s, s);
         // Recursively sort non-partition-elements
         if ((s = b - a) > 1) {
             quickSort(x, from, from + s, comp);
         }
         if ((s = d - c) > 1) {
-            quickSort(x, n - s, n, comp);
+            quickSort(x, to - s, to, comp);
         }
     }
 

@@ -53,6 +53,14 @@ Binary Functions
 
     Decodes binary data from the base64 encoded ``string`` using the URL safe alphabet.
 
+.. function:: from_base32(string) -> varbinary
+
+    Decodes binary data from the base32 encoded ``string``.
+
+.. function:: to_base32(binary) -> varchar
+
+    Encodes ``binary`` into a base32 string representation.
+
 .. function:: to_hex(binary) -> varchar
 
     Encodes ``binary`` into a hex string representation.
@@ -112,7 +120,7 @@ Binary Functions
 .. function:: crc32(binary) -> bigint
 
     Computes the CRC-32 of ``binary``. For general purpose hashing, use
-    :func:`xxhash64`, as it is much faster and produces a better quality hash.
+    :func:`!xxhash64`, as it is much faster and produces a better quality hash.
 
 .. function:: md5(binary) -> varbinary
 
@@ -137,6 +145,22 @@ Binary Functions
 .. function:: xxhash64(binary) -> varbinary
 
     Computes the xxhash64 hash of ``binary``.
+
+.. function:: xxhash64(binary, bigint) -> varbinary
+
+    Computes the xxhash64 hash of ``binary`` with seed ``bigint``.
+
+.. function:: xxhash128(binary) -> varbinary
+
+    Computes the XXH3 128-bit hash of ``binary``, returned as the 16-byte
+    big-endian canonical representation.
+
+.. function:: xxhash128(binary, bigint) -> varbinary
+
+    Computes the XXH3 128-bit hash of ``binary`` with seed ``bigint``, returned
+    as the 16-byte big-endian canonical representation. The seed accepts the full
+    ``bigint`` range; XXH3 consumes it as an unsigned 64-bit value, so a negative
+    seed is used as-is with its two's-complement bit pattern.
 
 .. function:: spooky_hash_v2_32(binary) -> varbinary
 

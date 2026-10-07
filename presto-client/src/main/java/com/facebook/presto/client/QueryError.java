@@ -15,9 +15,8 @@ package com.facebook.presto.client;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.Immutable;
+import com.google.errorprone.annotations.Immutable;
+import jakarta.annotation.Nullable;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 
@@ -40,7 +39,7 @@ public class QueryError
             @JsonProperty("errorCode") int errorCode,
             @JsonProperty("errorName") String errorName,
             @JsonProperty("errorType") String errorType,
-            @JsonProperty("boolean") boolean retriable,
+            @JsonProperty("retriable") boolean retriable,
             @JsonProperty("errorLocation") ErrorLocation errorLocation,
             @JsonProperty("failureInfo") FailureInfo failureInfo)
     {

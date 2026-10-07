@@ -19,15 +19,17 @@ import com.facebook.presto.common.block.BlockLease;
 import com.facebook.presto.common.predicate.TupleDomainFilter;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.orc.OrcAggregatedMemoryContext;
+import com.facebook.presto.orc.OrcCorruptionException;
 import com.facebook.presto.orc.OrcRecordReaderOptions;
 import com.facebook.presto.orc.StreamDescriptor;
 import com.facebook.presto.orc.Stripe;
 import com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind;
 import com.facebook.presto.orc.stream.InputStreamSources;
-import org.joda.time.DateTimeZone;
+import jakarta.annotation.Nullable;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.io.IOException;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -36,6 +38,7 @@ import static com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind
 import static com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind.DIRECT_V2;
 import static com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind.DWRF_DIRECT;
 import static com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind.DWRF_MAP_FLAT;
+import static com.facebook.presto.orc.metadata.ColumnEncoding.DEFAULT_SEQUENCE_ID;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
@@ -46,6 +49,7 @@ public class MapSelectiveStreamReader
 
     private final StreamDescriptor streamDescriptor;
     private final MapDirectSelectiveStreamReader directReader;
+    @Nullable
     private final MapFlatSelectiveStreamReader flatReader;
     private SelectiveStreamReader currentReader;
 
@@ -54,18 +58,24 @@ public class MapSelectiveStreamReader
             Map<Subfield, TupleDomainFilter> filters,
             List<Subfield> requiredSubfields,
             Optional<Type> outputType,
-            DateTimeZone hiveStorageTimeZone,
             OrcRecordReaderOptions options,
-            boolean legacyMapSubscript,
-            OrcAggregatedMemoryContext systemMemoryContext)
+            OrcAggregatedMemoryContext systemMemoryContext,
+            boolean isLowMemory)
     {
         this.streamDescriptor = requireNonNull(streamDescriptor, "stream is null");
-        directReader = new MapDirectSelectiveStreamReader(streamDescriptor, filters, requiredSubfields, outputType, hiveStorageTimeZone, options, legacyMapSubscript, systemMemoryContext);
-        flatReader = new MapFlatSelectiveStreamReader(streamDescriptor, filters, requiredSubfields, outputType, hiveStorageTimeZone, options, legacyMapSubscript, systemMemoryContext);
+        directReader = new MapDirectSelectiveStreamReader(streamDescriptor, filters, requiredSubfields, outputType, options, systemMemoryContext, isLowMemory);
+        if (streamDescriptor.getSequence() == DEFAULT_SEQUENCE_ID) {
+            flatReader = new MapFlatSelectiveStreamReader(streamDescriptor, filters, requiredSubfields, outputType, options, systemMemoryContext);
+        }
+        else {
+            // When sequence id is not DEFAULT_SEQUENCE_ID, this map is inside a flat map.
+            // Flat maps can't be nested within another flat map.
+            flatReader = null;
+        }
     }
 
     @Override
-    public void startStripe(Stripe stripe)
+    public void startStripe(ZoneId timezone, Stripe stripe)
             throws IOException
     {
         ColumnEncodingKind kind = stripe.getColumnEncodings().get(streamDescriptor.getStreamId())
@@ -75,13 +85,16 @@ public class MapSelectiveStreamReader
             currentReader = directReader;
         }
         else if (kind == DWRF_MAP_FLAT) {
+            if (flatReader == null) {
+                throw new OrcCorruptionException(streamDescriptor.getOrcDataSourceId(), "Flat map reader does not support nesting " + streamDescriptor);
+            }
             currentReader = flatReader;
         }
         else {
             throw new IllegalArgumentException("Unsupported encoding " + kind);
         }
 
-        currentReader.startStripe(stripe);
+        currentReader.startStripe(timezone, stripe);
     }
 
     @Override
@@ -102,7 +115,8 @@ public class MapSelectiveStreamReader
     @Override
     public long getRetainedSizeInBytes()
     {
-        return INSTANCE_SIZE + directReader.getRetainedSizeInBytes() + flatReader.getRetainedSizeInBytes();
+        return INSTANCE_SIZE + directReader.getRetainedSizeInBytes() +
+                (flatReader == null ? 0L : flatReader.getRetainedSizeInBytes());
     }
 
     @Override
@@ -140,6 +154,8 @@ public class MapSelectiveStreamReader
     public void close()
     {
         directReader.close();
-        flatReader.close();
+        if (flatReader != null) {
+            flatReader.close();
+        }
     }
 }

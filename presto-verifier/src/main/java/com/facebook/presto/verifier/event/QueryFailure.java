@@ -15,10 +15,9 @@ package com.facebook.presto.verifier.event;
 
 import com.facebook.airlift.event.client.EventField;
 import com.facebook.airlift.event.client.EventType;
-import com.facebook.presto.spi.ErrorType;
+import com.facebook.presto.common.ErrorType;
 import com.facebook.presto.verifier.framework.QueryStage;
-
-import javax.annotation.concurrent.Immutable;
+import com.google.errorprone.annotations.Immutable;
 
 import java.util.Optional;
 

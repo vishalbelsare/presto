@@ -30,6 +30,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.primitives.Longs;
 import io.airlift.slice.Slice;
+import org.apache.hadoop.hive.common.type.Timestamp;
 import org.testng.annotations.Test;
 
 import java.io.ByteArrayInputStream;
@@ -37,7 +38,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
-import java.sql.Timestamp;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
@@ -203,7 +203,7 @@ public class TestOrcBloomFilters
                 bloomFilter.addString(((Slice) o).toStringUtf8());
             }
             else if (o instanceof Timestamp) {
-                bloomFilter.addLong(((Timestamp) o).getTime());
+                bloomFilter.addLong(((Timestamp) o).toEpochMilli());
             }
             else if (o instanceof Double) {
                 bloomFilter.addDouble((Double) o);
@@ -287,14 +287,20 @@ public class TestOrcBloomFilters
         Map<Integer, ColumnStatistics> matchingStatisticsByColumnIndex = ImmutableMap.of(0, new IntegerColumnStatistics(
                 null,
                 toHiveBloomFilter(orcBloomFilter),
+                null,
+                null,
                 new IntegerStatistics(10L, 2000L, null)));
 
         Map<Integer, ColumnStatistics> nonMatchingStatisticsByColumnIndex = ImmutableMap.of(0, new IntegerColumnStatistics(
                 null,
                 toHiveBloomFilter(emptyOrcBloomFilter),
+                null,
+                null,
                 new IntegerStatistics(10L, 2000L, null)));
 
         Map<Integer, ColumnStatistics> withoutBloomFilterStatisticsByColumnIndex = ImmutableMap.of(0, new IntegerColumnStatistics(
+                null,
+                null,
                 null,
                 null,
                 new IntegerStatistics(10L, 2000L, null)));

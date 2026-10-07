@@ -18,9 +18,9 @@ import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.common.type.BigintType;
 import com.facebook.presto.redis.util.EmbeddedRedis;
 import com.facebook.presto.redis.util.JsonEncoder;
-import com.facebook.presto.security.AllowAllAccessControl;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.TableHandle;
+import com.facebook.presto.spi.security.AllowAllAccessControl;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.tests.StandaloneQueryRunner;
 import com.google.common.collect.ImmutableMap;
@@ -34,7 +34,7 @@ import redis.clients.jedis.Jedis;
 import java.util.Optional;
 import java.util.UUID;
 
-import static com.facebook.presto.redis.util.RedisTestUtils.createEmptyTableDescription;
+import static com.facebook.presto.redis.util.RedisTestUtils.createEmptyTableDescriptions;
 import static com.facebook.presto.redis.util.RedisTestUtils.installRedisPlugin;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.testing.assertions.Assert.assertEquals;
@@ -76,10 +76,12 @@ public class TestMinimalFunctionality
 
         this.queryRunner = new StandaloneQueryRunner(SESSION);
 
-        installRedisPlugin(embeddedRedis, queryRunner,
+        installRedisPlugin(
+                embeddedRedis,
+                queryRunner,
                 ImmutableMap.<SchemaTableName, RedisTableDescription>builder()
-                        .put(createEmptyTableDescription(new SchemaTableName("default", tableName)))
-                        .build());
+                        .putAll(createEmptyTableDescriptions(
+                                new SchemaTableName("default", tableName))).build(), ImmutableMap.of());
     }
 
     @AfterMethod(alwaysRun = true)
@@ -107,7 +109,7 @@ public class TestMinimalFunctionality
         transaction(queryRunner.getTransactionManager(), new AllowAllAccessControl())
                 .singleStatement()
                 .execute(SESSION, session -> {
-                    Optional<TableHandle> handle = queryRunner.getServer().getMetadata().getTableHandle(session, name);
+                    Optional<TableHandle> handle = queryRunner.getServer().getMetadata().getMetadataResolver(session).getTableHandle(name);
                     assertTrue(handle.isPresent());
                 });
     }

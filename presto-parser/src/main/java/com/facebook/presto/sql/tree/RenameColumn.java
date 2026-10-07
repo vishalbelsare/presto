@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.facebook.presto.spi.analyzer.UpdateInfo;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -89,6 +90,12 @@ public class RenameColumn
     }
 
     @Override
+    public UpdateInfo getUpdateInfo()
+    {
+        return new UpdateInfo("RENAME COLUMN", table.toString());
+    }
+
+    @Override
     public boolean equals(Object o)
     {
         if (this == o) {
@@ -100,13 +107,15 @@ public class RenameColumn
         RenameColumn that = (RenameColumn) o;
         return Objects.equals(table, that.table) &&
                 Objects.equals(source, that.source) &&
-                Objects.equals(target, that.target);
+                Objects.equals(target, that.target) &&
+                Objects.equals(tableExists, that.tableExists) &&
+                Objects.equals(columnExists, that.columnExists);
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(table, source, target);
+        return Objects.hash(table, source, target, tableExists, columnExists);
     }
 
     @Override
@@ -116,6 +125,8 @@ public class RenameColumn
                 .add("table", table)
                 .add("source", source)
                 .add("target", target)
+                .add("tableExists", tableExists)
+                .add("columnExists", columnExists)
                 .toString();
     }
 }
